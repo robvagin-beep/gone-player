@@ -54,6 +54,10 @@ final class PlayerState: ObservableObject {
     @Published var reverbAmount: Float = 0
     @Published var reverbPreset: String = "Room"
 
+    // MARK: — EQ XY Point
+    @Published var xyPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
+    @Published var xyPresets: [CGPoint?] = [nil, nil, nil, nil]
+
     // MARK: — Panels
 
     @Published var eqOpen = false

@@ -32,17 +32,18 @@ struct SpectrumView: View {
                 drawPixels(ctx: ctx, size: size, now: tl.date)
             }
         }
-        .onChange(of: isPlaying) { _, playing in
+        .onChange(of: isPlaying) { playing in
             blendFrom   = currentBlend(at: Date())
             blendStart  = Date()
             blendTarget = playing ? 1 : 0
         }
-        .onChange(of: data) { _, newData in
+        .onChange(of: data) { newData in
             let now = Date()
             for i in 0..<min(peaks.count, newData.count) {
-                let vs = newData[i] * specScale
-                if vs > decayedPeak(i, now: now) {
-                    peaks[i] = vs
+                let v = newData[i] * specScale
+                let vSq = v * v
+                if vSq > decayedPeak(i, now: now) {
+                    peaks[i] = vSq
                     peakAt[i] = now
                 }
             }
@@ -50,10 +51,11 @@ struct SpectrumView: View {
             for col in 0..<cnt {
                 let srcIdx = newData.isEmpty ? 0 : min(col * (newData.count - 1) / max(cnt - 1, 1), newData.count - 1)
                 let v: Float = (newData.isEmpty ? 0 : newData[srcIdx]) * specScale
-                if v > colPeak[col] {
-                    colPeak[col] = colPeak[col] * 0.10 + v * 0.90
+                let vSq = v * v
+                if vSq > colPeak[col] {
+                    colPeak[col] = colPeak[col] * 0.10 + vSq * 0.90
                 } else {
-                    colPeak[col] = max(0.08, colPeak[col] * 0.997)
+                    colPeak[col] = max(0.001, colPeak[col] * 0.997)
                 }
             }
         }
@@ -79,12 +81,15 @@ struct SpectrumView: View {
         for col in 0..<count {
             let x = CGFloat(col) * (colW + colGap)
             let srcIdx = data.isEmpty ? 0 : min(col * (data.count - 1) / max(count - 1, 1), data.count - 1)
-            let vP: Float = (data.isEmpty ? 0 : data[srcIdx]) * specScale
-            let vD: Float = col < idleVals.count ? idleVals[col] : 0
+            let vP: Float  = (data.isEmpty ? 0 : data[srcIdx]) * specScale
+            let vPsq: Float = vP * vP   // squared — amplifies kick/beat contrast over sustained content
+            let vD: Float  = col < idleVals.count ? idleVals[col] : 0
 
-            let peak  = col < colPeak.count ? colPeak[col] : 0.08
-            let gate  = peak * 0.82
-            let ncAgc = CGFloat(min(1, max(0, (vP - gate) / max(0.004, peak - gate))))
+            // colPeak tracks vPsq (not vP); gate at 70% pushes sustained bass below threshold
+            // so bars fire on beats rather than staying full during sustained content.
+            let peak  = col < colPeak.count ? colPeak[col] : 0.001
+            let gate  = peak * 0.70
+            let ncAgc = CGFloat(min(1, max(0, (vPsq - gate) / max(0.0001, peak - gate))))
             let ncFix = CGFloat(min(1, max(0, vD / 0.22)))
             let nc    = ncAgc * CGFloat(blend) + ncFix * CGFloat(1 - blend)
             let norm  = nc * nc * nc
@@ -92,9 +97,9 @@ struct SpectrumView: View {
 
             var peakRow = -1
             if blend > 0.02 {
-                let pv = decayedPeak(col, now: now)
-                if pv > 0.056 {
-                    let pvNc  = CGFloat(min(1, max(0, (pv - gate) / max(0.004, peak - gate))))
+                let pvSq = decayedPeak(col, now: now)  // stored as vSq
+                if pvSq > 0.001 {
+                    let pvNc  = CGFloat(min(1, max(0, (pvSq - gate) / max(0.0001, peak - gate))))
                     peakRow   = min(rowCount - 1, Int((pvNc * pvNc * pvNc * CGFloat(rowCount)).rounded(.up)))
                 }
             }

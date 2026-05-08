@@ -105,25 +105,29 @@ struct RootView: View {
             }
             WindowSnapManager.shared.playerState = state
         }
-        .onChange(of: state.eqOpen) { _, _ in
-            let appDelegate = NSApp.delegate as? AppDelegate
-            let win = appDelegate?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
-            let winTop: CGFloat = win?.frame.maxY ?? 0
-            let anchor: CGFloat? = winTop > 0 ? winTop : (windowTopAnchor > 0 ? windowTopAnchor : nil)
+        .onChange(of: state.eqOpen) { _ in
+            // windowTopAnchor is always set to the pre-toggle top-Y in onReceive(.windowDidMove)
+            // and after each updateWindowSize. Using it directly avoids reading win?.frame.maxY,
+            // which may already reflect SwiftUI's bottom-anchored auto-resize by the time this fires.
+            let anchor = windowTopAnchor > 0 ? windowTopAnchor : nil
             updateWindowSize(to: shellSize, anchorTopY: anchor)
             DispatchQueue.main.async {
                 updateWindowSize(to: shellSize, anchorTopY: anchor)
             }
         }
-        .onChange(of: state.playlistOpen) { _, _ in
-            let appDelegate = NSApp.delegate as? AppDelegate
-            let win = appDelegate?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
-            let winTop: CGFloat = win?.frame.maxY ?? 0
-            let anchor: CGFloat? = winTop > 0 ? winTop : (windowTopAnchor > 0 ? windowTopAnchor : nil)
+        .onChange(of: state.playlistOpen) { _ in
+            let anchor = windowTopAnchor > 0 ? windowTopAnchor : nil
             updateWindowSize(to: shellSize, anchorTopY: anchor)
             DispatchQueue.main.async {
                 updateWindowSize(to: shellSize, anchorTopY: anchor)
             }
+        }
+        .onChange(of: state.playlistPanelHeight) { _ in
+            // Bottom resize handle sets NSWindow.frame directly and updates playlistPanelHeight.
+            // Sync windowTopAnchor so the next panel toggle uses the correct post-resize top-Y.
+            guard !state.isSnapping else { return }
+            let win = (NSApp.delegate as? AppDelegate)?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
+            if let maxY = win?.frame.maxY, maxY > 0 { windowTopAnchor = maxY }
         }
         .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: handleDrop)
         .onReceive(NotificationCenter.default.publisher(for: .headerDoubleClick)) { _ in

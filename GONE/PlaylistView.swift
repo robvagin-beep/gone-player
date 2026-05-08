@@ -785,7 +785,7 @@ struct PlaylistRowView: View {
                 state.deleteFromLibrary(id: track.id)
             }
         }
-        .onChange(of: track.bpmAnalysisState) { _, new in
+        .onChange(of: track.bpmAnalysisState) { new in
             guard new == .analyzed else { return }
             showCompletion = true
             Task { @MainActor in
@@ -1013,7 +1013,7 @@ struct MarqueeTextRow: View {
         guard !artist.isEmpty else {
             return Text(title)
                 .font(G.sans(11, weight: isCurrent ? .semibold : .medium))
-                .foregroundStyle(isCurrent ? G.textPrimary : G.textSecondary)
+                .foregroundColor(isCurrent ? G.textPrimary : G.textSecondary)
         }
         var titleStr = AttributedString(title)
         titleStr.font = G.sans(11, weight: isCurrent ? .semibold : .medium)
@@ -1038,7 +1038,7 @@ struct MarqueeTextRow: View {
                 }
                 .onPreferenceChange(MarqueeWidthKey.self) { textW = $0 }
                 .offset(x: offset)
-                .onChange(of: hovered) { _, isHovered in
+                .onChange(of: hovered) { isHovered in
                     let overflow = textW - proxy.size.width
                     if isHovered && overflow > 4 {
                         withAnimation(.linear(duration: Double(overflow) / 40.0).delay(0.5)) {

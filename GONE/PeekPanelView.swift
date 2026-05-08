@@ -4,6 +4,8 @@ import AppKit
 struct PeekPanelView: View {
     @EnvironmentObject var state: PlayerState
     @State private var dragStartWindowOrigin: NSPoint?
+    @State private var dragStartMouseY: CGFloat = 0
+    @State private var hasDraggedBeyondThreshold = false
     private let peekingVerticalInset: CGFloat = 6
 
     private var panelWidth: CGFloat {
@@ -153,26 +155,32 @@ struct PeekPanelView: View {
     // MARK: – Gesture: tap → expand, drag → reposition Y
 
     private var panelGesture: some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { value in
+        // Uses NSEvent.mouseLocation (screen-space) to avoid the SwiftUI .local coordinate space
+        // feedback loop: when we move the window, the view moves with it, causing translation to
+        // partially cancel the movement → stuttering "прыг-прыг" effect.
+        DragGesture(minimumDistance: 0)
+            .onChanged { _ in
                 guard let window = WindowSnapManager.shared.currentWindow else { return }
-                // Capture start + pause proximity on first touch, before the 6px threshold,
-                // so the proximity timer can't kick off a competing slide animation.
                 if dragStartWindowOrigin == nil {
                     WindowSnapManager.shared.isDragging = true
                     WindowSnapManager.shared.cancelSlide()
                     dragStartWindowOrigin = window.frame.origin
+                    dragStartMouseY = NSEvent.mouseLocation.y
                 }
-                guard abs(value.translation.height) > 6,
+                let deltaY = NSEvent.mouseLocation.y - dragStartMouseY
+                guard abs(deltaY) > 6,
                       let start = dragStartWindowOrigin,
                       let screen = window.screen ?? NSScreen.main else { return }
-                let newY = start.y - value.translation.height
+                hasDraggedBeyondThreshold = true
+                let newY = start.y + deltaY
                 let clamped = max(screen.frame.minY, min(screen.frame.maxY - window.frame.height, newY))
                 window.setFrameOrigin(NSPoint(x: start.x, y: clamped))
             }
-            .onEnded { value in
-                let moved = abs(value.translation.height) > 6
+            .onEnded { _ in
+                let moved = hasDraggedBeyondThreshold
                 dragStartWindowOrigin = nil
+                dragStartMouseY = 0
+                hasDraggedBeyondThreshold = false
                 WindowSnapManager.shared.isDragging = false
                 if moved {
                     WindowSnapManager.shared.constrainCurrentWindow()
@@ -260,22 +268,23 @@ private struct PixelSpectrumView: View {
             blendFrom   = isPlaying ? 1 : 0
             blendTarget = isPlaying ? 1 : 0
         }
-        .onChange(of: isPlaying) { _, playing in
+        .onChange(of: isPlaying) { playing in
             blendFrom   = blend(at: Date())
             blendStart  = Date()
             blendTarget = playing ? 1 : 0
         }
-        .onChange(of: data) { _, newData in
+        .onChange(of: data) { newData in
             guard !newData.isEmpty else { return }
             let now = Date()
             for i in 0..<cols {
                 let idx = min(i * (newData.count - 1) / max(cols - 1, 1), newData.count - 1)
                 let v = newData[idx] * specScale
-                if v > decayedPeak(i, now: now) { peaks[i] = v; peakAt[i] = now }
-                if v > colPeak[i] {
-                    colPeak[i] = colPeak[i] * 0.10 + v * 0.90
+                let vSq = v * v
+                if vSq > decayedPeak(i, now: now) { peaks[i] = vSq; peakAt[i] = now }
+                if vSq > colPeak[i] {
+                    colPeak[i] = colPeak[i] * 0.10 + vSq * 0.90
                 } else {
-                    colPeak[i] = max(0.08, colPeak[i] * 0.997)
+                    colPeak[i] = max(0.001, colPeak[i] * 0.997)
                 }
             }
         }
@@ -324,9 +333,10 @@ private struct PixelSpectrumView: View {
             let vP: Float = (data.isEmpty ? 0 : data[idx]) * specScale
             let vD: Float = col < idle.count ? idle[col] : 0
 
-            let peak  = col < colPeak.count ? colPeak[col] : 0.08
-            let gate: Float  = peak * 0.82
-            let ncAgc = CGFloat(min(1, max(0, (vP - gate) / max(0.004, peak - gate))))
+            let vPsq: Float = vP * vP
+            let peak  = col < colPeak.count ? colPeak[col] : 0.001
+            let gate: Float  = peak * 0.70
+            let ncAgc = CGFloat(min(1, max(0, (vPsq - gate) / max(0.0001, peak - gate))))
             let ncFix = CGFloat(min(1, max(0, vD / 0.22)))
             let nc    = ncAgc * CGFloat(bl) + ncFix * CGFloat(1 - bl)
             let norm  = nc * nc * nc
@@ -334,9 +344,9 @@ private struct PixelSpectrumView: View {
 
             var peakRow = -1
             if bl > 0.02 {
-                let pv = decayedPeak(col, now: now)
-                if pv > 0.056 {
-                    let pvNc  = CGFloat(min(1, max(0, (pv - gate) / max(0.004, peak - gate))))
+                let pvSq = decayedPeak(col, now: now)
+                if pvSq > 0.001 {
+                    let pvNc  = CGFloat(min(1, max(0, (pvSq - gate) / max(0.0001, peak - gate))))
                     peakRow   = min(rows - 1, Int((pvNc * pvNc * pvNc * CGFloat(rows)).rounded(.up)))
                 }
             }

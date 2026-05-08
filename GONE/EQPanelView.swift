@@ -96,11 +96,14 @@ struct EQPanelView: View {
                     .opacity(state.eqOn ? 1 : 0.45)
                     .allowsHitTesting(state.eqOn)
 
-                    // ── Right: EQ curve ───────────────────────────────────────
-                    EQCurveView()
-                        .frame(maxWidth: .infinity)
-                        .frame(height: controlBlockHeight)
-                        .opacity(state.eqOn ? 1 : 0.45)
+                    // ── Right: EQ curve + XY presets ──────────────────────────
+                    VStack(spacing: 5) {
+                        EQCurveView()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: controlBlockHeight)
+                        XYPresetRow()
+                    }
+                    .opacity(state.eqOn ? 1 : 0.45)
                 }
             }
             .padding(.horizontal, 12)
@@ -402,14 +405,22 @@ struct EQCurveView: View {
     private let bandFreqs: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
     private let dbLines: [Float] = [-12, -6, 0, 6, 12]
 
+    // Padding shared between Canvas drawing and gesture coordinate conversion
+    private let padL: CGFloat = 14
+    private let padR: CGFloat = 10
+    private let padT: CGFloat = 10
+    private let padB: CGFloat = 6
+
     var body: some View {
+        GeometryReader { geo in
         Canvas { ctx, size in
             let bands  = displayedBands
             let preamp = displayedPreamp
             let hpfCut = state.hpfCutoff
             let lpfCut = state.lpfCutoff
+            let xyPt   = state.xyPoint
 
-            let pad  = (l: CGFloat(14), r: CGFloat(10), t: CGFloat(10), b: CGFloat(6))
+            let pad  = (l: padL, r: padR, t: padT, b: padB)
             let iW   = size.width  - pad.l - pad.r
             let iH   = size.height - pad.t - pad.b
             let dbMax: Float = 14
@@ -444,7 +455,7 @@ struct EQCurveView: View {
                 ctx.draw(
                     Text(dbLabel)
                         .font(.system(size: 6.5, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(mid ? 0.40 : 0.26)),
+                        .foregroundColor(Color.white.opacity(mid ? 0.40 : 0.26)),
                     at: CGPoint(x: pad.l - 4, y: y),
                     anchor: .trailing
                 )
@@ -470,7 +481,7 @@ struct EQCurveView: View {
                 ctx.draw(
                     Text(label)
                         .font(.system(size: 6, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.30)),
+                        .foregroundColor(Color.white.opacity(0.30)),
                     at: CGPoint(x: x, y: size.height - 3),
                     anchor: .bottom
                 )
@@ -571,23 +582,64 @@ struct EQCurveView: View {
                     with: .color(.white.opacity(isActive ? 0.95 : 0.28))
                 )
             }
+
+            // ── XY Point ────────────────────────────────────────────────────
+            let xpScreen = pad.l + CGFloat(xyPt.x) * iW
+            let ypScreen = pad.t + (1.0 - CGFloat(xyPt.y)) * iH
+
+            // Crosshair guides (very subtle)
+            var hln = Path()
+            hln.move(to: CGPoint(x: pad.l, y: ypScreen))
+            hln.addLine(to: CGPoint(x: size.width - pad.r, y: ypScreen))
+            ctx.stroke(hln, with: .color(.white.opacity(0.10)), lineWidth: 0.5)
+
+            var vln = Path()
+            vln.move(to: CGPoint(x: xpScreen, y: pad.t))
+            vln.addLine(to: CGPoint(x: xpScreen, y: pad.t + iH))
+            ctx.stroke(vln, with: .color(.white.opacity(0.10)), lineWidth: 0.5)
+
+            // Point dot
+            let dotR: CGFloat = 3.5
+            ctx.fill(
+                Path(ellipseIn: CGRect(x: xpScreen - dotR, y: ypScreen - dotR,
+                                       width: dotR * 2, height: dotR * 2)),
+                with: .color(.white.opacity(0.88))
+            )
+            ctx.stroke(
+                Path(ellipseIn: CGRect(x: xpScreen - dotR, y: ypScreen - dotR,
+                                       width: dotR * 2, height: dotR * 2)),
+                with: .color(.white.opacity(0.30)),
+                lineWidth: 0.75
+            )
         }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { g in
+                    let iW = geo.size.width - padL - padR
+                    let iH = geo.size.height - padT - padB
+                    let nx = max(0, min(1, (g.location.x - padL) / iW))
+                    let ny = max(0, min(1, 1.0 - (g.location.y - padT) / iH))
+                    state.xyPoint = CGPoint(x: nx, y: ny)
+                }
+        )
         .background(Color.black.opacity(0.45))
         .overlay(
             RoundedRectangle(cornerRadius: G.rBadge)
                 .stroke(G.borderSubtle, lineWidth: 0.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: G.rBadge))
-        .onChange(of: state.eqBands) { _, newBands in
+        .onChange(of: state.eqBands) { newBands in
             animateTo(bands: newBands, preamp: displayedPreamp)
         }
-        .onChange(of: state.eqPreamp) { _, newPreamp in
+        .onChange(of: state.eqPreamp) { newPreamp in
             animateTo(bands: displayedBands, preamp: newPreamp)
         }
         .onAppear {
             displayedBands  = state.eqBands
             displayedPreamp = state.eqPreamp
         }
+        } // GeometryReader
     }
 
     private func animateTo(bands target: [Float], preamp targetPre: Float) {
@@ -606,5 +658,50 @@ struct EQCurveView: View {
                 displayedPreamp = fromPre + Float(ease) * (targetPre - fromPre)
             }
         }
+    }
+}
+
+// ── XY preset row: P1 P2 P3 P4 ───────────────────────────────────────────────
+struct XYPresetRow: View {
+    @EnvironmentObject var state: PlayerState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<4, id: \.self) { i in
+                XYPresetButton(index: i)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct XYPresetButton: View {
+    @EnvironmentObject var state: PlayerState
+    let index: Int
+
+    private var saved: CGPoint? { state.xyPresets[index] }
+
+    var body: some View {
+        Button {
+            if let pt = saved {
+                // Recall saved position
+                state.xyPoint = pt
+            } else {
+                // Save current position to this slot
+                state.xyPresets[index] = state.xyPoint
+            }
+        } label: {
+            Text("P\(index + 1)")
+                .font(G.mono(8, weight: .medium))
+                .foregroundStyle(Color.white.opacity(saved != nil ? 0.85 : 0.28))
+                .frame(width: 22, height: 13)
+                .background(Color.white.opacity(saved != nil ? 0.12 : 0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+        }
+        .buttonStyle(.plain)
+        .onLongPressGesture(minimumDuration: 0.5) {
+            state.xyPresets[index] = nil
+        }
+        .help(saved != nil ? "Recall P\(index + 1) — hold to clear" : "Save current XY to P\(index + 1)")
     }
 }
