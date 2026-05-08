@@ -1,0 +1,417 @@
+import AppKit
+
+@MainActor
+final class WindowSnapManager {
+    static let shared = WindowSnapManager()
+    private init() {}
+
+    enum SnapState { case off, waiting, docked, peeking, expanded }
+    private(set) var snapState: SnapState = .off {
+        didSet { playerState?.setSnapState(snapState.playerStateMode) }
+    }
+
+    weak var playerState: PlayerState?
+
+    private let tabVisible:      CGFloat = 19
+    private let peekVisible:     CGFloat = 90
+    private let proximityZone:   CGFloat = 140
+    private let inactivityDelay: Double  = 5.0
+    private let dockAnimDuration: Double = 0.24
+    private let peekAnimDuration: Double = 0.18
+    private let expandAnimDuration: Double = 0.28
+
+    private var inactivityTimer:  Timer?
+    private var proximityTimer:   Timer?
+    private var slideTimer:       Timer?   // manual 60fps animation (NSAnimationContext unreliable off-screen)
+    private var globalClickMon:   Any?
+    private var activityMon:      Any?
+    private var savedOrigin:      NSPoint?
+    private var savedFrame:       NSRect?
+    private var savedDockedY:     CGFloat?
+
+    // Captured at enable(), used for the full lifecycle.
+    private weak var snapWindow: NSWindow?
+
+    // Frame lock — enforces snap X position even when SwiftUI calls setFrame internally.
+    private var frameLockObserver: Any?
+    private var frameLockX: CGFloat? = nil
+
+    private var mainWindow: NSWindow? {
+        (NSApp.delegate as? AppDelegate)?.resolvedMainWindow()
+    }
+    var currentWindow: NSWindow? { snapWindow ?? mainWindow }
+
+    // MARK: – Infrastructure
+
+    private func clearInfrastructure() {
+        inactivityTimer?.invalidate(); inactivityTimer = nil
+        proximityTimer?.invalidate();  proximityTimer  = nil
+        slideTimer?.invalidate();      slideTimer = nil
+        removeGlobalClickMonitor()
+        removeActivityMonitor()
+        unlockFrame()
+        playerState?.isSnapping = false
+    }
+
+    // MARK: – Enable / Disable
+
+    func enable(window: NSWindow) {
+        clearInfrastructure()
+        snapWindow   = window
+        playerState?.snapEnabled = true
+        savedOrigin  = window.frame.origin
+        savedFrame   = window.frame
+        savedDockedY = nil
+        snapState = .waiting
+        installActivityMonitor(window: window)
+        startProximityTimer()
+        scheduleInactivityDock(window: window)
+    }
+
+    func disable(window: NSWindow) {
+        // In .expanded, restoreFromSnap() already ran inside expand() — calling it again here
+        // would overwrite whatever the user changed manually in the expanded state.
+        let needsRestore = snapState == .docked || snapState == .peeking
+        clearInfrastructure()
+        playerState?.snapEnabled = false
+        savedDockedY = nil
+        snapState = .off
+        playerState?.snapTimerStart = nil
+        if needsRestore { playerState?.restoreFromSnap() }
+        let target = savedOrigin ?? centeredOrigin(for: window)
+        savedFrame  = nil
+        snapWindow  = nil
+        Task { @MainActor [weak self, weak window] in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard let self, let window else { return }
+            self.animateTo(window: window, origin: target)
+        }
+    }
+
+    // MARK: – Frame Lock
+    // Prevents any external setFrame (including SwiftUI's windowResizability pass)
+    // from moving the window away from the docked X position.
+
+    private func lockFrame(window: NSWindow, x: CGFloat) {
+        unlockFrame()
+        frameLockX = x
+        frameLockObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: window,
+            queue: .main
+        ) { [weak self, weak window] _ in
+            guard let self, let window else { return }
+            MainActor.assumeIsolated {
+                guard let lockX = self.frameLockX else { return }
+                if abs(window.frame.origin.x - lockX) > 0.5 {
+                    window.setFrameOrigin(NSPoint(x: lockX, y: window.frame.origin.y))
+                }
+            }
+        }
+    }
+
+    private func unlockFrame() {
+        if let obs = frameLockObserver {
+            NotificationCenter.default.removeObserver(obs)
+            frameLockObserver = nil
+        }
+        frameLockX = nil
+    }
+
+    // MARK: – Inactivity
+
+    private func scheduleInactivityDock(window: NSWindow) {
+        inactivityTimer?.invalidate()
+        playerState?.snapTimerStart = Date()
+        let timer = Timer(timeInterval: inactivityDelay, repeats: false) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let window,
+                      self.snapState == .waiting || self.snapState == .expanded
+                else { return }
+                self.dockToEdge(window: window)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        inactivityTimer = timer
+    }
+
+    private func installActivityMonitor(window: NSWindow) {
+        removeActivityMonitor()
+        activityMon = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .scrollWheel, .keyDown]
+        ) { [weak self, weak window] event in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let window,
+                      self.snapState == .waiting || self.snapState == .expanded,
+                      !self.importPanelOpen,
+                      event.window == nil || event.window == window
+                else { return }
+                self.scheduleInactivityDock(window: window)
+            }
+            return event
+        }
+    }
+
+    private func removeActivityMonitor() {
+        if let m = activityMon { NSEvent.removeMonitor(m); activityMon = nil }
+    }
+
+    // MARK: – State Transitions
+
+    private func dockToEdge(window: NSWindow) {
+        guard let screen = screen(for: window) else { return }
+        removeGlobalClickMonitor()
+
+        savedFrame = window.frame
+        savedOrigin = window.frame.origin
+
+        let snapX = screen.frame.maxX - tabVisible
+
+        // Slide starts first, panel collapse follows ~80ms later so the horizontal
+        // motion is clearly perceived before the window shrinks.
+        // isSnapping blocks updateWindowSize during slide so no Y-shift occurs.
+        // snapState/.docked and lockFrame are set in completion so PeekPanelView appears
+        // only once the window has reached the snap position.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, let screen = self.screen(for: window) else { return }
+            let y = self.savedDockedY ?? self.clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
+            self.savedDockedY = y
+            self.playerState?.isSnapping = true
+            self.slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: self.dockAnimDuration) { [weak self, weak window] in
+                guard let self, let window else { return }
+                self.snapState = .docked
+                self.lockFrame(window: window, x: snapX)
+                self.playerState?.isSnapping = false
+            }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                self?.playerState?.prepareForSnap()
+            }
+        }
+    }
+
+    // Smooth manual slide toward/away from the screen edge.
+    // NSAnimationContext is unreliable for mostly-off-screen borderless windows:
+    // the system skips or collapses the animation when the destination is beyond the display edge.
+    // A 60fps timer with direct setFrameOrigin calls bypasses that constraint entirely.
+    private func slideOffScreen(window: NSWindow, to origin: NSPoint, duration: Double, completion: (() -> Void)? = nil) {
+        slideTimer?.invalidate()
+        slideTimer = nil
+        let startOrigin = window.frame.origin
+        let startTime = Date()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let self, let window else { return }
+                let rawT = min(1.0, max(0.0, -startTime.timeIntervalSinceNow / duration))
+                let eased = rawT < 0.5 ? 2 * rawT * rawT : -1 + (4 - 2 * rawT) * rawT
+                let x = startOrigin.x + (origin.x - startOrigin.x) * CGFloat(eased)
+                let y = startOrigin.y + (origin.y - startOrigin.y) * CGFloat(eased)
+                window.setFrameOrigin(NSPoint(x: x, y: y))
+                if rawT >= 1.0 {
+                    window.setFrameOrigin(origin)
+                    self.slideTimer?.invalidate()
+                    self.slideTimer = nil
+                    completion?()
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        slideTimer = timer
+    }
+
+    // Used by proximity polling — no panel collapse, just position change.
+    private func slideTo(window: NSWindow, x: CGFloat) {
+        guard let screen = screen(for: window) else { return }
+        let y = savedDockedY ?? window.frame.origin.y
+        let target = NSPoint(x: x, y: clampY(y, height: window.frame.height, screen: screen))
+        slideOffScreen(window: window, to: target, duration: peekAnimDuration)
+    }
+
+    private func peek(window: NSWindow) {
+        guard let screen = screen(for: window) else { return }
+        snapState = .peeking  // set before animation so poll can't re-trigger
+        slideTo(window: window, x: screen.frame.maxX - peekVisible)
+    }
+
+    private func dockFromProximity(window: NSWindow) {
+        guard let screen = screen(for: window) else { return }
+        let snapX = screen.frame.maxX - tabVisible
+        let y = savedDockedY ?? clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
+        snapState = .docked  // set immediately to prevent poll re-triggering
+        slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: peekAnimDuration) { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.lockFrame(window: window, x: snapX)
+        }
+    }
+
+    func expand(window: NSWindow) {
+        unlockFrame()  // allow window to move freely
+
+        let targetFrame: NSRect
+        if let saved = savedFrame {
+            targetFrame = saved
+        } else {
+            let origin = centeredOrigin(for: window)
+            targetFrame = NSRect(origin: origin, size: window.frame.size)
+        }
+
+        snapState = .expanded
+        playerState?.isSnapping = true
+
+        // Delay panel restore so the window travels away from the edge before content expands.
+        // isSnapping blocks updateWindowSize, so the frame is controlled by animateFrameTo only.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 90_000_000)
+            self?.playerState?.restoreFromSnap()
+        }
+
+        animateFrameTo(window: window, frame: targetFrame, duration: expandAnimDuration) { [weak self, weak window] in
+            guard let self else { return }
+            self.playerState?.isSnapping = false
+            if let window, !self.importPanelOpen {
+                self.installGlobalClickMonitor(window: window)
+                self.scheduleInactivityDock(window: window)
+            }
+        }
+    }
+
+    func constrainSnapPosition(window: NSWindow?) {
+        guard let window, let screen = screen(for: window),
+              snapState == .peeking || snapState == .docked else { return }
+        let newY = clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
+        savedDockedY = newY
+        let snapX = snapState == .peeking
+            ? screen.frame.maxX - peekVisible
+            : screen.frame.maxX - tabVisible
+        // Temporarily update lock X if we're dragging while docked.
+        if snapState == .docked { frameLockX = snapX }
+        window.setFrameOrigin(NSPoint(x: snapX, y: newY))
+    }
+
+    func expandCurrentWindow() {
+        guard let window = snapWindow ?? mainWindow else { return }
+        expand(window: window)
+    }
+
+    func constrainCurrentWindow() {
+        constrainSnapPosition(window: snapWindow ?? mainWindow)
+    }
+
+    private(set) var importPanelOpen = false
+    var isDragging = false
+
+    func cancelSlide() {
+        slideTimer?.invalidate()
+        slideTimer = nil
+    }
+
+    func pauseForImport() {
+        importPanelOpen = true
+        inactivityTimer?.invalidate(); inactivityTimer = nil
+        removeGlobalClickMonitor()
+    }
+
+    func resumeAfterImport() {
+        importPanelOpen = false
+        guard snapState == .waiting || snapState == .expanded,
+              let window = snapWindow ?? mainWindow else { return }
+        installGlobalClickMonitor(window: window)
+        scheduleInactivityDock(window: window)
+    }
+
+    // MARK: – Proximity
+
+    private func startProximityTimer() {
+        proximityTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollProximity() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        proximityTimer = timer
+    }
+
+    private func pollProximity() {
+        guard !isDragging,
+              snapState == .docked || snapState == .peeking,
+              let window = snapWindow ?? mainWindow,
+              let screen = screen(for: window)
+        else { return }
+
+        let dist = screen.frame.maxX - NSEvent.mouseLocation.x
+        if snapState == .docked,  dist <= proximityZone {
+            unlockFrame()  // allow peek slide
+            peek(window: window)
+        }
+        if snapState == .peeking, dist > proximityZone {
+            dockFromProximity(window: window)  // applies lockFrame internally after animation
+        }
+    }
+
+    // MARK: – Click Monitors
+
+    private func installGlobalClickMonitor(window: NSWindow) {
+        removeGlobalClickMonitor()
+        globalClickMon = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self, weak window] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let window, !self.importPanelOpen else { return }
+                self.removeGlobalClickMonitor()
+                self.dockToEdge(window: window)
+            }
+        }
+    }
+
+    private func removeGlobalClickMonitor() {
+        if let m = globalClickMon { NSEvent.removeMonitor(m); globalClickMon = nil }
+    }
+
+    // MARK: – Helpers
+
+    private func animateTo(window: NSWindow, origin: NSPoint, duration: Double = 0.28, completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().setFrameOrigin(origin)
+        } completionHandler: {
+            completion?()
+        }
+    }
+
+    private func animateFrameTo(window: NSWindow, frame: NSRect, duration: Double = 0.28, completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().setFrame(frame, display: true)
+        } completionHandler: {
+            completion?()
+        }
+    }
+
+    private func screen(for window: NSWindow) -> NSScreen? { window.screen ?? NSScreen.main }
+
+    private func clampY(_ y: CGFloat, height: CGFloat, screen: NSScreen) -> CGFloat {
+        max(screen.frame.minY, min(screen.frame.maxY - height, y))
+    }
+
+    private func centeredOrigin(for window: NSWindow) -> NSPoint {
+        guard let screen = screen(for: window) else { return .zero }
+        let sf = screen.visibleFrame
+        return NSPoint(
+            x: sf.midX - window.frame.width / 2,
+            y: sf.midY - window.frame.height / 2
+        )
+    }
+}
+
+private extension WindowSnapManager.SnapState {
+    var playerStateMode: PlayerState.SnapMode {
+        switch self {
+        case .off:      return .off
+        case .waiting:  return .waiting
+        case .docked:   return .docked
+        case .peeking:  return .peeking
+        case .expanded: return .expanded
+        }
+    }
+}
