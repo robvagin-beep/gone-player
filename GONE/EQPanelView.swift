@@ -96,12 +96,14 @@ struct EQPanelView: View {
                     .opacity(state.eqOn ? 1 : 0.45)
                     .allowsHitTesting(state.eqOn)
 
-                    // ── Right: EQ curve + XY presets ──────────────────────────
+                    // ── Right: EQ curve + XY control row ─────────────────────
                     VStack(spacing: 5) {
                         EQCurveView()
                             .frame(maxWidth: .infinity)
-                            .frame(height: controlBlockHeight)
-                        XYPresetRow()
+                            .frame(height: controlBlockHeight - 22)
+                        XYControlRow()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 16)
                     }
                     .opacity(state.eqOn ? 1 : 0.45)
                 }
@@ -147,12 +149,22 @@ struct EQPresetPicker: View {
     var body: some View {
         Menu {
             ForEach(Self.orderedPresets, id: \.self) { option in
-                Button {
-                    preset = option
-                } label: {
-                    HStack {
-                        Text(option)
-                        if option == preset { Spacer(); Image(systemName: "checkmark") }
+                if option == "Custom" {
+                    Button { } label: {
+                        HStack {
+                            Text(option).foregroundStyle(.secondary)
+                            if option == preset { Spacer(); Image(systemName: "checkmark") }
+                        }
+                    }
+                    .disabled(true)
+                } else {
+                    Button {
+                        preset = option
+                    } label: {
+                        HStack {
+                            Text(option)
+                            if option == preset { Spacer(); Image(systemName: "checkmark") }
+                        }
                     }
                 }
             }
@@ -213,15 +225,15 @@ struct EQVerticalFader: View {
             ZStack(alignment: .bottom) {
                 // Track background
                 RoundedRectangle(cornerRadius: cr)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.white.opacity(0.05))
 
                 // Fill — plain rect, clipped by container's rounded corners
                 Rectangle()
-                    .fill(Color.white.opacity(0.20))
+                    .fill(Color.white.opacity(0.14))
                     .frame(height: fillH)
 
                 // 0 dB center tick
-                Color.white.opacity(0.20)
+                Color.white.opacity(0.14)
                     .frame(height: 1)
                     .offset(y: -(h / 2))
             }
@@ -297,20 +309,41 @@ struct EQKnobStack: View {
                     ),
                     label: fxLabel
                 )
-                Button { state.cycleReverbPreset() } label: {
-                    Text(state.reverbPreset.uppercased())
-                        .font(G.mono(6.5, weight: .bold))
-                        .foregroundStyle(Color.white.opacity(0.52))
-                        .tracking(0.4)
-                        .frame(width: 36)
-                        .lineLimit(1)
+                ReverbPresetLabel(preset: state.reverbPreset) {
+                    state.cycleReverbPreset()
                 }
-                .buttonStyle(.plain)
                 .opacity(state.reverbAmount >= 0.015 ? 1 : 0.45)
             }
 
             Spacer(minLength: 0)
         }
+        .frame(width: 36)
+    }
+}
+
+// ── Reverb preset pill — subtle tap target under the FX knob ─────────────────
+private struct ReverbPresetLabel: View {
+    let preset: String
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(preset.uppercased())
+                .font(G.mono(6.5, weight: .bold))
+                .tracking(0.4)
+                .foregroundStyle(Color.white.opacity(hovered ? 0.75 : 0.50))
+                .lineLimit(1)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.white.opacity(hovered ? 0.10 : 0.05))
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovered)
         .frame(width: 36)
     }
 }
@@ -416,9 +449,34 @@ struct EQCurveView: View {
         Canvas { ctx, size in
             let bands  = displayedBands
             let preamp = displayedPreamp
-            let hpfCut = state.hpfCutoff
-            let lpfCut = state.lpfCutoff
-            let xyPt   = state.xyPoint
+            let xyPt     = state.xyPoint
+            let xyActive = state.xyActive
+            let xyAxis   = state.xyEffectAxis
+
+            // When XY is active, derive filter values from xyPoint directly.
+            // applyXYEffect no longer writes @Published state at 60fps — this
+            // eliminates the secondary SwiftUI update cascade per XY tick.
+            let hpfCut:  Float
+            let lpfCut:  Float
+            let xyResoBW: Float
+            if xyActive {
+                let x = Float(xyPt.x), y = Float(xyPt.y)
+                switch xyAxis {
+                case .filter:
+                    hpfCut = x * 0.55;  lpfCut = (1 - y) * 0.55;  xyResoBW = 1.0
+                case .reso:
+                    hpfCut = 0;  lpfCut = x * 0.75
+                    xyResoBW = Float(max(0.05, 2.0 * pow(0.025, Double(y))))
+                case .filtVerb:
+                    hpfCut = 0;  lpfCut = x * 0.7;  xyResoBW = 1.0
+                default:
+                    hpfCut = state.hpfCutoff;  lpfCut = state.lpfCutoff;  xyResoBW = state.xyResonance
+                }
+            } else {
+                hpfCut   = state.hpfCutoff
+                lpfCut   = state.lpfCutoff
+                xyResoBW = state.xyResonance
+            }
 
             let pad  = (l: padL, r: padR, t: padT, b: padB)
             let iW   = size.width  - pad.l - pad.r
@@ -508,8 +566,16 @@ struct EQCurveView: View {
                 }
                 if lpfCut > 0.015 {
                     let fc = 20000.0 * powf(0.01, lpfCut)
-                    let r = freq / fc; let r4 = r * r * r * r
-                    total += -10.0 * log10(1.0 + r4)
+                    let r  = freq / fc
+                    if xyActive && xyResoBW < 0.9 {
+                        // Resonant 2nd-order LPF: shows pole peak as bandwidth → 0
+                        let Q  = 1.0 / max(0.05, xyResoBW)
+                        let r2 = r * r
+                        total += -10.0 * log10(max(1e-12, (1.0 - r2) * (1.0 - r2) + r2 / (Q * Q)))
+                    } else {
+                        let r4 = r * r * r * r
+                        total += -10.0 * log10(1.0 + r4)
+                    }
                 }
 
                 pts.append(CGPoint(x: xForT(t), y: yFor(max(-dbMax, min(dbMax, total)))))
@@ -584,31 +650,33 @@ struct EQCurveView: View {
             }
 
             // ── XY Point ────────────────────────────────────────────────────
-            let xpScreen = pad.l + CGFloat(xyPt.x) * iW
-            let ypScreen = pad.t + (1.0 - CGFloat(xyPt.y)) * iH
+            let xpScreen  = pad.l + CGFloat(xyPt.x) * iW
+            let ypScreen  = pad.t + (1.0 - CGFloat(xyPt.y)) * iH
+            let dotAlpha:   Double = xyActive ? 0.88 : 0.22
+            let guideAlpha: Double = xyActive ? 0.10 : 0.04
 
-            // Crosshair guides (very subtle)
+            // Crosshair guides
             var hln = Path()
             hln.move(to: CGPoint(x: pad.l, y: ypScreen))
             hln.addLine(to: CGPoint(x: size.width - pad.r, y: ypScreen))
-            ctx.stroke(hln, with: .color(.white.opacity(0.10)), lineWidth: 0.5)
+            ctx.stroke(hln, with: .color(.white.opacity(guideAlpha)), lineWidth: 0.5)
 
             var vln = Path()
             vln.move(to: CGPoint(x: xpScreen, y: pad.t))
             vln.addLine(to: CGPoint(x: xpScreen, y: pad.t + iH))
-            ctx.stroke(vln, with: .color(.white.opacity(0.10)), lineWidth: 0.5)
+            ctx.stroke(vln, with: .color(.white.opacity(guideAlpha)), lineWidth: 0.5)
 
             // Point dot
             let dotR: CGFloat = 3.5
             ctx.fill(
                 Path(ellipseIn: CGRect(x: xpScreen - dotR, y: ypScreen - dotR,
                                        width: dotR * 2, height: dotR * 2)),
-                with: .color(.white.opacity(0.88))
+                with: .color(.white.opacity(dotAlpha))
             )
             ctx.stroke(
                 Path(ellipseIn: CGRect(x: xpScreen - dotR, y: ypScreen - dotR,
                                        width: dotR * 2, height: dotR * 2)),
-                with: .color(.white.opacity(0.30)),
+                with: .color(.white.opacity(dotAlpha * 0.35)),
                 lineWidth: 0.75
             )
         }
@@ -616,11 +684,16 @@ struct EQCurveView: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { g in
+                    state.cancelXYSpring()
                     let iW = geo.size.width - padL - padR
                     let iH = geo.size.height - padT - padB
                     let nx = max(0, min(1, (g.location.x - padL) / iW))
                     let ny = max(0, min(1, 1.0 - (g.location.y - padT) / iH))
                     state.xyPoint = CGPoint(x: nx, y: ny)
+                }
+                .onEnded { _ in
+                    guard !state.xyHoldMode else { return }
+                    state.startXYSpring()
                 }
         )
         .background(Color.black.opacity(0.45))
@@ -661,47 +734,93 @@ struct EQCurveView: View {
     }
 }
 
-// ── XY preset row: P1 P2 P3 P4 ───────────────────────────────────────────────
-struct XYPresetRow: View {
+// ── XY control row: ON · [← AXIS →] · HOLD ──────────────────────────────────
+struct XYControlRow: View {
     @EnvironmentObject var state: PlayerState
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(0..<4, id: \.self) { i in
-                XYPresetButton(index: i)
+            // ON — left
+            XYCtrlButton(label: state.xyActive ? "ON" : "OFF", active: state.xyActive) {
+                if state.xyActive { state.xyHoldMode = false }
+                state.xyActive.toggle()
             }
+            .frame(width: 32)
+
+            // AXIS — wide selector with chevrons, cycles FLTR → VERB → RESO
+            XYAxisSelector(axis: state.xyEffectAxis) {
+                state.xyEffectAxis = state.xyEffectAxis.next
+            }
+
+            // HOLD — right
+            XYCtrlButton(label: "HOLD", active: state.xyHoldMode) {
+                state.xyHoldMode.toggle()
+            }
+            .frame(width: 32)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-struct XYPresetButton: View {
-    @EnvironmentObject var state: PlayerState
-    let index: Int
+private struct XYAxisSelector: View {
+    let axis: PlayerState.XYEffectAxis
+    let action: () -> Void
+    @State private var hovered = false
 
-    private var saved: CGPoint? { state.xyPresets[index] }
+    var axisLabel: String {
+        switch axis {
+        case .filter:   return "FILTER"
+        case .reverb:   return "REVERB"
+        case .reso:     return "RESONANCE"
+        case .filtVerb: return "FILTER + REVERB"
+        case .lfo:      return "LFO"
+        case .bpmChop:  return "BPM CHOP"
+        }
+    }
 
     var body: some View {
-        Button {
-            if let pt = saved {
-                // Recall saved position
-                state.xyPoint = pt
-            } else {
-                // Save current position to this slot
-                state.xyPresets[index] = state.xyPoint
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 5.5, weight: .semibold))
+                    .opacity(0.38)
+                Text(axisLabel)
+                    .font(G.mono(7.5, weight: .medium))
+                    .tracking(0.5)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 5.5, weight: .semibold))
+                    .opacity(0.38)
             }
-        } label: {
-            Text("P\(index + 1)")
-                .font(G.mono(8, weight: .medium))
-                .foregroundStyle(Color.white.opacity(saved != nil ? 0.85 : 0.28))
-                .frame(width: 22, height: 13)
-                .background(Color.white.opacity(saved != nil ? 0.12 : 0.04))
+            .foregroundStyle(Color.white.opacity(0.75))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.white.opacity(hovered ? 0.10 : 0.07))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+    }
+}
+
+private struct XYCtrlButton: View {
+    let label: String
+    let active: Bool
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(G.mono(7.5, weight: .medium))
+                .tracking(0.4)
+                .foregroundStyle(active ? G.textOnLight : Color.white.opacity(0.50))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(
+                    active
+                    ? G.accentPrimary.opacity(0.85)
+                    : Color.white.opacity(hovered ? 0.08 : 0.05)
+                )
                 .clipShape(RoundedRectangle(cornerRadius: 3))
         }
         .buttonStyle(.plain)
-        .onLongPressGesture(minimumDuration: 0.5) {
-            state.xyPresets[index] = nil
-        }
-        .help(saved != nil ? "Recall P\(index + 1) — hold to clear" : "Save current XY to P\(index + 1)")
+        .onHover { hovered = $0 }
     }
 }

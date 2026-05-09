@@ -5,6 +5,8 @@ struct PlaylistView: View {
     @EnvironmentObject var state: PlayerState
     @State private var isDropTarget = false
     @State private var isSecondaryDropTarget = false
+    @State private var primarySelectedIds: Set<UUID> = []
+    @State private var secondarySelectedIds: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,8 +19,10 @@ struct PlaylistView: View {
                     PlaylistTracksPane(
                         tabId: state.activePlaylistTabId,
                         summaryAlignment: .leading,
+                        selectedIds: $primarySelectedIds,
                         isDropTarget: $isDropTarget,
-                        onDrop: { providers in handleDrop(providers: providers, toPlaylistTabId: state.activePlaylistTabId) }
+                        onDrop: { providers in handleDrop(providers: providers, toPlaylistTabId: state.activePlaylistTabId) },
+                        onBecomeActive: { secondarySelectedIds = [] }
                     )
 
                     Rectangle()
@@ -28,8 +32,10 @@ struct PlaylistView: View {
                     PlaylistTracksPane(
                         tabId: secondaryId,
                         summaryAlignment: .leading,
+                        selectedIds: $secondarySelectedIds,
                         isDropTarget: $isSecondaryDropTarget,
-                        onDrop: { providers in handleDrop(providers: providers, toPlaylistTabId: secondaryId) }
+                        onDrop: { providers in handleDrop(providers: providers, toPlaylistTabId: secondaryId) },
+                        onBecomeActive: { primarySelectedIds = [] }
                     )
                 }
                 .frame(maxHeight: .infinity)
@@ -37,6 +43,7 @@ struct PlaylistView: View {
                 PlaylistTracksPane(
                     tabId: state.activePlaylistTabId,
                     summaryAlignment: .leading,
+                    selectedIds: $primarySelectedIds,
                     isDropTarget: $isDropTarget,
                     onDrop: { providers in handleDrop(providers: providers, toPlaylistTabId: state.activePlaylistTabId) }
                 )
@@ -49,14 +56,31 @@ struct PlaylistView: View {
                 .padding(.bottom, 10)
         }
         .background(G.bgPanelPL)
+        .overlay {
+            Group {
+                if let urls = state.pendingDropURLs,
+                   state.splitPlaylistView,
+                   let secondaryId = state.secondaryPlaylistTabId {
+                    SplitDropChooserOverlay(
+                        urls: urls,
+                        tab1Id: state.activePlaylistTabId,
+                        tab2Id: secondaryId
+                    )
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: state.pendingDropURLs != nil)
+        }
+        .animation(.easeOut(duration: 0.20), value: state.isImporting)
     }
 
     private func handleDrop(providers: [NSItemProvider], toPlaylistTabId tabId: UUID) -> Bool {
-        var urls: [URL] = []
+        // Preallocate by index so async callbacks preserve Finder drop order
+        var slots: [URL?] = Array(repeating: nil, count: providers.count)
         let group = DispatchGroup()
         let lock = NSLock()
 
-        for provider in providers {
+        for (i, provider) in providers.enumerated() {
             group.enter()
             provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
                 defer { group.leave() }
@@ -71,11 +95,12 @@ struct PlaylistView: View {
                     resolved = URL(string: str)
                 }
                 guard let url = resolved else { return }
-                lock.withLock { urls.append(url) }
+                lock.withLock { slots[i] = url }
             }
         }
 
         group.notify(queue: .main) {
+            let urls = slots.compactMap { $0 }
             Task { @MainActor in
                 if !urls.isEmpty {
                     await state.importURLs(urls, intoPlaylistTabId: tabId)
@@ -83,6 +108,80 @@ struct PlaylistView: View {
             }
         }
         return true
+    }
+}
+
+// ── Split-view drop chooser — appears when dropping files in split mode ────────
+struct SplitDropChooserOverlay: View {
+    @EnvironmentObject var state: PlayerState
+    let urls: [URL]
+    let tab1Id: UUID
+    let tab2Id: UUID
+
+    @State private var hoveredSide: Int? = nil
+    @State private var keyMonitor: Any?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            side(number: 1, tabId: tab1Id)
+            Rectangle()
+                .fill(Color.white.opacity(0.10))
+                .frame(width: 1)
+            side(number: 2, tabId: tab2Id)
+        }
+        .background(Color.black.opacity(0.62))
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.keyCode == 53 { state.pendingDropURLs = nil; return nil }
+                return event
+            }
+        }
+        .onDisappear {
+            if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        }
+    }
+
+    @ViewBuilder
+    private func side(number: Int, tabId: UUID) -> some View {
+        let isHov = hoveredSide == number
+        let name = state.playlistTabs.first(where: { $0.id == tabId })?.title ?? ""
+
+        Button {
+            let captured = urls
+            state.pendingDropURLs = nil
+            Task { @MainActor in
+                await state.importURLs(captured, intoPlaylistTabId: tabId)
+            }
+        } label: {
+            ZStack {
+                Color.white.opacity(isHov ? 0.05 : 0)
+
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(
+                        Color.white.opacity(isHov ? 0.38 : 0.18),
+                        style: StrokeStyle(lineWidth: 1, dash: [3, 3])
+                    )
+                    .padding(10)
+
+                VStack(spacing: 10) {
+                    Text("\(number)")
+                        .font(.system(size: 48, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(isHov ? 0.92 : 0.48))
+
+                    Text(name.uppercased())
+                        .font(G.mono(9, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(isHov ? 0.65 : 0.28))
+                        .tracking(0.5)
+                        .lineLimit(1)
+                        .padding(.horizontal, 16)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { h in hoveredSide = h ? number : nil }
+        .animation(.easeInOut(duration: 0.12), value: hoveredSide)
     }
 }
 
@@ -118,11 +217,12 @@ struct PlaylistTracksPane: View {
 
     let tabId: UUID
     let summaryAlignment: HorizontalAlignment
+    @Binding var selectedIds: Set<UUID>
     @Binding var isDropTarget: Bool
     let onDrop: ([NSItemProvider]) -> Bool
+    var onBecomeActive: (() -> Void)? = nil
 
     @State private var isDropHintHovered = false
-    @State private var selectedIds: Set<UUID> = []
     @State private var selectionAnchorId: UUID? = nil
     @State private var draggingId: UUID? = nil
     @State private var dragStartIdx: Int? = nil
@@ -133,6 +233,7 @@ struct PlaylistTracksPane: View {
     }
 
     private func handleRowTap(_ track: Track) {
+        onBecomeActive?()
         let mods = NSEvent.modifierFlags
         if mods.contains(.shift),
            let anchorId = selectionAnchorId,
@@ -169,6 +270,7 @@ struct PlaylistTracksPane: View {
     @State private var scrollOffset: CGFloat = 0
     @State private var contentHeight: CGFloat = 0
     @State private var keyMonitor: Any?
+    @State private var scrollerObserver: NSObjectProtocol?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -186,25 +288,31 @@ struct PlaylistTracksPane: View {
                         }
                         .frame(height: 0)
 
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { idx, track in
                                 let isBeingDragged = draggingId == track.id
+                                let crossLineColor: Color = state.crossPaneDragIsCopy ? Color(hex: "#4caf82") : G.accentPrimary
                                 let showLineAbove: Bool = {
-                                    guard let ins = insertionIdx,
-                                          let startIdx = dragStartIdx,
-                                          ins != startIdx
-                                    else { return false }
-                                    return ins == idx
+                                    if let ins = insertionIdx, let startIdx = dragStartIdx, ins != startIdx {
+                                        return ins == idx
+                                    }
+                                    if state.crossPaneDragTargetTabId == tabId,
+                                       let ins = state.crossPaneDragInsertionIdx {
+                                        return ins == idx
+                                    }
+                                    return false
                                 }()
                                 let showLineBelow: Bool = {
-                                    guard let ins = insertionIdx,
-                                          let startIdx = dragStartIdx,
-                                          ins != startIdx,
-                                          ins == visibleTracks.count,
-                                          idx == visibleTracks.count - 1
-                                    else { return false }
-                                    return true
+                                    if let ins = insertionIdx, let startIdx = dragStartIdx,
+                                       ins != startIdx, ins == visibleTracks.count,
+                                       idx == visibleTracks.count - 1 { return true }
+                                    if state.crossPaneDragTargetTabId == tabId,
+                                       let ins = state.crossPaneDragInsertionIdx,
+                                       ins >= visibleTracks.count,
+                                       idx == visibleTracks.count - 1 { return true }
+                                    return false
                                 }()
+                                let lineColor: Color = (state.crossPaneDragTargetTabId == tabId && draggingId == nil) ? crossLineColor : G.accentPrimary
 
                                 PlaylistRowView(
                                     track: track,
@@ -218,7 +326,7 @@ struct PlaylistTracksPane: View {
                                 .overlay(alignment: .top) {
                                     if showLineAbove {
                                         Rectangle()
-                                            .fill(G.accentPrimary)
+                                            .fill(lineColor)
                                             .frame(height: 2)
                                             .allowsHitTesting(false)
                                     }
@@ -226,12 +334,13 @@ struct PlaylistTracksPane: View {
                                 .overlay(alignment: .bottom) {
                                     if showLineBelow {
                                         Rectangle()
-                                            .fill(G.accentPrimary)
+                                            .fill(lineColor)
                                             .frame(height: 2)
                                             .allowsHitTesting(false)
                                     }
                                 }
                                 .onTapGesture(count: 2) {
+                                    onBecomeActive?()
                                     selectedIds = [track.id]
                                     selectionAnchorId = track.id
                                     state.playTrack(id: track.id)
@@ -240,7 +349,7 @@ struct PlaylistTracksPane: View {
                                     handleRowTap(track)
                                 }
                                 .simultaneousGesture(
-                                    DragGesture(minimumDistance: 8)
+                                    DragGesture(minimumDistance: 12)
                                         .onChanged { value in
                                             if draggingId == nil {
                                                 draggingId = track.id
@@ -262,6 +371,9 @@ struct PlaylistTracksPane: View {
                                                         let isCopy = NSEvent.modifierFlags.contains(.option)
                                                         state.crossPaneDragTargetTabId = otherTab
                                                         state.crossPaneDragIsCopy = isCopy
+                                                        let absoluteY = CGFloat(idx) * 30 + value.location.y
+                                                        let targetCount = state.sortedTracks(forPlaylistTabId: otherTab).count
+                                                        state.crossPaneDragInsertionIdx = max(0, min(targetCount, Int(absoluteY / 30)))
                                                         if isCopy { NSCursor.dragCopy.set() }
                                                         else { NSCursor.closedHand.set() }
                                                         var t = Transaction(); t.animation = nil
@@ -272,6 +384,7 @@ struct PlaylistTracksPane: View {
                                             }
                                             state.crossPaneDragTargetTabId = nil
                                             state.crossPaneDragIsCopy = false
+                                            state.crossPaneDragInsertionIdx = nil
                                             NSCursor.closedHand.set()
 
                                             // Same-pane reorder
@@ -290,6 +403,8 @@ struct PlaylistTracksPane: View {
                                             }
                                         }
                                         .onEnded { value in
+                                            // If onHandoff already ran, draggingId is nil and cursor was already popped.
+                                            let needsCursorPop = draggingId != nil
                                             defer {
                                                 var t = Transaction()
                                                 t.animation = nil
@@ -301,15 +416,16 @@ struct PlaylistTracksPane: View {
                                                 state.isDraggingInternally = false
                                                 state.crossPaneDragTargetTabId = nil
                                                 state.crossPaneDragIsCopy = false
-                                                NSCursor.pop()
+                                                state.crossPaneDragInsertionIdx = nil
+                                                if needsCursorPop { NSCursor.pop() }
                                             }
                                             // Cross-pane move or copy
                                             if let dragId = draggingId,
                                                let targetTab = state.crossPaneDragTargetTabId {
                                                 if state.crossPaneDragIsCopy {
-                                                    state.copyTrack(dragId, to: targetTab)
+                                                    state.copyTrackAt(dragId, to: targetTab, insertionIndex: state.crossPaneDragInsertionIdx)
                                                 } else {
-                                                    state.moveTrack(dragId, from: tabId, to: targetTab)
+                                                    state.moveTrackAt(dragId, from: tabId, to: targetTab, insertionIndex: state.crossPaneDragInsertionIdx)
                                                 }
                                                 return
                                             }
@@ -436,11 +552,14 @@ struct PlaylistTracksPane: View {
                         let accentColor: Color = state.crossPaneDragIsCopy
                             ? Color(hex: "#4caf82")
                             : G.accentPrimary
+                        let targetIsEmpty = state.sortedTracks(forPlaylistTabId: tabId).isEmpty
                         RoundedRectangle(cornerRadius: 8)
-                            .fill(accentColor.opacity(0.07))
+                            .fill(accentColor.opacity(0.06))
                             .overlay {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(accentColor.opacity(0.50), lineWidth: 1.5)
+                                if targetIsEmpty {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(accentColor.opacity(0.50), lineWidth: 1.5)
+                                }
                             }
                             .overlay(alignment: .topTrailing) {
                                 if state.crossPaneDragIsCopy {
@@ -488,7 +607,7 @@ struct PlaylistTracksPane: View {
             }
         }
         .onAppear {
-            NotificationCenter.default.addObserver(
+            scrollerObserver = NotificationCenter.default.addObserver(
                 forName: NSScroller.preferredScrollerStyleDidChangeNotification,
                 object: nil, queue: .main
             ) { _ in
@@ -501,12 +620,17 @@ struct PlaylistTracksPane: View {
                       event.charactersIgnoringModifiers == "a",
                       !(NSApp.keyWindow?.firstResponder is NSText)
                 else { return event }
+                onBecomeActive?()
                 selectedIds = Set(visibleTracks.map(\.id))
                 return nil
             }
         }
         .onDisappear {
             if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+            if let m = scrollerObserver { NotificationCenter.default.removeObserver(m); scrollerObserver = nil }
+        }
+        .onChange(of: selectedIds.isEmpty) { isEmpty in
+            if isEmpty { selectionAnchorId = nil }
         }
     }
 }
@@ -598,7 +722,7 @@ struct PlaylistHeaderRow: View {
         .onHover { cueHovered = $0 }
         .animation(.easeOut(duration: 0.10), value: cueHovered)
         .animation(.easeOut(duration: 0.12), value: cueOn)
-        .help("NUMBER EXPORT MODE\nWhen enabled, dragging tracks to Finder renames files with a playlist prefix: 001_TrackName, 002_TrackName…\n\nPreserves your set order everywhere — Pioneer CDJs, Rekordbox, Serato, VirtualDJ, any platform that reads filenames.\nThe fastest universal way to lock a tracklist sequence across all gear.")
+        .goneTooltip("Numbered export. Drag tracks to Finder and they rename to 001_Name, 002_Name — locks set order for any gear that reads filenames")
     }
 
     @ViewBuilder
@@ -666,7 +790,7 @@ struct PlaylistRowView: View {
             if track.bpmAnalysisState == .analyzing || showCompletion {
                 GeometryReader { geo in
                     Rectangle()
-                        .fill(Color.white.opacity(0.08))
+                        .fill(isCurrent ? Color.black.opacity(0.07) : Color.white.opacity(0.08))
                         .frame(width: max(0, geo.size.width * CGFloat(scanFrac)))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 }
@@ -678,7 +802,7 @@ struct PlaylistRowView: View {
                 // #
                 Text("\(index + 1)")
                     .font(G.mono(index < 99 ? 10 : 8))
-                    .foregroundStyle(G.textMuted.opacity(0.82))
+                    .foregroundStyle(isCurrent ? Color.white : G.textMuted.opacity(0.82))
                     .monospacedDigit()
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
@@ -696,7 +820,8 @@ struct PlaylistRowView: View {
                             size: 20,
                             cornerRadius: 3,
                             artworkData: track.artworkData,
-                            trackId: track.id
+                            trackId: track.id,
+                            isCurrent: isCurrent
                         )
                     }
                 }
@@ -730,14 +855,15 @@ struct PlaylistRowView: View {
                     .transition(.opacity)
                 }
 
-                // BPM
-                BPMCell(track: track)
+                // BPM — .id forces view recreation when state changes (Track.== compares only id)
+                BPMCell(track: track, isCurrent: isCurrent)
+                    .id(track.bpmAnalysisState)
                     .padding(.horizontal, 4)
 
                 // Duration
                 Text(fmtTime(track.duration))
                     .font(G.mono(10.5))
-                    .foregroundStyle(Color.white.opacity(0.5))
+                    .foregroundStyle(isCurrent ? Color.white : Color.white.opacity(0.5))
                     .monospacedDigit()
                     .frame(width: 40, alignment: .trailing)
                     .padding(.leading, 3)
@@ -752,12 +878,12 @@ struct PlaylistRowView: View {
             isCurrent   ? G.currentBg
             : isSelected ? G.accentPrimary.opacity(0.14)
             : hovered   ? G.hoverBg
-            : (index % 2 == 0 ? Color.clear : Color.white.opacity(0.012))
+            : (index % 2 == 0 ? Color.white.opacity(0.012) : Color.clear)
         )
         .overlay(alignment: .leading) {
             if isCurrent {
                 Rectangle()
-                    .fill(Color.white.opacity(0.85))
+                    .fill(Color.white.opacity(0.55))
                     .frame(width: 2)
             }
         }
@@ -853,10 +979,24 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
     }
 
     private func startMonitors() {
+        stopMonitors()
         downMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] ev in
             guard let self else { return ev }
-            let loc = self.convert(ev.locationInWindow, from: nil)
-            if self.bounds.contains(loc) {
+            // Convert the row's bounds TO window space (not the inverse) — avoids
+            // the flipped-coordinate ambiguity in the SwiftUI-AppKit NSHostingView bridge.
+            let rowInWindow = self.convert(self.bounds, to: nil)
+            if rowInWindow.contains(ev.locationInWindow) {
+                // Skip clicks on window resize edges — bottom/left/right ~8 px.
+                // Dragging those edges makes the mouse briefly exit win.frame,
+                // which the dragMonitor reads as "mouse left window → start file drag."
+                if let win = self.window {
+                    let loc = ev.locationInWindow
+                    let r: CGFloat = 8
+                    let w = win.frame.width
+                    let h = win.frame.height
+                    guard loc.y >= r, loc.y <= h - r,
+                          loc.x >= r, loc.x <= w - r else { return ev }
+                }
                 self.downEvent  = ev
                 self.didHandOff = false
             }
@@ -893,6 +1033,8 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
         downEvent = nil; didHandOff = false
     }
 
+    deinit { stopMonitors() }
+
     private func startDragging(triggerEvent: NSEvent) {
         guard let cur = track else { return }
 
@@ -917,11 +1059,10 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
             let promise = NSFilePromiseProvider(fileType: fType, delegate: self)
             promise.userInfo = t.id.uuidString
 
-            let img  = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)
-                       ?? NSImage(size: .init(width: 20, height: 20))
+            let img  = Self.makeDragImage()
             let di   = NSDraggingItem(pasteboardWriter: promise)
-            let off  = CGFloat(i) * 2
-            di.setDraggingFrame(NSRect(x: off, y: -off, width: 20, height: 20), contents: img)
+            let off  = CGFloat(i) * 3
+            di.setDraggingFrame(NSRect(x: off, y: -off, width: 48, height: 56), contents: img)
             return di
         }
         guard !items.isEmpty else { return }
@@ -956,6 +1097,30 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
 
     func operationQueue(for _: NSFilePromiseProvider) -> OperationQueue {
         let q = OperationQueue(); q.qualityOfService = .userInitiated; return q
+    }
+
+    private static func makeDragImage() -> NSImage {
+        let w: CGFloat = 48, h: CGFloat = 56
+        let img = NSImage(size: NSSize(width: w, height: h))
+        img.lockFocus()
+        let rect = NSRect(x: 0.5, y: 0.5, width: w - 1, height: h - 1)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
+        NSColor.white.withAlphaComponent(0.88).setFill()
+        path.fill()
+        NSColor.black.withAlphaComponent(0.10).setStroke()
+        path.lineWidth = 0.5
+        path.stroke()
+        let cfg = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+        if let sym = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
+                         .withSymbolConfiguration(cfg) {
+            sym.draw(
+                in: NSRect(x: (w - sym.size.width) / 2, y: (h - sym.size.height) / 2,
+                           width: sym.size.width, height: sym.size.height),
+                from: .zero, operation: .sourceOver, fraction: 0.40
+            )
+        }
+        img.unlockFocus()
+        return img
     }
 }
 
@@ -1013,15 +1178,15 @@ struct MarqueeTextRow: View {
         guard !artist.isEmpty else {
             return Text(title)
                 .font(G.sans(11, weight: isCurrent ? .semibold : .medium))
-                .foregroundColor(isCurrent ? G.textPrimary : G.textSecondary)
+                .foregroundColor(isCurrent ? Color.white : G.textSecondary)
         }
         var titleStr = AttributedString(title)
         titleStr.font = G.sans(11, weight: isCurrent ? .semibold : .medium)
-        titleStr.foregroundColor = isCurrent ? G.textPrimary : G.textSecondary
+        titleStr.foregroundColor = isCurrent ? Color.white : G.textSecondary
 
         var artistStr = AttributedString("   \(artist)")
         artistStr.font = G.sans(11)
-        artistStr.foregroundColor = Color.white.opacity(0.45)
+        artistStr.foregroundColor = isCurrent ? Color.white.opacity(0.70) : Color.white.opacity(0.45)
 
         return Text(titleStr + artistStr)
     }
@@ -1058,22 +1223,23 @@ struct MarqueeTextRow: View {
 
 struct BPMCell: View {
     let track: Track
+    var isCurrent: Bool = false
 
     var body: some View {
         Group {
             if track.isMissing {
-                cellText("—", color: Color.white.opacity(0.25))
+                cellText("—", color: isCurrent ? Color.white.opacity(0.35) : Color.white.opacity(0.25))
             } else {
                 switch track.bpmAnalysisState {
                 case .analyzed:
-                    cellText("\(Int(track.bpm.rounded()))", color: Color.white.opacity(0.85))
+                    cellText("\(Int(track.bpm.rounded()))", color: isCurrent ? Color.white : Color.white.opacity(0.85))
                 case .analyzing:
                     AnalyzingDots(phase: abs(track.id.hashValue) % 3)
                         .frame(width: 36, alignment: .center)
                 case .pending:
-                    cellText("–", color: Color.white.opacity(0.2))
+                    cellText("–", color: isCurrent ? Color.white.opacity(0.28) : Color.white.opacity(0.2))
                 case .failed:
-                    cellText("ERR", color: Color.white.opacity(0.35), size: 9.5)
+                    cellText("ERR", color: isCurrent ? Color.white.opacity(0.55) : Color.white.opacity(0.35), size: 9.5)
                 }
             }
         }
@@ -1153,4 +1319,6 @@ private enum PlaylistContentHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
+
+// ── Analyzing overlay — shown during import ──────────────────────────────────
 

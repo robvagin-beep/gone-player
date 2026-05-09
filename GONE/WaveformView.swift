@@ -7,6 +7,7 @@ struct ProgressRulerRow: View {
         ProgressRuler(
             progress: state.progress,
             waveform: state.current?.waveform ?? [],
+            isPlaying: state.isPlaying,
             onSeek: { ratio in
                 state.progress = ratio
                 AudioEngineNext.shared.seek(ratio: ratio)
@@ -22,18 +23,25 @@ struct ProgressRulerRow: View {
 struct ProgressRuler: View {
     let progress: Double
     let waveform: [Float]
+    var isPlaying: Bool = true
     let onSeek: (Double) -> Void
 
     @State private var dragRatio: Double?
+    @State private var barPlayedAt: [Int: Date] = [:]
+    @State private var lastKnownProgress: Double = -1
+
+    private static let animDuration: Double = 0.38
 
     private var displayProgress: Double { dragRatio ?? progress }
 
     var body: some View {
         GeometryReader { geo in
-            Canvas { ctx, size in
-                drawRuler(ctx: ctx, size: size)
+            TimelineView(.animation(minimumInterval: (isPlaying || dragRatio != nil) ? 1.0 / 30.0 : 1.0 / 10.0)) { tl in
+                Canvas { ctx, size in
+                    drawRuler(ctx: ctx, size: size, now: tl.date)
+                }
+                .allowsHitTesting(false)
             }
-            .allowsHitTesting(false)
 
             Color.clear
                 .contentShape(Rectangle())
@@ -50,22 +58,50 @@ struct ProgressRuler: View {
                 )
                 .cursor(.pointingHand)
         }
+        .onChange(of: progress) { newProgress in
+            let last = lastKnownProgress < 0 ? 0.0 : lastKnownProgress
+            defer { lastKnownProgress = newProgress }
+            if abs(newProgress - last) > 0.05 {
+                barPlayedAt.removeAll()
+                return
+            }
+            let now = Date()
+            for i in 0..<121 {
+                let barFrac = Double(i) / 120.0
+                if barFrac <= newProgress && barFrac > last {
+                    barPlayedAt[i] = now
+                } else if barFrac > newProgress && barFrac <= last {
+                    barPlayedAt.removeValue(forKey: i)
+                }
+            }
+        }
     }
 
-    private func drawRuler(ctx: GraphicsContext, size: CGSize) {
+    private func drawRuler(ctx: GraphicsContext, size: CGSize, now: Date) {
         // 121 = 4×30+1 → quarters land exactly at indices 0,30,60,90,120
         let totalTicks = 121
         let playheadX  = size.width * CGFloat(displayProgress)
+        let isDragging = dragRatio != nil
 
-        let tallH:     CGFloat = 16   // quarter dividers — always tallest
-        let maxWaveH:  CGFloat = 12   // played peak — 4pt below dividers
-        let minWaveH:  CGFloat = 2    // played floor
-        let maxGhostH: CGFloat = 6    // unplayed silhouette — 50% of played peak
-        let minGhostH: CGFloat = 1
-        let shortH:    CGFloat = 3    // fallback when no waveform data
+        let majorH:    CGFloat = 16   // quarter-mark dividers — stand above played bars
+        let maxWaveH:  CGFloat = 11   // played peak (below majorH so dividers are visible)
+        let minWaveH:  CGFloat = 3    // played trough
+        let maxGhostH: CGFloat = 8    // unplayed peak
+        let minGhostH: CGFloat = 2    // unplayed trough
         let baseline:  CGFloat = size.height
 
         let majorSet: Set<Int> = [0, 30, 60, 90, 120]
+
+        let waveMin: CGFloat
+        let waveRange: CGFloat
+        if waveform.isEmpty {
+            waveMin = 0; waveRange = 1
+        } else {
+            let lo = CGFloat(waveform.min() ?? 0.04)
+            let hi = CGFloat(waveform.max() ?? 0.90)
+            waveMin   = lo
+            waveRange = max(hi - lo, 0.02)
+        }
 
         for i in 0..<totalTicks {
             let frac    = CGFloat(i) / CGFloat(totalTicks - 1)
@@ -73,34 +109,42 @@ struct ProgressRuler: View {
             let played  = x <= playheadX
             let isMajor = majorSet.contains(i)
 
+            // animT: 0 = ghost state, 1 = fully played
+            // During drag: instant binary; during playback: ease-out over animDuration
+            let animT: CGFloat
+            if isDragging {
+                animT = played ? 1 : 0
+            } else if !played {
+                animT = 0
+            } else if let playedAt = barPlayedAt[i] {
+                let elapsed = now.timeIntervalSince(playedAt)
+                let t = min(1.0, elapsed / Self.animDuration)
+                animT = CGFloat(1.0 - pow(1.0 - t, 2.5))  // ease-out
+            } else {
+                animT = 1  // played long before tracking started
+            }
+
             let tickH: CGFloat
             let alpha: Double
 
             if isMajor {
-                tickH = tallH
-                alpha = played ? 0.85 : 0.25
+                // Dividers: fixed height, animate opacity 0.18 → 1.0 when played
+                tickH = majorH
+                alpha = played ? (0.18 + 0.82 * Double(animT)) : 0.18
             } else if !waveform.isEmpty {
-                // Interpolate between adjacent waveform bars for smooth transitions
                 let pos = frac * CGFloat(waveform.count - 1)
                 let ci0 = max(0, min(waveform.count - 1, Int(pos)))
                 let ci1 = min(waveform.count - 1, ci0 + 1)
                 let t   = pos - CGFloat(ci0)
                 let v   = CGFloat(waveform[ci0]) * (1 - t) + CGFloat(waveform[ci1]) * t
-                let norm = pow(max(0, (v - 0.04) / 0.86), 3.0)
-                if played {
-                    tickH = minWaveH + norm * (maxWaveH - minWaveH)
-                    alpha = 0.85
-                } else {
-                    // Unplayed silhouette: same shape, 50% height, dim
-                    tickH = minGhostH + norm * (maxGhostH - minGhostH)
-                    alpha = 0.22
-                }
-            } else if played {
-                tickH = shortH + 1
-                alpha = 0.50
+                let norm = max(0, (v - waveMin) / waveRange)
+                let ghostH = minGhostH + norm * (maxGhostH - minGhostH)
+                let fullH  = minWaveH  + norm * (maxWaveH  - minWaveH)
+                tickH = ghostH + (fullH - ghostH) * animT
+                alpha = 0.22 + 0.63 * Double(animT)
             } else {
-                tickH = shortH
-                alpha = 0.18
+                tickH = 2 + 2 * animT
+                alpha = 0.18 + 0.37 * Double(animT)
             }
 
             var path = Path()

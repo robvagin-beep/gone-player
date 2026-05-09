@@ -53,6 +53,8 @@ final class LibraryScanner {
 
     func readMetadata(url: URL, id: UUID? = nil) async -> Track? {
         let trackId = id ?? UUID()
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         guard FileManager.default.fileExists(atPath: url.path) else {
             return Track(
                 id: trackId, url: url,
@@ -79,11 +81,13 @@ final class LibraryScanner {
         let format = formatName(ext: ext)
 
         var bitrate = 0
+        var sampleRate: Double = 0
         if let tracks = try? await asset.loadTracks(withMediaType: .audio),
            let audioTrack = tracks.first,
            let desc = try? await audioTrack.load(.formatDescriptions).first {
             let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)
             let sr = asbd?.pointee.mSampleRate ?? 0
+            sampleRate = sr
             let bitsPerChannel = asbd?.pointee.mBitsPerChannel ?? 0
             let channelsPerFrame = asbd?.pointee.mChannelsPerFrame ?? 0
             if bitsPerChannel > 0 {
@@ -195,7 +199,7 @@ final class LibraryScanner {
             key: key.isEmpty ? "—" : key,
             format: format,
             bitrate: isLossless(ext: ext) ? 0 : bitrate,
-            sampleRate: 0,
+            sampleRate: sampleRate,
             rating: 0,
             artworkData: artworkData,
             waveform: [],
@@ -207,6 +211,8 @@ final class LibraryScanner {
     // ── Waveform (called after track is shown in UI) ──────────────────────────
 
     func computeWaveform(url: URL, bars: Int = 200) async -> [Float] {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         let asset = AVURLAsset(url: url)
         guard let assetTrack = try? await asset.loadTracks(withMediaType: .audio).first else { return [] }
         let assetDuration = (try? await asset.load(.duration)) ?? .zero
@@ -518,6 +524,8 @@ final class LibraryScanner {
     // Algorithm: energy envelope → onset strength → autocorrelation → tempo
 
     func analyzeBPM(url: URL, onProgress: ((Double) -> Void)? = nil) async -> Double {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         let asset = AVURLAsset(url: url)
         guard let assetTrack = try? await asset.loadTracks(withMediaType: .audio).first
         else { return 0 }
@@ -616,8 +624,8 @@ final class LibraryScanner {
 
         var bpm = 60.0 * fps / Double(bestLag)
         // Resolve half/double tempo — DJ music lives in 90–180 BPM
-        if bpm < 90  { bpm *= 2 }
-        if bpm > 180 { bpm /= 2 }
+        while bpm > 0 && bpm < 90  { bpm *= 2 }
+        while bpm > 180 { bpm /= 2 }
         onProgress?(1.0)
         return (bpm * 10).rounded() / 10
     }

@@ -1,7 +1,10 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct PeekPanelView: View {
+    @Binding var isDropTarget: Bool
+    var onFileDrop: ([NSItemProvider]) -> Bool = { _ in false }
     @EnvironmentObject var state: PlayerState
     @State private var dragStartWindowOrigin: NSPoint?
     @State private var dragStartMouseY: CGFloat = 0
@@ -14,34 +17,49 @@ struct PeekPanelView: View {
 
     var body: some View {
         ZStack {
+            // Tap-to-expand base layer — catches taps through elements with allowsHitTesting(false)
+            // (artwork, marquee text, BPM bar) and fires when no button above consumes the event
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
+
             // Keep content in tree always so it can fade — only hide via opacity
             peekContent
                 .opacity(state.snapState == .peeking ? 1 : 0)
                 .animation(.easeInOut(duration: 0.18), value: state.snapState)
                 .allowsHitTesting(state.snapState == .peeking)
+
+            // Drop zone indicator — shows while files are dragged over docked or peeking panel
+            if isDropTarget && (state.snapState == .docked || state.snapState == .peeking) {
+                peekDropOverlay
+            }
         }
         .frame(width: panelWidth)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
-        .gesture(panelGesture)
+        .simultaneousGesture(panelDragGesture)
         .background(panelBackground)
         .mask(panelMask)
         .allowsHitTesting(state.snapState == .docked || state.snapState == .peeking)
+        .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: onFileDrop)
     }
 
     private var peekContent: some View {
         VStack(spacing: 0) {
-            Spacer().frame(maxHeight: 8)
+            Spacer(minLength: 0)
 
-            VStack(spacing: 0) {
+            VStack(spacing: 4) {
                 artworkArea
-                    .allowsHitTesting(false)
+                    .contentShape(Rectangle())
+                    .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
 
-                Spacer().frame(height: 6)
-
-                MarqueeText(text: peekTitleLine, fontSize: 8.5, colorOpacity: 0.92)
-
-                Spacer().frame(height: 7)
+                ZStack {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
+                    MarqueeText(text: peekTitleLine, fontSize: 8.5, colorOpacity: 0.92)
+                }
+                .frame(height: 11)
 
                 HStack(spacing: 0) {
                     Button { state.selectPreviousTrack() } label: {
@@ -49,6 +67,8 @@ struct PeekPanelView: View {
                             .font(.system(size: 8))
                             .foregroundStyle(G.textSecondary)
                             .frame(width: 22, height: 22)
+                            .padding(4)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(PeekSpringButton(scale: 0.78))
 
@@ -62,6 +82,8 @@ struct PeekPanelView: View {
                             .frame(width: 24, height: 24)
                             .background(G.accentPrimary)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .padding(3)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(PeekSpringButton(scale: 0.88))
 
@@ -70,16 +92,18 @@ struct PeekPanelView: View {
                             .font(.system(size: 8))
                             .foregroundStyle(G.textSecondary)
                             .frame(width: 22, height: 22)
+                            .padding(4)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(PeekSpringButton(scale: 0.78))
                 }
 
-                Spacer().frame(height: 8)
-
                 if let bpm = currentBPM {
                     PeekBPMBar(label: bpm, progress: state.progress)
                         .frame(width: 54, height: 12)
-                        .allowsHitTesting(false)
+                        .padding(.top, 5)
+                        .contentShape(Rectangle())
+                        .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
                 }
             }
             .frame(width: 78)
@@ -88,7 +112,7 @@ struct PeekPanelView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.vertical, 8)
+        .padding(.vertical, 3)
         .padding(.horizontal, 9)
     }
 
@@ -145,20 +169,22 @@ struct PeekPanelView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 7)
                     .fill(Color.white.opacity(0.05))
-                PixelSpectrumView(data: spectrumSlice, isPlaying: state.isPlaying)
+                PixelSpectrumView(isPlaying: state.isPlaying)
                     .padding(5)
             }
             .frame(width: 40, height: 40)
         }
     }
 
-    // MARK: – Gesture: tap → expand, drag → reposition Y
+    // MARK: – Gesture: drag → reposition Y (tap-to-expand is handled by the base Color.clear layer)
 
-    private var panelGesture: some Gesture {
+    private var panelDragGesture: some Gesture {
         // Uses NSEvent.mouseLocation (screen-space) to avoid the SwiftUI .local coordinate space
         // feedback loop: when we move the window, the view moves with it, causing translation to
         // partially cancel the movement → stuttering "прыг-прыг" effect.
-        DragGesture(minimumDistance: 0)
+        // minimumDistance: 8 so that simple button taps don't trigger dragging.
+        // simultaneousGesture on the ZStack means this fires even over peekContent's buttons.
+        DragGesture(minimumDistance: 8)
             .onChanged { _ in
                 guard let window = WindowSnapManager.shared.currentWindow else { return }
                 if dragStartWindowOrigin == nil {
@@ -184,8 +210,6 @@ struct PeekPanelView: View {
                 WindowSnapManager.shared.isDragging = false
                 if moved {
                     WindowSnapManager.shared.constrainCurrentWindow()
-                } else {
-                    WindowSnapManager.shared.expandCurrentWindow()
                 }
             }
     }
@@ -209,7 +233,32 @@ struct PeekPanelView: View {
         return "\(track.title) / \(artist)"
     }
 
-    private var spectrumSlice: [Float] { state.spectrumData }
+
+    private var peekDropOverlay: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(Color.black.opacity(0.58))
+            .overlay {
+                VStack(spacing: 5) {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.65))
+                    Text("DROP\nHERE")
+                        .font(G.mono(7, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.65))
+                        .multilineTextAlignment(.center)
+                        .tracking(0.35)
+                }
+            }
+            .padding(8)
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.white.opacity(0.16), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .padding(8)
+            }
+            .allowsHitTesting(false)
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.12), value: isDropTarget)
+    }
 }
 
 // MARK: – BPM progress bar
@@ -238,7 +287,7 @@ private struct PeekBPMBar: View {
 // MARK: – Pixel-grid spectrum (for artwork placeholder) — mirrors main SpectrumView logic
 
 private struct PixelSpectrumView: View {
-    let data: [Float]
+    @ObservedObject private var feed = SpectrumFeed.shared
     let isPlaying: Bool
 
     private let cols = 8
@@ -254,7 +303,6 @@ private struct PixelSpectrumView: View {
 
     @State private var peaks:      [Float] = Array(repeating: 0, count: 8)
     @State private var peakAt:     [Date]  = Array(repeating: .distantPast, count: 8)
-    @State private var colPeak:    [Float] = Array(repeating: 0.08, count: 8)
     @State private var blendFrom:  Float   = 0
     @State private var blendTarget: Float  = 0
     @State private var blendStart:  Date   = .distantPast
@@ -273,7 +321,7 @@ private struct PixelSpectrumView: View {
             blendStart  = Date()
             blendTarget = playing ? 1 : 0
         }
-        .onChange(of: data) { newData in
+        .onChange(of: feed.data) { newData in
             guard !newData.isEmpty else { return }
             let now = Date()
             for i in 0..<cols {
@@ -281,11 +329,6 @@ private struct PixelSpectrumView: View {
                 let v = newData[idx] * specScale
                 let vSq = v * v
                 if vSq > decayedPeak(i, now: now) { peaks[i] = vSq; peakAt[i] = now }
-                if vSq > colPeak[i] {
-                    colPeak[i] = colPeak[i] * 0.10 + vSq * 0.90
-                } else {
-                    colPeak[i] = max(0.001, colPeak[i] * 0.997)
-                }
             }
         }
     }
@@ -322,32 +365,30 @@ private struct PixelSpectrumView: View {
 
     private func draw(ctx: GraphicsContext, size: CGSize, now: Date) {
         let bl       = blend(at: now)
-        let idle     = idleBars(now: now)
+        let idle: [Float] = bl < 0.99 ? idleBars(now: now) : []
         let t        = now.timeIntervalSinceReferenceDate
         let colW     = (size.width  - gap * CGFloat(cols - 1)) / CGFloat(cols)
         let rowH     = (size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)
+        let d        = feed.data
 
         for col in 0..<cols {
             let x    = CGFloat(col) * (colW + gap)
-            let idx  = data.isEmpty ? 0 : min(col * max(data.count - 1, 1) / max(cols - 1, 1), data.count - 1)
-            let vP: Float = (data.isEmpty ? 0 : data[idx]) * specScale
+            let idx  = d.isEmpty ? 0 : min(col * max(d.count - 1, 1) / max(cols - 1, 1), d.count - 1)
+            let vP: Float = (d.isEmpty ? 0 : d[idx]) * specScale
             let vD: Float = col < idle.count ? idle[col] : 0
 
-            let vPsq: Float = vP * vP
-            let peak  = col < colPeak.count ? colPeak[col] : 0.001
-            let gate: Float  = peak * 0.70
-            let ncAgc = CGFloat(min(1, max(0, (vPsq - gate) / max(0.0001, peak - gate))))
+            let ncAgc = CGFloat(min(1, max(0, vP / 0.10)))
             let ncFix = CGFloat(min(1, max(0, vD / 0.22)))
             let nc    = ncAgc * CGFloat(bl) + ncFix * CGFloat(1 - bl)
-            let norm  = nc * nc * nc
+            let norm  = nc * nc
             let litRows = Int((norm * CGFloat(rows)).rounded(.up))
 
             var peakRow = -1
             if bl > 0.02 {
                 let pvSq = decayedPeak(col, now: now)
                 if pvSq > 0.001 {
-                    let pvNc  = CGFloat(min(1, max(0, (pvSq - gate) / max(0.0001, peak - gate))))
-                    peakRow   = min(rows - 1, Int((pvNc * pvNc * pvNc * CGFloat(rows)).rounded(.up)))
+                    let pvNc  = CGFloat(min(1, max(0, sqrt(pvSq) / 0.10)))
+                    peakRow   = min(rows - 1, Int((pvNc * pvNc * CGFloat(rows)).rounded(.up)))
                 }
             }
 

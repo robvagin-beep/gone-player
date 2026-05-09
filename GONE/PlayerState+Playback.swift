@@ -19,6 +19,7 @@ extension PlayerState {
     // MARK: — BPM Filter
 
     func applyBPMFilter(to track: Track) {
+        guard !pitchBypassed else { return }
         guard bpmFilterOn, track.bpm > 0 else { return }
         let bpm = track.bpm
         let targetBPM: Double
@@ -77,9 +78,14 @@ extension PlayerState {
     }
 
     func togglePlayback() {
+        guard let current, !current.isMissing else {
+            isPlaying = false
+            AudioEngineNext.shared.pause()
+            return
+        }
         isPlaying.toggle()
         if isPlaying {
-            if !AudioEngineNext.shared.snapshot().isLoaded, let current {
+            if !AudioEngineNext.shared.snapshot().isLoaded {
                 AudioEngineNext.shared.load(current.url)
             }
             AudioEngineNext.shared.play()
@@ -106,6 +112,7 @@ extension PlayerState {
         }
         currentId = list[nextIdx].id
         guard let current else { return }
+        guard !current.isMissing else { isPlaying = false; return }
         isPlaying = autoplay ? wasPlaying : false
         AudioEngineNext.shared.load(current.url)
         applyBPMFilter(to: current)
@@ -129,6 +136,7 @@ extension PlayerState {
         }
         currentId = list[nextIdx].id
         guard let current else { return }
+        guard !current.isMissing else { isPlaying = false; return }
         isPlaying = autoplay ? wasPlaying : false
         AudioEngineNext.shared.load(current.url)
         applyBPMFilter(to: current)
@@ -160,7 +168,8 @@ extension PlayerState {
         let available = sortedTracks(forPlaylistTabId: playingTabId ?? activePlaylistTabId).filter { !$0.isMissing }
         if let next = available.first {
             currentId = next.id; progress = 0; currentTime = 0
-            if isPlaying { AudioEngineNext.shared.load(next.url); AudioEngineNext.shared.play() }
+            AudioEngineNext.shared.load(next.url)
+            if isPlaying { AudioEngineNext.shared.play() }
         } else {
             currentId = nil; isPlaying = false; progress = 0; currentTime = 0
             AudioEngineNext.shared.stop()

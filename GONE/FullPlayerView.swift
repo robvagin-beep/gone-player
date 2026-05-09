@@ -108,6 +108,14 @@ struct EmptyOverlayView: View {
                         .animation(nil, value: displayText)
                 }
             )
+            .overlay(alignment: .bottom) {
+                Text("GONE player  beta 0.2")
+                    .font(G.mono(8, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.18))
+                    .tracking(0.5)
+                    .padding(.bottom, 10)
+                    .allowsHitTesting(false)
+            }
             .onTapGesture { openFilePicker() }
             .onAppear {
                 startTypewriter()

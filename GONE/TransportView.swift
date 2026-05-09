@@ -19,14 +19,19 @@ struct TransportView: View {
                 SnapTimerBtn(
                     snapEnabled: state.snapEnabled,
                     snapState: state.snapState,
-                    timerStart: state.snapTimerStart
-                ) { toggleSnapMode() }
+                    timerStart: state.snapTimerStart,
+                    action: { toggleSnapMode() },
+                    snapNow: { WindowSnapManager.shared.snapNow() }
+                )
+                .goneTooltip("Snap to edge — slides off, reappears on hover. Double-click to hide immediately")
                 IconBtn(icon: "list.bullet", active: state.playlistOpen) {
                     state.playlistOpen.toggle()
                 }
+                .goneTooltip("Show or hide the track list")
                 IconBtn(icon: "slider.vertical.3", active: state.eqOpen) {
                     state.eqOpen.toggle()
                 }
+                .goneTooltip("Open EQ and effect controls")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -139,7 +144,7 @@ struct RepeatBtn: View {
             hovered = false
             action()
         } label: {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack(alignment: .topTrailing) {
                 Image(systemName: "repeat")
                     .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(active ? .white : Color.white.opacity(0.50))
@@ -149,7 +154,7 @@ struct RepeatBtn: View {
                     Text("1")
                         .font(.system(size: 6.5, weight: .bold))
                         .foregroundStyle(.white)
-                        .offset(x: 1, y: 1)
+                        .offset(x: -2, y: 2)
                 }
             }
             .frame(width: 24, height: 24)
@@ -207,9 +212,10 @@ private struct SnapTimerBtn: View {
     let snapState: PlayerState.SnapMode
     let timerStart: Date?
     let action: () -> Void
+    let snapNow: () -> Void
 
     @State private var hovered = false
-    private let delay: Double = 5.0   // matches WindowSnapManager.inactivityDelay
+    private var delay: Double { WindowSnapManager.shared.inactivityDelay }
     private let size: CGFloat = 24
 
     private var showFill: Bool {
@@ -217,32 +223,40 @@ private struct SnapTimerBtn: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            ZStack(alignment: .leading) {
-                // Sweep fill — grows left→right over inactivityDelay seconds
-                if showFill, let start = timerStart {
-                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
-                        let elapsed = ctx.date.timeIntervalSince(start)
-                        let p = CGFloat(min(1.0, max(0.0, elapsed / delay)))
-                        Rectangle()
-                            .fill(Color.white.opacity(0.28))
-                            .frame(width: size * p, height: size)
-                    }
+        ZStack(alignment: .leading) {
+            // Sweep fill — grows left→right over inactivityDelay seconds
+            if showFill, let start = timerStart {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
+                    let elapsed = ctx.date.timeIntervalSince(start)
+                    let p = CGFloat(min(1.0, max(0.0, elapsed / delay)))
+                    Rectangle()
+                        .fill(Color.white.opacity(0.28))
+                        .frame(width: size * p, height: size)
                 }
-
-                Image(systemName: snapEnabled ? "bolt.fill" : "bolt")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(snapEnabled ? .white : Color.white.opacity(0.50))
-                    .frame(width: size, height: size)
             }
-            .frame(width: size, height: size)
-            .background(
-                RoundedRectangle(cornerRadius: G.rButton)
-                    .fill(snapEnabled ? Color.white.opacity(0.13) : (hovered ? Color.white.opacity(0.08) : .clear))
-            )
-            .clipShape(RoundedRectangle(cornerRadius: G.rButton))
+
+            Image(systemName: snapEnabled ? "bolt.fill" : "bolt")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(snapEnabled ? .white : Color.white.opacity(0.50))
+                .frame(width: size, height: size)
         }
-        .buttonStyle(.plain)
+        .frame(width: size, height: size)
+        .background(
+            RoundedRectangle(cornerRadius: G.rButton)
+                .fill(snapEnabled ? Color.white.opacity(0.13) : (hovered ? Color.white.opacity(0.08) : .clear))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: G.rButton))
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            if snapState == .waiting || snapState == .expanded {
+                snapNow()
+            } else {
+                action()
+            }
+        }
+        .onTapGesture(count: 1) {
+            action()
+        }
         .onHover { hovered = $0 }
     }
 }

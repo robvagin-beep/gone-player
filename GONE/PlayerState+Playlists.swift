@@ -83,6 +83,10 @@ extension PlayerState {
               let sourceIndex = playlistTabs[tabIndex].trackIds.firstIndex(of: trackId),
               let targetIndex = playlistTabs[tabIndex].trackIds.firstIndex(of: targetTrackId)
         else { return }
+        if playlistTabs[tabIndex].sortKey != .number {
+            playlistTabs[tabIndex].sortKey = .number
+            playlistTabs[tabIndex].sortDir = .asc
+        }
         var ids = playlistTabs[tabIndex].trackIds
         ids.remove(at: sourceIndex)
         ids.insert(trackId, at: sourceIndex < targetIndex ? targetIndex - 1 : targetIndex)
@@ -92,6 +96,10 @@ extension PlayerState {
     func reorderTrackToEnd(_ trackId: UUID, inTabId tabId: UUID) {
         guard let tabIndex = playlistTabs.firstIndex(where: { $0.id == tabId }),
               playlistTabs[tabIndex].trackIds.contains(trackId) else { return }
+        if playlistTabs[tabIndex].sortKey != .number {
+            playlistTabs[tabIndex].sortKey = .number
+            playlistTabs[tabIndex].sortDir = .asc
+        }
         playlistTabs[tabIndex].trackIds.removeAll { $0 == trackId }
         playlistTabs[tabIndex].trackIds.append(trackId)
     }
@@ -140,6 +148,28 @@ extension PlayerState {
         }
         // Playback continues uninterrupted — track still exists in the library,
         // it's just visible in a different tab now.
+    }
+
+    func moveTrackAt(_ trackId: UUID, from sourceTabId: UUID, to destinationTabId: UUID, insertionIndex: Int?) {
+        guard sourceTabId != destinationTabId,
+              let si = playlistTabs.firstIndex(where: { $0.id == sourceTabId }),
+              let di = playlistTabs.firstIndex(where: { $0.id == destinationTabId })
+        else { return }
+        let destSorted = sortedTracks(forPlaylistTabId: destinationTabId)
+        let beforeId: UUID? = insertionIndex.flatMap { $0 < destSorted.count ? destSorted[$0].id : nil }
+        playlistTabs[si].trackIds.removeAll { $0 == trackId }
+        guard !playlistTabs[di].trackIds.contains(trackId) else { return }
+        playlistTabs[di].trackIds.append(trackId)
+        if let beforeId { reorderTrack(trackId, before: beforeId, inTabId: destinationTabId) }
+    }
+
+    func copyTrackAt(_ trackId: UUID, to destinationTabId: UUID, insertionIndex: Int?) {
+        guard let di = playlistTabs.firstIndex(where: { $0.id == destinationTabId }) else { return }
+        guard !playlistTabs[di].trackIds.contains(trackId) else { return }
+        let destSorted = sortedTracks(forPlaylistTabId: destinationTabId)
+        let beforeId: UUID? = insertionIndex.flatMap { $0 < destSorted.count ? destSorted[$0].id : nil }
+        playlistTabs[di].trackIds.append(trackId)
+        if let beforeId { reorderTrack(trackId, before: beforeId, inTabId: destinationTabId) }
     }
 
     // MARK: — Import

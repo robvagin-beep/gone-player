@@ -35,8 +35,5 @@ extension Track {
         return "—"
     }
 
-    var formattedDuration: String {
-        let s = Int(duration)
-        return "\(s / 60):\(String(format: "%02d", s % 60))"
-    }
+    var formattedDuration: String { fmtTime(duration) }
 }

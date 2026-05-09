@@ -6,7 +6,7 @@ enum G {
     // ── Colors ────────────────────────────────────────────────────────────────
     static let bgWindow       = Color(hex: "#141414")
     static let bgPage         = Color(hex: "#0e0e0e")
-    static let bgPanelEQ      = Color.white.opacity(0.012)
+    static let bgPanelEQ      = Color.black.opacity(0.18)
     static let bgPanelPL      = Color.black.opacity(0.18)
     static let bgPitchRail    = Color.black.opacity(0.18)
 
@@ -26,7 +26,7 @@ enum G {
     static let borderStrong   = Color.white.opacity(0.14)
 
     static let hoverBg        = Color.white.opacity(0.04)
-    static let currentBg      = Color.white.opacity(0.10)
+    static let currentBg      = Color(hex: "#4C4C4C")
 
     // ── Radii ─────────────────────────────────────────────────────────────────
     static let rWindowOuter:  CGFloat = 18
@@ -90,7 +90,8 @@ func artGradient(for index: Int) -> LinearGradient {
 
 // ── Format seconds → "m:ss" ───────────────────────────────────────────────────
 func fmtTime(_ seconds: Double) -> String {
-    let s = max(0, Int(seconds))
+    guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+    let s = min(Int(seconds), 359999)
     return String(format: "%02d:%02d", s / 60, s % 60)
 }
 

@@ -3,6 +3,7 @@ import AppKit
 
 struct TrackHeaderView: View {
     @EnvironmentObject var state: PlayerState
+    @State private var isBPMHovered = false
 
     var body: some View {
         let track = state.current
@@ -35,21 +36,53 @@ struct TrackHeaderView: View {
                             BadgeView(t.displayBitrate, style: .filled)
                         }
                         if t.bpm > 0 {
-                            BadgeView("\(Int(t.bpm.rounded())) BPM", style: .filled)
+                            let isAnalyzing = t.bpmAnalysisState == .analyzing
+                            let bpmProgress = state.analysisProgress[t.id] ?? 0
+                            Button { state.reanalyzeBPM(for: t.id) } label: {
+                                if isAnalyzing {
+                                    Text("ANALYZING")
+                                        .font(G.mono(8, weight: .semibold))
+                                        .foregroundStyle(G.textSecondary)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1.5)
+                                        .background(
+                                            GeometryReader { geo in
+                                                ZStack(alignment: .leading) {
+                                                    Color.white.opacity(0.08)
+                                                    Color.white.opacity(0.20)
+                                                        .frame(width: max(0, geo.size.width * CGFloat(bpmProgress)))
+                                                }
+                                            }
+                                        )
+                                        .clipShape(RoundedRectangle(cornerRadius: G.rBadge))
+                                        .allowsHitTesting(false)
+                                } else {
+                                    BadgeView(isBPMHovered ? "REFRESH" : "\(Int(t.bpm.rounded())) BPM", style: .filled)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isAnalyzing)
+                            .onHover { isBPMHovered = isAnalyzing ? false : $0 }
+                            .cursor(isAnalyzing ? .arrow : .pointingHand)
+                            .goneTooltip(isAnalyzing ? "Analyzing…" : "Re-analyze BPM")
                         }
                         if state.pitch != 0, t.bpm > 0 {
                             BadgeView("\(Int((t.bpm * (1 + state.pitch / 100)).rounded())) BPM",
                                       style: state.pitchBypassed ? .filled : .highlight)
                                 .opacity(state.pitchBypassed ? 0.45 : 1.0)
                                 .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                                .goneTooltip("BPM after your tempo shift")
                         }
                         Text(pitchLabel)
                             .font(G.mono(8, weight: .semibold))
                             .foregroundStyle(state.pitch == 0 ? G.textTertiary : G.textPrimary)
                             .monospacedDigit()
                             .animation(.easeInOut(duration: 0.2), value: state.pitch)
+                            .goneTooltip("How far the speed has shifted from original. 0.0% = no change")
 
-                        if t.bpmAnalysisState == .analyzing {
+                        if t.bpm == 0 && t.bpmAnalysisState == .analyzing {
+                            // first-time analysis: no BPM badge yet, show spinner separately
                             HStack(spacing: 4) {
                                 ProgressView()
                                     .controlSize(.small)
@@ -74,8 +107,9 @@ struct TrackHeaderView: View {
 
             // Right column: spectrum + time pill full-width under it
             VStack(alignment: .center, spacing: 4) {
-                SpectrumView(data: state.spectrumData, isPlaying: state.isPlaying)
+                SpectrumView(isPlaying: state.isPlaying)
                     .frame(width: 96, height: 34)
+                    .goneTooltip("Frequency energy of the audio as it plays. Display only — not an EQ")
 
                 Text(timeLabel)
                     .font(G.mono(8, weight: .semibold))
@@ -133,6 +167,7 @@ struct ArtSwatchView: View {
     var artworkData: Data? = nil
     var trackId: UUID? = nil
     var showsBrandPlaceholder: Bool = false
+    var isCurrent: Bool = false
 
     @State private var image: NSImage?
     @State private var loadGeneration: Int = 0

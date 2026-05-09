@@ -2,10 +2,12 @@ import Foundation
 
 extension PlayerState {
 
-    // How many tracks to analyze in parallel.
-    // Leaves 2 cores for UI + audio; caps at 6 to avoid memory pressure from simultaneous AVAssetReaders.
-    private var analysisConcurrency: Int {
-        min(6, max(2, ProcessInfo.processInfo.processorCount - 2))
+    // MARK: — Public entry points
+
+    func reanalyzeBPM(for trackId: UUID) {
+        guard let idx = tracks.firstIndex(where: { $0.id == trackId }) else { return }
+        tracks[idx].bpmAnalysisState = .pending
+        scheduleBPMAnalysis()
     }
 
     // Triggers BPM + waveform for the current track, then schedules the rest.
@@ -18,52 +20,79 @@ extension PlayerState {
     // MARK: — BPM analysis
 
     func scheduleBPMAnalysis() {
-        guard !isAnalyzingBPM else { return }
+        // If already running, signal priority for the new current track.
+        // The running loop picks this up between batches (≤200 ms lag).
+        if isAnalyzingBPM {
+            bpmPriorityId = currentId
+            return
+        }
 
         var pending = tracks.filter {
             !$0.isMissing && ($0.bpmAnalysisState == .pending || $0.bpmAnalysisState == .failed)
         }
         guard !pending.isEmpty else { return }
 
-        // Current track analyzed first, alone
-        if let currentId {
-            pending.sort { a, _ in a.id == currentId }
-        }
+        // Current track always goes first.
+        if let currentId { pending.sort { a, _ in a.id == currentId } }
 
         isAnalyzingBPM = true
+        bpmPriorityId = nil
+
+        // Mark all as .analyzing upfront so progress bars appear immediately.
         let pendingIds = Set(pending.map(\.id))
         var t = tracks
         for i in t.indices where pendingIds.contains(t[i].id) { t[i].bpmAnalysisState = .analyzing }
         tracks = t
 
         Task.detached(priority: .utility) { [self] in
-            // 1. Current track alone — user sees BPM immediately.
-            //    Wait if an import is already underway to avoid competing AVAssetReaders.
+            // Wait out any active import — competing AVAssetReaders freeze the UI.
             while await MainActor.run(body: { self.isImporting }) {
                 try? await Task.sleep(nanoseconds: 300_000_000)
             }
+
+            // Lane 1: current track alone — user sees BPM immediately.
             let first = pending[0]
             await Self.analyzeBPMAndCommit(track: first, state: self)
 
-            // 2. Remaining tracks — sequential, one at a time.
-            //    Re-check isImporting before each track so a late second import
-            //    doesn't produce competing AVAssetReaders that can hang analysis.
-            let queue = Array(pending.dropFirst())
-            for track in queue {
-                while await MainActor.run(body: { self.isImporting }) {
-                    try? await Task.sleep(nanoseconds: 300_000_000)
+            // Lane 2: background batches — priority-aware.
+            // Between batches, check if currentId changed and reorder queue.
+            var queue = Array(pending.dropFirst())
+            while !queue.isEmpty {
+                // Priority reorder: move newly selected current track to front.
+                let priorityId = await MainActor.run { self.bpmPriorityId ?? self.currentId }
+                if let pid = priorityId,
+                   let idx = queue.firstIndex(where: { $0.id == pid }) {
+                    let promoted = queue.remove(at: idx)
+                    queue.insert(promoted, at: 0)
                 }
-                let stillPending = await MainActor.run {
-                    self.tracks.first(where: { $0.id == track.id })?.bpmAnalysisState == .analyzing
+                await MainActor.run { self.bpmPriorityId = nil }
+
+                let batch = Array(queue.prefix(4))
+                queue = Array(queue.dropFirst(batch.count))
+
+                await withTaskGroup(of: Void.self) { group in
+                    var q = batch
+                    for _ in 0..<min(2, q.count) {
+                        let track = q.removeFirst()
+                        group.addTask { await Self.analyzeBPMAndCommit(track: track, state: self) }
+                    }
+                    while await group.next() != nil, !q.isEmpty {
+                        let track = q.removeFirst()
+                        group.addTask { await Self.analyzeBPMAndCommit(track: track, state: self) }
+                    }
                 }
-                guard stillPending else { continue }
-                await Self.analyzeBPMAndCommit(track: track, state: self)
+
+                try? await Task.sleep(nanoseconds: 200_000_000)
             }
 
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.isAnalyzingBPM = false
-                self.scheduleBPMAnalysis()
+                self.bpmPriorityId = nil
+                let hasMore = self.tracks.contains {
+                    !$0.isMissing && ($0.bpmAnalysisState == .pending || $0.bpmAnalysisState == .failed)
+                }
+                if hasMore { self.scheduleBPMAnalysis() }
             }
         }
     }
@@ -87,7 +116,11 @@ extension PlayerState {
     // MARK: — Waveform computation
 
     func scheduleWaveformComputation(currentOnly: Bool = false) {
-        guard !isComputingWaveforms else { return }
+        // If already running and current-only request comes in, signal priority.
+        if isComputingWaveforms {
+            if currentOnly { waveformPriorityId = currentId }
+            return
+        }
 
         let pending: [Track]
         if currentOnly, let currentId {
@@ -98,38 +131,48 @@ extension PlayerState {
         guard !pending.isEmpty else { return }
 
         isComputingWaveforms = true
-        let concurrency = analysisConcurrency
+        waveformPriorityId = nil
 
         Task.detached(priority: .utility) { [self] in
-            // 1. First track (current or head of queue) — computed immediately
+            // Lane 1: first track (current or head) — computed immediately.
             let first = pending[0]
             await Self.computeWaveformAndCommit(track: first, state: self)
 
-            // 2. Rest in parallel
+            // Lane 2: background batches — priority-aware.
             var queue = Array(pending.dropFirst())
-            guard !queue.isEmpty else {
-                await MainActor.run { [weak self] in
-                    self?.isComputingWaveforms = false
-                    self?.scheduleWaveformComputation()
+            while !queue.isEmpty {
+                let priorityId = await MainActor.run { self.waveformPriorityId ?? self.currentId }
+                if let pid = priorityId,
+                   let idx = queue.firstIndex(where: { $0.id == pid }) {
+                    let promoted = queue.remove(at: idx)
+                    queue.insert(promoted, at: 0)
                 }
-                return
-            }
+                await MainActor.run { self.waveformPriorityId = nil }
 
-            await withTaskGroup(of: Void.self) { group in
-                for _ in 0..<min(concurrency, queue.count) {
-                    let track = queue.removeFirst()
-                    group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
+                let batch = Array(queue.prefix(4))
+                queue = Array(queue.dropFirst(batch.count))
+
+                await withTaskGroup(of: Void.self) { group in
+                    var q = batch
+                    for _ in 0..<min(2, q.count) {
+                        let track = q.removeFirst()
+                        group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
+                    }
+                    while await group.next() != nil, !q.isEmpty {
+                        let track = q.removeFirst()
+                        group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
+                    }
                 }
-                while await group.next() != nil, !queue.isEmpty {
-                    let track = queue.removeFirst()
-                    group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
-                }
+
+                try? await Task.sleep(nanoseconds: 250_000_000)
             }
 
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.isComputingWaveforms = false
-                self.scheduleWaveformComputation()
+                self.waveformPriorityId = nil
+                let hasMore = self.tracks.contains { !$0.isMissing && $0.waveform.isEmpty }
+                if hasMore { self.scheduleWaveformComputation() }
             }
         }
     }

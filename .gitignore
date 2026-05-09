@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode user data
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Build artifacts
+*.dmg
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# DerivedData (lives in ~/Library, not here, but just in case)
+DerivedData/
+
+# Build output folders
+.build/
+.build_release/
+*.resolved
+
+# CocoaPods (not used, but safe)
+Pods/
+Podfile.lock

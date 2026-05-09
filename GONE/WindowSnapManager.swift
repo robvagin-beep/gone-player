@@ -15,10 +15,10 @@ final class WindowSnapManager {
     private let tabVisible:      CGFloat = 19
     private let peekVisible:     CGFloat = 90
     private let proximityZone:   CGFloat = 140
-    private let inactivityDelay: Double  = 5.0
+    let inactivityDelay: Double  = 5.0
     private let dockAnimDuration: Double = 0.24
     private let peekAnimDuration: Double = 0.18
-    private let expandAnimDuration: Double = 0.28
+    private let expandAnimDuration: Double = 0.24
 
     private var inactivityTimer:  Timer?
     private var proximityTimer:   Timer?
@@ -139,15 +139,19 @@ final class WindowSnapManager {
     private func installActivityMonitor(window: NSWindow) {
         removeActivityMonitor()
         activityMon = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .scrollWheel, .keyDown]
+            matching: [.leftMouseDown, .leftMouseDragged, .scrollWheel, .keyDown, .mouseMoved]
         ) { [weak self, weak window] event in
             MainActor.assumeIsolated {
                 guard let self,
                       let window,
                       self.snapState == .waiting || self.snapState == .expanded,
-                      !self.importPanelOpen,
-                      event.window == nil || event.window == window
+                      !self.importPanelOpen
                 else { return }
+                if event.type == .mouseMoved {
+                    guard window.frame.contains(NSEvent.mouseLocation) else { return }
+                } else {
+                    guard event.window == nil || event.window == window else { return }
+                }
                 self.scheduleInactivityDock(window: window)
             }
             return event
@@ -221,6 +225,38 @@ final class WindowSnapManager {
         slideTimer = timer
     }
 
+    // Same as slideOffScreen but interpolates the full frame (origin + size).
+    // Used for expand — NSAnimationContext also fails when the window starts off-screen.
+    // Easing: easeOut cubic — window bursts away from the edge and settles gently.
+    private func slideFrameTo(window: NSWindow, frame target: NSRect, duration: Double, completion: (() -> Void)? = nil) {
+        slideTimer?.invalidate()
+        slideTimer = nil
+        let startFrame = window.frame
+        let startTime = Date()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let self, let window else { return }
+                let rawT = min(1.0, max(0.0, -startTime.timeIntervalSinceNow / duration))
+                let t = CGFloat(1.0 - pow(1.0 - rawT, 3.0))
+                let newFrame = NSRect(
+                    x:      startFrame.minX   + (target.minX   - startFrame.minX)   * t,
+                    y:      startFrame.minY   + (target.minY   - startFrame.minY)   * t,
+                    width:  startFrame.width  + (target.width  - startFrame.width)  * t,
+                    height: startFrame.height + (target.height - startFrame.height) * t
+                )
+                window.setFrame(newFrame, display: true)
+                if rawT >= 1.0 {
+                    window.setFrame(target, display: true)
+                    self.slideTimer?.invalidate()
+                    self.slideTimer = nil
+                    completion?()
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        slideTimer = timer
+    }
+
     // Used by proximity polling — no panel collapse, just position change.
     private func slideTo(window: NSWindow, x: CGFloat) {
         guard let screen = screen(for: window) else { return }
@@ -261,13 +297,13 @@ final class WindowSnapManager {
         playerState?.isSnapping = true
 
         // Delay panel restore so the window travels away from the edge before content expands.
-        // isSnapping blocks updateWindowSize, so the frame is controlled by animateFrameTo only.
+        // isSnapping blocks updateWindowSize, so the frame is controlled by slideFrameTo only.
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 90_000_000)
+            try? await Task.sleep(nanoseconds: 50_000_000)
             self?.playerState?.restoreFromSnap()
         }
 
-        animateFrameTo(window: window, frame: targetFrame, duration: expandAnimDuration) { [weak self, weak window] in
+        slideFrameTo(window: window, frame: targetFrame, duration: expandAnimDuration) { [weak self, weak window] in
             guard let self else { return }
             self.playerState?.isSnapping = false
             if let window, !self.importPanelOpen {
@@ -293,6 +329,15 @@ final class WindowSnapManager {
     func expandCurrentWindow() {
         guard let window = snapWindow ?? mainWindow else { return }
         expand(window: window)
+    }
+
+    func snapNow() {
+        inactivityTimer?.invalidate()
+        inactivityTimer = nil
+        playerState?.snapTimerStart = nil
+        guard snapState == .waiting || snapState == .expanded,
+              let window = snapWindow ?? mainWindow else { return }
+        dockToEdge(window: window)
     }
 
     func constrainCurrentWindow() {

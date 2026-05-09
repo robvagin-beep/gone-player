@@ -9,7 +9,6 @@ extension Notification.Name {
 struct RootView: View {
     @EnvironmentObject var state: PlayerState
     @State private var isDropTarget = false
-    @State private var windowTopAnchor: CGFloat = 0
     private let shellInsetX: CGFloat = 6
     private let shellInsetTop: CGFloat = 6
     private let shellInsetBottom: CGFloat = 6
@@ -91,54 +90,69 @@ struct RootView: View {
         // Peek panel — visible when snapped to right edge
         .overlay(alignment: .leading) {
             if state.snapState == .docked || state.snapState == .peeking {
-                PeekPanelView()
+                PeekPanelView(isDropTarget: $isDropTarget, onFileDrop: handleDrop)
                     .offset(x: 6)
             }
         }
         .onAppear {
-            DispatchQueue.main.async {
-                // Seed anchor before updateWindowSize — it may be a no-op if window is already
-                // the right size, and we must never have windowTopAnchor == 0 at panel-toggle time.
-                let w = (NSApp.delegate as? AppDelegate)?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
-                if let topY = w?.frame.maxY, topY > 0 { windowTopAnchor = topY }
-                updateWindowSize(to: shellSize)
-            }
+            DispatchQueue.main.async { updateWindowSize(to: shellSize) }
             WindowSnapManager.shared.playerState = state
         }
-        .onChange(of: state.eqOpen) { _ in
-            // windowTopAnchor is always set to the pre-toggle top-Y in onReceive(.windowDidMove)
-            // and after each updateWindowSize. Using it directly avoids reading win?.frame.maxY,
-            // which may already reflect SwiftUI's bottom-anchored auto-resize by the time this fires.
-            let anchor = windowTopAnchor > 0 ? windowTopAnchor : nil
-            updateWindowSize(to: shellSize, anchorTopY: anchor)
-            DispatchQueue.main.async {
-                updateWindowSize(to: shellSize, anchorTopY: anchor)
-            }
-        }
-        .onChange(of: state.playlistOpen) { _ in
-            let anchor = windowTopAnchor > 0 ? windowTopAnchor : nil
-            updateWindowSize(to: shellSize, anchorTopY: anchor)
-            DispatchQueue.main.async {
-                updateWindowSize(to: shellSize, anchorTopY: anchor)
-            }
-        }
+        .onChange(of: state.eqOpen) { _ in updateWindowSize(to: shellSize) }
+        .onChange(of: state.playlistOpen) { _ in updateWindowSize(to: shellSize) }
         .onChange(of: state.playlistPanelHeight) { _ in
-            // Bottom resize handle sets NSWindow.frame directly and updates playlistPanelHeight.
-            // Sync windowTopAnchor so the next panel toggle uses the correct post-resize top-Y.
             guard !state.isSnapping else { return }
-            let win = (NSApp.delegate as? AppDelegate)?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
-            if let maxY = win?.frame.maxY, maxY > 0 { windowTopAnchor = maxY }
+            let appDelegate = NSApp.delegate as? AppDelegate
+            let win = appDelegate?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
+            if let maxY = win?.frame.maxY { appDelegate?.windowAnchorMaxY = maxY }
+        }
+        // XY pad → audio engine wiring (always active regardless of EQ panel visibility)
+        .onChange(of: state.xyPoint) { pt in
+            guard state.xyActive else { return }
+            applyXYEffect(pt)
+        }
+        .onChange(of: state.xyActive) { active in
+            if active {
+                state.cancelXYSpring()
+                if state.xyEffectAxis == .lfo     { state.startLFO() }
+                if state.xyEffectAxis == .bpmChop { state.startBPMChop() }
+                applyXYEffect(state.xyPoint)
+            } else {
+                state.stopLFO()
+                state.stopBPMChop()
+                state.cancelXYSpring()
+                state.hpfCutoff    = 0
+                state.lpfCutoff    = 0
+                state.reverbAmount = 0
+                state.xyResonance  = 1.0
+                AudioEngineNext.shared.setHPF(cutoff: 0)
+                AudioEngineNext.shared.setLPF(cutoff: 0)
+                AudioEngineNext.shared.setLPFResonance(1.0)
+                AudioEngineNext.shared.setReverb(amount: 0)
+                state.startXYSpring()
+            }
+        }
+        .onChange(of: state.xyEffectAxis) { _ in
+            state.stopLFO()
+            state.stopBPMChop()
+            AudioEngineNext.shared.setLPF(cutoff: 0)
+            state.lpfCutoff = 0
+            guard state.xyActive else { return }
+            if state.xyEffectAxis == .lfo     { state.startLFO() }
+            if state.xyEffectAxis == .bpmChop { state.startBPMChop() }
+            applyXYEffect(state.xyPoint)
+        }
+        .onChange(of: state.xyHoldMode) { holdMode in
+            guard !holdMode, state.xyActive else { return }
+            // Spring back to center, then deactivate XY (center = zero effect)
+            state.startXYSpring {
+                state.xyActive = false
+            }
         }
         .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: handleDrop)
         .onReceive(NotificationCenter.default.publisher(for: .headerDoubleClick)) { _ in
             guard !state.tracks.isEmpty else { return }
             state.toggleAccordionPanels()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .windowDidMove)) { _ in
-            guard !state.isSnapping else { return }
-            guard state.snapState == .off || state.snapState == .waiting || state.snapState == .expanded else { return }
-            let w = (NSApp.delegate as? AppDelegate)?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
-            if let maxY = w?.frame.maxY { windowTopAnchor = maxY }
         }
         .overlay(alignment: .bottom) {
             if !state.tracks.isEmpty && state.playlistOpen {
@@ -150,7 +164,7 @@ struct RootView: View {
         }
     }
 
-    private func updateWindowSize(to newSize: CGSize, animated: Bool = false, anchorTopY: CGFloat? = nil) {
+    private func updateWindowSize(to newSize: CGSize, animated: Bool = false) {
         guard !state.isSnapping else { return }
         let appDelegate = NSApp.delegate as? AppDelegate
         guard let window = appDelegate?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow else { return }
@@ -159,31 +173,32 @@ struct RootView: View {
         let targetContentRect = NSRect(origin: .zero, size: NSSize(width: newSize.width, height: newSize.height))
         var targetFrame = window.frameRect(forContentRect: targetContentRect)
 
-        // anchorTopY is captured before SwiftUI's automatic resize fires —
-        // the deferred async call uses it to undo any bottom-anchored reposition.
-        let topY = anchorTopY ?? currentFrame.maxY
         switch state.snapState {
         case .docked, .peeking:
             targetFrame.origin.x = currentFrame.maxX - targetFrame.width
             targetFrame.origin.y = currentFrame.minY
         case .off, .waiting, .expanded:
             targetFrame.origin.x = currentFrame.minX
-            targetFrame.origin.y = topY - targetFrame.height
+            targetFrame.origin.y = currentFrame.maxY - targetFrame.height  // top (maxY) fixed, grows downward
         }
 
-        // Check full frame (size + position) — size-only guard misses SwiftUI's
-        // bottom-anchored reposition that leaves correct size but wrong origin.
         guard abs(currentFrame.minX   - targetFrame.minX)   > 0.5 ||
               abs(currentFrame.minY   - targetFrame.minY)   > 0.5 ||
               abs(currentFrame.width  - targetFrame.width)  > 0.5 ||
               abs(currentFrame.height - targetFrame.height) > 0.5
         else {
-            // Frame already correct — still sync anchor so it's never stale
             switch state.snapState {
-            case .off, .waiting, .expanded: windowTopAnchor = currentFrame.maxY
+            case .off, .waiting, .expanded: appDelegate?.windowAnchorMaxY = currentFrame.maxY
             default: break
             }
             return
+        }
+
+        // Set anchor BEFORE setFrame — the synchronous observer in AppDelegate must not
+        // fight our own intentional resize.
+        switch state.snapState {
+        case .off, .waiting, .expanded: appDelegate?.windowAnchorMaxY = targetFrame.maxY
+        default: break
         }
 
         if animated {
@@ -195,18 +210,49 @@ struct RootView: View {
         } else {
             window.setFrame(targetFrame, display: true)
         }
+    }
 
-        // Keep anchor current so panel-open/close always has the right top-Y.
-        // Only applies to non-snapped states — docked/peeking anchor to the right edge, not top.
-        switch state.snapState {
-        case .off, .waiting, .expanded:
-            windowTopAnchor = targetFrame.maxY
-        default:
-            break
+    private func applyXYEffect(_ point: CGPoint) {
+        let x = Float(point.x)
+        let y = Float(point.y)
+        // Audio engine updates at full rate. No @Published writes here —
+        // avoids secondary SwiftUI update cascade on every 60fps XY tick.
+        // EQCurveView derives filter values from xyPoint directly.
+        // EQKnobStack labels remain at pre-XY values during XY (acceptable).
+        switch state.xyEffectAxis {
+        case .filter:
+            AudioEngineNext.shared.setHPF(cutoff: x * 0.55)
+            AudioEngineNext.shared.setLPF(cutoff: (1 - y) * 0.55)
+            AudioEngineNext.shared.setLPFResonance(1.0)
+        case .reverb:
+            AudioEngineNext.shared.setReverb(amount: x)
+        case .reso:
+            let cutoff    = x * 0.75
+            let bandwidth = Float(max(0.05, 2.0 * pow(0.025, Double(y))))
+            AudioEngineNext.shared.setHPF(cutoff: 0)
+            AudioEngineNext.shared.setLPF(cutoff: cutoff)
+            AudioEngineNext.shared.setLPFResonance(bandwidth)
+        case .filtVerb:
+            AudioEngineNext.shared.setHPF(cutoff: 0)
+            AudioEngineNext.shared.setLPF(cutoff: x * 0.7)
+            AudioEngineNext.shared.setLPFResonance(1.0)
+            AudioEngineNext.shared.setReverb(amount: y)
+        case .lfo:
+            AudioEngineNext.shared.setHPF(cutoff: 0)
+            AudioEngineNext.shared.setLPFResonance(1.0)
+            state.startLFO()
+        case .bpmChop:
+            AudioEngineNext.shared.setHPF(cutoff: 0)
+            AudioEngineNext.shared.setLPFResonance(1.0)
+            state.startBPMChop()
         }
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        let snap = WindowSnapManager.shared
+        if snap.snapState == .docked || snap.snapState == .peeking {
+            snap.expandCurrentWindow()
+        }
         var urls: [URL] = []
         let group = DispatchGroup()
         let lock = NSLock()
@@ -231,8 +277,14 @@ struct RootView: View {
         }
 
         group.notify(queue: .main) {
+            guard !urls.isEmpty else { return }
             Task { @MainActor in
-                await state.importURLs(urls)
+                if state.splitPlaylistView, state.secondaryPlaylistTabId != nil {
+                    if !state.playlistOpen { state.playlistOpen = true }
+                    state.pendingDropURLs = urls
+                } else {
+                    await state.importURLs(urls)
+                }
             }
         }
         return true
@@ -249,24 +301,33 @@ struct WindowBorderDragOverlay: View {
             if hasContent {
                 let headerWidth = geo.size.width - G.pitchRailWidth - 6
                 WindowDragHandle()
-                    .frame(width: headerWidth, height: 64)
-                    .position(x: headerWidth / 2, y: 32)
-            } else {
-                // Empty state: only a thin top strip so the rest stays interactive
+                    .frame(width: headerWidth, height: 40)
+                    .position(x: headerWidth / 2, y: 20)
+
+                // Left side strip — always present
                 WindowDragHandle()
-                    .frame(width: geo.size.width, height: 18)
-                    .position(x: geo.size.width / 2, y: 9)
+                    .frame(width: 14, height: geo.size.height)
+                    .position(x: 7, y: geo.size.height / 2)
+
+                // Right side strip — stays in shell border area, avoids pitch rail
+                WindowDragHandle()
+                    .frame(width: 10, height: geo.size.height)
+                    .position(x: geo.size.width - 5, y: geo.size.height / 2)
+            } else {
+                // Empty state: wide perimeter strips — center stays interactive for drops
+                WindowDragHandle()
+                    .frame(width: geo.size.width, height: 40)
+                    .position(x: geo.size.width / 2, y: 20)
+                WindowDragHandle()
+                    .frame(width: geo.size.width, height: 22)
+                    .position(x: geo.size.width / 2, y: geo.size.height - 11)
+                WindowDragHandle()
+                    .frame(width: 22, height: geo.size.height)
+                    .position(x: 11, y: geo.size.height / 2)
+                WindowDragHandle()
+                    .frame(width: 22, height: geo.size.height)
+                    .position(x: geo.size.width - 11, y: geo.size.height / 2)
             }
-
-            // Left side strip — always present
-            WindowDragHandle()
-                .frame(width: 14, height: geo.size.height)
-                .position(x: 7, y: geo.size.height / 2)
-
-            // Right side strip — stays in shell border area, avoids pitch rail
-            WindowDragHandle()
-                .frame(width: 10, height: geo.size.height)
-                .position(x: geo.size.width - 5, y: geo.size.height / 2)
         }
         .allowsHitTesting(true)
     }
@@ -287,6 +348,10 @@ final class DragHandleNSView: NSView {
         wantsLayer = true
     }
     required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    // Process clicks even when the window is not yet key — otherwise the first
+    // click activates the window, resets clickCount, and double-click never fires.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func resetCursorRects() {
         discardCursorRects()

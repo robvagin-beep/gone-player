@@ -39,14 +39,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventMonitor: Any?
     private var isUserResizing = false
     private var nowPlayingCancellables = Set<AnyCancellable>()
+    var windowAnchorMaxY: CGFloat = 0
+    private var isCorrectingFrame = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         bindAudioEngine()
         installKeyMonitor()
-        // Run after SwiftUI finishes its own window setup
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification, object: nil
+        )
+        // Apply floating level immediately — before SwiftUI renders — so the window
+        // is already on every Space from the very first frame.
+        NSApp.windows.forEach {
+            $0.alphaValue = 0
+            $0.level = .statusBar
+            $0.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+            $0.hidesOnDeactivate = false
+        }
         DispatchQueue.main.async {
             guard let window = NSApp.windows.first else { return }
+            window.alphaValue = 0          // safety net if window appeared after the sync call
             self.configureWindow(window)
+            // One extra tick for SwiftUI layout to settle, then fade in
+            DispatchQueue.main.async {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration      = 0.20
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    window.animator().alphaValue = 1
+                }
+            }
         }
     }
 
@@ -62,6 +84,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyPresencePolicy(to: window)
         window.setContentSize(NSSize(width: G.windowWidth + 8, height: 190))
         window.center()
+        windowAnchorMaxY = window.frame.maxY
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowResizeCorrection(_:)),
+            name: NSWindow.didResizeNotification, object: window
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowMoveAnchorUpdate(_:)),
+            name: NSWindow.didMoveNotification, object: window
+        )
+    }
+
+    @objc private func windowResizeCorrection(_ note: Notification) {
+        guard !isCorrectingFrame else { return }
+        guard let state = playerState, !state.isSnapping else { return }
+        guard state.snapState == .off || state.snapState == .waiting || state.snapState == .expanded else { return }
+        guard let win = note.object as? NSWindow else { return }
+        let anchor = windowAnchorMaxY
+        guard anchor > 0, abs(win.frame.maxY - anchor) > 0.5 else { return }
+        isCorrectingFrame = true
+        var f = win.frame
+        f.origin.y = anchor - f.height  // keep top (maxY) fixed, grow downward
+        win.setFrame(f, display: false)
+        isCorrectingFrame = false
+    }
+
+    @objc private func windowMoveAnchorUpdate(_ note: Notification) {
+        guard !isCorrectingFrame else { return }
+        guard let state = playerState, !state.isSnapping else { return }
+        guard state.snapState == .off || state.snapState == .waiting || state.snapState == .expanded else { return }
+        guard let win = note.object as? NSWindow else { return }
+        windowAnchorMaxY = win.frame.maxY
     }
 
     func resolvedMainWindow() -> NSWindow? {
@@ -88,32 +141,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return NSApp.windows.first
     }
 
-    private func restoredWindowOrigin(for window: NSWindow) -> NSPoint? {
-        guard UserDefaults.standard.object(forKey: "windowOriginX") != nil else { return nil }
-        let x = UserDefaults.standard.double(forKey: "windowOriginX")
-        let y = UserDefaults.standard.double(forKey: "windowOriginY")
-        let size = window.frame.size
-        // Find a screen that contains at least 80px of the window horizontally
-        guard let screen = NSScreen.screens.first(where: { s in
-            x + size.width > s.frame.minX + 80 && x < s.frame.maxX - 80
-        }) ?? NSScreen.main else { return nil }
-        return NSPoint(
-            x: max(screen.frame.minX, min(screen.frame.maxX - size.width, x)),
-            y: max(screen.frame.minY, min(screen.frame.maxY - size.height, y))
-        )
-    }
-
     private func applyPresencePolicy(to window: NSWindow) {
         let alwaysOnTop = playerState?.alwaysOnTop ?? true
         let snapActive  = playerState?.snapEnabled ?? false
         // Snap panel must float on every Space even if alwaysOnTop is off —
         // the whole point of the docked widget is that it follows the user everywhere.
-        window.level = (alwaysOnTop || snapActive) ? .floating : .normal
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.level = (alwaysOnTop || snapActive) ? .statusBar : .normal
+        // .stationary: window doesn't animate with space transitions — stays pinned on all desktops
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.hidesOnDeactivate = false
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        if let window = resolvedMainWindow() { applyPresencePolicy(to: window) }
+        // Cmd+Tab / app switch: slide out from edge automatically
+        let snap = WindowSnapManager.shared
+        if snap.snapState == .docked || snap.snapState == .peeking {
+            snap.expandCurrentWindow()
+        }
+    }
+
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        if let window = resolvedMainWindow() { applyPresencePolicy(to: window) }
+    }
+
+    @objc private func systemDidWake() {
         if let window = resolvedMainWindow() { applyPresencePolicy(to: window) }
     }
 
@@ -147,8 +199,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.playerState?.progress = progress
             self?.playerState?.currentTime = time
         }
-        engine.onSpectrum = { [weak self] data in
-            self?.playerState?.spectrumData = data
+        engine.onSpectrum = { data in
+            SpectrumFeed.shared.data = data
         }
         engine.onFinished = { [weak self] in
             guard let state = self?.playerState else { return }
@@ -177,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let engine = AudioEngineNext.shared
         engine.setVolume(state.volume)
-        engine.setPitch(state.pitch, masterTempo: state.masterTempo)
+        engine.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
         engine.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
         engine.setEQEnabled(state.eqOn)
         engine.setReverb(amount: state.eqOn ? state.reverbAmount : 0)
@@ -203,12 +255,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case 126: // up arrow → pitch +step
                 let step = Double(state.pitchRange) / 16.0
                 state.pitch = min(Double(state.pitchRange), ((state.pitch + step) * 10).rounded() / 10)
-                AudioEngineNext.shared.setPitch(state.pitch, masterTempo: state.masterTempo)
+                AudioEngineNext.shared.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
                 return nil
             case 125: // down arrow → pitch −step
                 let step = Double(state.pitchRange) / 16.0
                 state.pitch = max(-Double(state.pitchRange), ((state.pitch - step) * 10).rounded() / 10)
-                AudioEngineNext.shared.setPitch(state.pitch, masterTempo: state.masterTempo)
+                AudioEngineNext.shared.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
                 return nil
             default:
                 return event
@@ -217,9 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func shouldHandleKeyboardEvent(_ event: NSEvent) -> Bool {
-        if NSApp.modalWindow != nil {
-            return false
-        }
+        if NSApp.modalWindow != nil { return false }
 
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) {
             return false
@@ -227,6 +277,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let responder = NSApp.keyWindow?.firstResponder, responder is NSTextView {
             return false
+        }
+
+        if let state = playerState {
+            if state.pendingDropURLs != nil { return false }
+            if state.isDraggingInternally { return false }
         }
 
         return true
@@ -276,6 +331,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _ in self?.updateNowPlayingInfo() }
             .store(in: &nowPlayingCancellables)
+        state.$currentTime
+            .removeDuplicates()
+            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.updateNowPlayingTiming() }
+            .store(in: &nowPlayingCancellables)
+        Publishers.CombineLatest3(state.$pitch, state.$masterTempo, state.$pitchBypassed)
+            .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
+            .sink { [weak self] _, _, _ in self?.updateNowPlayingTiming() }
+            .store(in: &nowPlayingCancellables)
+    }
+
+    private func updateNowPlayingTiming() {
+        guard let state = playerState, state.current != nil,
+              var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = state.currentTime
+        info[MPNowPlayingInfoPropertyPlaybackRate] = state.isPlaying ? AudioEngineNext.shared.snapshot().rate : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     func updateNowPlayingInfo() {
@@ -288,7 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MPMediaItemPropertyArtist: track.artist.isEmpty ? "—" : track.artist,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: state.currentTime,
             MPMediaItemPropertyPlaybackDuration: track.duration,
-            MPNowPlayingInfoPropertyPlaybackRate: state.isPlaying ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: state.isPlaying ? AudioEngineNext.shared.snapshot().rate : 0.0,
         ]
         if !track.album.isEmpty { info[MPMediaItemPropertyAlbumTitle] = track.album }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
@@ -300,13 +372,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
         }
-        saveWindowPosition()
-    }
-
-    private func saveWindowPosition() {
-        guard let window = mainWindow,
-              playerState?.snapEnabled != true else { return }
-        UserDefaults.standard.set(window.frame.origin.x, forKey: "windowOriginX")
-        UserDefaults.standard.set(window.frame.origin.y, forKey: "windowOriginY")
     }
 }

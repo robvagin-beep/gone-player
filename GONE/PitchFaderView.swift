@@ -23,6 +23,7 @@ struct PitchFaderView: View {
                         }
                     }
                 )
+                .goneTooltip("BPM Fit — shifts tempo to match a target BPM range")
 
                 Rectangle()
                     .fill(G.borderSubtle.opacity(0.8))
@@ -45,6 +46,7 @@ struct PitchFaderView: View {
                         }
                     }
                 )
+                .goneTooltip("Bypass pitch shift — plays at original tempo")
             }
             .frame(height: 20)
             .overlay(alignment: .bottom) {
@@ -75,23 +77,25 @@ struct PitchFaderView: View {
                 .frame(maxHeight: .infinity)
                 .opacity(state.pitchBypassed ? 0.28 : 1.0)
                 .animation(.easeInOut(duration: 0.2), value: state.pitchBypassed)
+                .goneTooltip("Drag handles to set the target BPM range. Double-click to reset to 90–120")
             } else {
                 VerticalPitchTrack(
                     value: Binding(
                         get: { state.pitch },
-                        set: { v in
-                            state.pitch = v
-                            if !state.pitchBypassed {
-                                AudioEngineNext.shared.setPitch(v, masterTempo: state.masterTempo)
-                            }
-                        }
+                        set: { state.pitch = $0 }
                     ),
-                    range: Double(state.pitchRange)
+                    range: Double(state.pitchRange),
+                    onCommit: { v in
+                        if !state.pitchBypassed {
+                            AudioEngineNext.shared.setPitch(v, masterTempo: state.masterTempo)
+                        }
+                    }
                 )
                 .frame(width: 28)
                 .frame(maxHeight: .infinity)
                 .opacity(state.pitchBypassed ? 0.28 : 1.0)
                 .animation(.easeInOut(duration: 0.2), value: state.pitchBypassed)
+                .goneTooltip("Tempo fader — drag to speed up or slow down. Double-click to reset to 0%")
             }
 
             // Bottom buttons — range + MT
@@ -103,6 +107,7 @@ struct PitchFaderView: View {
                     active: false,
                     action: { state.cyclePitchRange() }
                 )
+                .goneTooltip("Fader range — ±8 fine-tuning, ±16 medium, ±100 extreme")
 
                 Rectangle()
                     .fill(G.borderSubtle.opacity(0.8))
@@ -118,6 +123,7 @@ struct PitchFaderView: View {
                         AudioEngineNext.shared.setPitch(state.pitch, masterTempo: state.masterTempo)
                     }
                 )
+                .goneTooltip("Master Tempo — pitch stays locked to original key when you change speed")
             }
             .frame(height: 20)
             .overlay(alignment: .top) {
@@ -232,6 +238,7 @@ private struct BPMRangeTrack: View {
                 BPMKnob(value: low)
                     .offset(y: yLow - h / 2)
 
+
             }
             .overlay(alignment: .topLeading) {
                 Text("\(Int(Self.bpmCeil))")
@@ -266,8 +273,10 @@ private struct BPMRangeTrack: View {
                         case .low:  low  = max(Self.bpmFloor, min(high - 5, newBPM))
                         case .none: break
                         }
+                        let displayVal = active == .high ? high : low
+                        DragValuePanel.shared.show(text: "\(Int(displayVal.rounded())) BPM")
                     }
-                    .onEnded { _ in active = nil }
+                    .onEnded { _ in active = nil; DragValuePanel.shared.hide() }
             )
             .simultaneousGesture(
                 TapGesture(count: 2).onEnded { high = 120; low = 90 }
@@ -309,9 +318,10 @@ private struct BPMKnob: View {
 struct VerticalPitchTrack: View {
     @Binding var value: Double
     let range: Double
+    var onCommit: ((Double) -> Void)? = nil
 
-    @State private var dragStart: Double? = nil
-    @State private var dragValue: Double = 0
+    @State private var lastCommit: Date = .distantPast
+    private let commitThrottle: TimeInterval = 0.016
 
     var body: some View {
         GeometryReader { geo in
@@ -358,25 +368,35 @@ struct VerticalPitchTrack: View {
                     )
                     .frame(width: 26, height: 14)
                     .offset(y: pos - h / 2)
+
             }
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 2)
+                DragGesture(minimumDistance: 0)
                     .onChanged { g in
-                        if dragStart == nil {
-                            dragStart = g.startLocation.y
-                            dragValue = value
-                        }
-                        let dy = g.location.y - (dragStart ?? 0)
-                        var v = dragValue - (dy / max(1, (h - trackInset * 2 - knobHalfHeight * 2))) * range * 2
+                        // Absolute: click/drag anywhere maps directly to a fader value
+                        let trackTop    = trackInset + knobHalfHeight
+                        let trackBottom = h - trackInset - knobHalfHeight
+                        let clampedY    = max(trackTop, min(trackBottom, g.location.y))
+                        let t = (clampedY - trackTop) / max(1, travelHeight) // 0=top(+range) 1=bottom(-range)
+                        var v = range - t * range * 2
                         if abs(v) < 0.3 { v = 0 }
                         value = max(-range, min(range, (v * 100).rounded() / 100))
+                        let now = Date()
+                        guard now.timeIntervalSince(lastCommit) >= commitThrottle else { return }
+                        lastCommit = now
+                        onCommit?(value)
+                        let label = abs(value) < 0.001 ? "±0.0%" : String(format: "%+.1f%%", value)
+                        DragValuePanel.shared.show(text: label)
                     }
-                    .onEnded { _ in dragStart = nil }
+                    .onEnded { _ in
+                        DragValuePanel.shared.hide()
+                        onCommit?(value)
+                    }
             )
             .simultaneousGesture(
                 TapGesture(count: 2)
-                    .onEnded { value = 0 }
+                    .onEnded { value = 0; onCommit?(0) }
             )
             .cursor(NSCursor.resizeUpDown)
         }
