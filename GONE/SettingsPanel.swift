@@ -211,11 +211,8 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .frame(width: 360)
+        .background(Color(hex: "#191919"))
         .clipShape(RoundedRectangle(cornerRadius: G.rFloatingPanel))
-        .background(
-            RoundedRectangle(cornerRadius: G.rFloatingPanel)
-                .fill(Color(hex: "#191919"))
-        )
         .overlay {
             RoundedRectangle(cornerRadius: G.rFloatingPanel)
                 .stroke(Color.white.opacity(0.09), lineWidth: 0.5)

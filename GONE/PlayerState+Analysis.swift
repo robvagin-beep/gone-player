@@ -10,6 +10,38 @@ extension PlayerState {
         scheduleBPMAnalysis()
     }
 
+    // Deep re-analysis: wider BPM range (30–280) + longer window + half-tempo correction.
+    // Only triggered by explicit user action (clicking the BPM refresh badge).
+    func reanalyzeBPMDeep(for trackId: UUID) {
+        guard let idx = tracks.firstIndex(where: { $0.id == trackId }) else { return }
+        let track = tracks[idx]
+        guard !track.isMissing else { return }
+
+        tracks[idx].bpmAnalysisState = .analyzing
+
+        let floor   = bpmAnalysisFloor
+        let ceiling = bpmAnalysisCeiling
+
+        Task.detached(priority: .userInitiated) { [self] in
+            let bpm = await LibraryScanner().analyzeBPMDeep(
+                url: track.url, floor: floor, ceiling: ceiling
+            ) { progress in
+                Task { @MainActor [weak self] in
+                    self?.analysisProgress[trackId] = progress
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.analysisProgress.removeValue(forKey: trackId)
+                guard let i = self.tracks.firstIndex(where: { $0.id == trackId }) else { return }
+                var t = self.tracks
+                if bpm > 0 { t[i].bpm = bpm; t[i].bpmAnalysisState = .analyzed }
+                else       { t[i].bpmAnalysisState = .failed }
+                self.tracks = t
+            }
+        }
+    }
+
     // Triggers BPM + waveform for the current track, then schedules the rest.
     func scheduleCurrentTrackAnalysis() {
         guard let current = current, !current.isMissing else { return }

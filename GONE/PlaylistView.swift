@@ -627,19 +627,6 @@ struct PlaylistTracksPane: View {
                 .animation(.easeInOut(duration: 0.12), value: isDropTarget)
                 .animation(.easeInOut(duration: 0.12), value: state.crossPaneDragTargetTabId == tabId)
                 .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: onDrop)
-                // Scroll to playing track when playlist opens or current track changes
-                .onChange(of: state.playlistOpen) { isOpen in
-                    guard isOpen, let id = state.currentId,
-                          visibleTracks.contains(where: { $0.id == id }) else { return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                        withAnimation(.easeInOut(duration: 0.30)) { scrollProxy.scrollTo(id, anchor: .center) }
-                    }
-                }
-                .onChange(of: state.currentId) { id in
-                    guard state.playlistOpen, let id,
-                          visibleTracks.contains(where: { $0.id == id }) else { return }
-                    withAnimation(.easeInOut(duration: 0.30)) { scrollProxy.scrollTo(id, anchor: .center) }
-                }
                 .onChange(of: focusScrollTarget) { id in
                     guard let id else { return }
                     withAnimation(.easeInOut(duration: 0.20)) {
@@ -1351,8 +1338,7 @@ struct ClonePlayerButton: View {
                 if split.isActive {
                     split.deactivate()
                 } else {
-                    let delegate = NSApp.delegate as? AppDelegate
-                    let win = delegate?.resolvedMainWindow()
+                    let win = AppDelegate.shared?.resolvedMainWindow()
                         ?? WindowSnapManager.shared.currentWindow
                     guard let win else { return }
                     split.activate(primaryWindow: win, primaryState: state)
@@ -1371,6 +1357,7 @@ struct ClonePlayerButton: View {
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .animation(.easeOut(duration: 0.12), value: hovered)
+        .goneTooltip(split.isActive ? "Exit Clone Mode — closes second player" : "Clone Mode — opens a second player with shared track list for side-by-side comparison")
     }
 }
 

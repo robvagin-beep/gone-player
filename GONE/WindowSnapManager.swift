@@ -38,7 +38,7 @@ final class WindowSnapManager {
     private var frameLockX: CGFloat? = nil
 
     private var mainWindow: NSWindow? {
-        (NSApp.delegate as? AppDelegate)?.resolvedMainWindow()
+        AppDelegate.shared?.resolvedMainWindow()
     }
     var currentWindow: NSWindow? { snapWindow ?? mainWindow }
 

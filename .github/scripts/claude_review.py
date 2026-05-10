@@ -48,6 +48,8 @@ def post_comment(repo: str, pr_number: str, body: str, token: str) -> None:
             resp.read()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"GitHub API error: {e.code} {e.reason}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Network error posting comment: {e.reason}") from e
 
 
 def main() -> None:
@@ -65,9 +67,10 @@ def main() -> None:
 
     MAX_DIFF = 120_000
     truncated = ""
-    if len(diff) > MAX_DIFF:
+    original_len = len(diff)
+    if original_len > MAX_DIFF:
         diff = diff[:MAX_DIFF]
-        truncated = f"\n\n> ⚠️ Diff was truncated to {MAX_DIFF} characters."
+        truncated = f"\n\n> ⚠️ Diff truncated to {MAX_DIFF:,} of {original_len:,} characters."
 
     if not diff.strip():
         print("Empty diff, skipping review.")

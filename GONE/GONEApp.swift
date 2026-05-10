@@ -25,11 +25,22 @@ struct GONEApp: App {
 // ── App Delegate — configures the chromeless window ──────────────────────────
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    // Static reference so code outside GONEApp (TransportView, PlaylistView etc.)
+    // can reach the delegate without relying on NSApp.delegate cast, which breaks
+    // with @NSApplicationDelegateAdaptor on some macOS/SwiftUI configurations.
+    static private(set) weak var shared: AppDelegate?
+
     weak var playerState: PlayerState? {
         didSet {
             playerState?.loadPersistedSettings()
             bindAudioEngine()
             applyPlaybackSettings()
+            // By the time playerState is set, onAppear has fired → window definitely exists.
+            // Cache it now so resolvedMainWindow() is reliable from this point on.
+            if mainWindow == nil || !(mainWindow?.isVisible ?? false) {
+                mainWindow = NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible })
+                    ?? NSApp.windows.first(where: { !($0 is NSPanel) })
+            }
             if let window = resolvedMainWindow() {
                 applyPresencePolicy(to: window)
             }
@@ -37,13 +48,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupNowPlayingObservation()
             setupSettingsPersistence()
             if playerState?.magnifyEnabled == true { installMagnifyMonitor() }
-            // Two-stage snap restore: preference loaded above; now activate the runtime
-            // infrastructure. Deferred one tick so configureWindow is guaranteed to have run.
-            DispatchQueue.main.async {
-                guard let state = self.playerState, state.snapEnabled else { return }
-                guard let window = self.resolvedMainWindow() else { return }
-                WindowSnapManager.shared.enable(window: window)
-            }
         }
     }
     private(set) weak var mainWindow: NSWindow?
@@ -57,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var magnifyBaseFrame: CGRect = .zero
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.shared = self
         installKeyMonitor()
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(systemDidWake),
@@ -134,11 +139,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let mainWindow, mainWindow.isVisible, !mainWindow.isMiniaturized {
             return mainWindow
         }
-        if let candidate = bestAvailableWindow() {
-            mainWindow = candidate
-            return candidate
-        }
-        return nil
+        // Fast path failed — search all app windows directly.
+        // At screenSaverWindow level the player may not be keyWindow/mainWindow,
+        // so skip those checks and go straight to NSApp.windows.
+        let found = NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible && !$0.isMiniaturized })
+            ?? NSApp.windows.first(where: { !($0 is NSPanel) })
+        if let found { mainWindow = found }
+        return found
     }
 
     private func bestAvailableWindow() -> NSWindow? {
@@ -261,6 +268,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   self.shouldHandleKeyboardEvent(event)
             else { return event }
 
+            // Route space/arrows/seek to whichever player window is currently key.
+            // Hot cues 1–4 always go to primary, 5–8 always go to secondary.
+            let isSecondaryKey = SplitModeManager.shared.isActive &&
+                NSApp.keyWindow != nil &&
+                NSApp.keyWindow === SplitModeManager.shared.secondaryWindow
+            let activeState: PlayerState = isSecondaryKey
+                ? (SplitModeManager.shared.secondaryState ?? state)
+                : state
+
             switch event.keyCode {
             case 18, 19, 20, 21: // keys 1–4 → hot cues for primary player
                 let index = Int(event.keyCode) - 18   // 18→0, 19→1, 20→2, 21→3
@@ -278,36 +294,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case 28: // key 8 → secondary cue 4
                 handleHotCue(index: 3, forSecondary: true)
                 return nil
-            case 49: // space
-                state.togglePlayback()
+            case 49: // space → toggle playback on focused player
+                activeState.togglePlayback()
                 return nil
-            case 123: // left arrow → seek −5 s
-                if let track = state.current, track.duration > 0 {
-                    let t = max(0, PlaybackProgressFeed.shared.currentTime - 5.0)
-                    state.audioEngine.seek(ratio: t / track.duration)
+            case 123: // left arrow → seek −5 s on focused player
+                if let track = activeState.current, track.duration > 0 {
+                    let t = max(0, activeState.progressFeed.currentTime - 5.0)
+                    activeState.audioEngine.seek(ratio: t / track.duration)
                 }
                 return nil
-            case 124: // right arrow → seek +5 s
-                if let track = state.current, track.duration > 0 {
-                    let t = min(track.duration, PlaybackProgressFeed.shared.currentTime + 5.0)
-                    state.audioEngine.seek(ratio: t / track.duration)
+            case 124: // right arrow → seek +5 s on focused player
+                if let track = activeState.current, track.duration > 0 {
+                    let t = min(track.duration, activeState.progressFeed.currentTime + 5.0)
+                    activeState.audioEngine.seek(ratio: t / track.duration)
                 }
                 return nil
-            case 126: // up arrow → browse playlist cursor (playlist open) or pitch +step
-                if state.playlistOpen {
+            case 126: // up arrow → playlist cursor (if open) or pitch +step on focused player
+                if activeState.playlistOpen {
                     return event  // playlist key monitor handles: move cursor only, no autoplay
                 }
-                let stepUp = Double(state.pitchRange) / 16.0
-                state.pitch = min(Double(state.pitchRange), ((state.pitch + stepUp) * 10).rounded() / 10)
-                state.audioEngine.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
+                let stepUp = Double(activeState.pitchRange) / 16.0
+                activeState.pitch = min(Double(activeState.pitchRange), ((activeState.pitch + stepUp) * 10).rounded() / 10)
+                activeState.audioEngine.setPitch(activeState.pitchBypassed ? 0 : activeState.pitch, masterTempo: activeState.masterTempo)
                 return nil
-            case 125: // down arrow → browse playlist cursor (playlist open) or pitch −step
-                if state.playlistOpen {
+            case 125: // down arrow → playlist cursor (if open) or pitch −step on focused player
+                if activeState.playlistOpen {
                     return event  // playlist key monitor handles: move cursor only, no autoplay
                 }
-                let stepDown = Double(state.pitchRange) / 16.0
-                state.pitch = max(-Double(state.pitchRange), ((state.pitch - stepDown) * 10).rounded() / 10)
-                state.audioEngine.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
+                let stepDown = Double(activeState.pitchRange) / 16.0
+                activeState.pitch = max(-Double(activeState.pitchRange), ((activeState.pitch - stepDown) * 10).rounded() / 10)
+                activeState.audioEngine.setPitch(activeState.pitchBypassed ? 0 : activeState.pitch, masterTempo: activeState.masterTempo)
                 return nil
             default:
                 return event

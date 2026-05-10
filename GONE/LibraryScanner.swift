@@ -630,4 +630,114 @@ final class LibraryScanner {
         onProgress?(1.0)
         return (bpm * 10).rounded() / 10
     }
+
+    // Deep BPM re-analysis — called on explicit user request (refresh button).
+    // Differences from standard analyzeBPM:
+    //  • Wide search range 30–280 so half/double-tempo candidates are scored directly
+    //  • Longer analysis window (up to 60 s) for better signal quality
+    //  • Explicit half-tempo correction: if bestLag/2 scores ≥60% of best, prefer it
+    //    (fixes 62→124 BPM misdetection common in electronic/house tracks)
+    //  • Final result resolved back into the user's configured floor/ceiling
+    func analyzeBPMDeep(url: URL, floor: Double = 60, ceiling: Double = 200, onProgress: ((Double) -> Void)? = nil) async -> Double {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let asset = AVURLAsset(url: url)
+        guard let assetTrack = try? await asset.loadTracks(withMediaType: .audio).first
+        else { return 0 }
+
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: 11025.0,
+        ]
+
+        let totalSec = CMTimeGetSeconds((try? await asset.load(.duration)) ?? .zero)
+        // Longer window than standard analysis for better autocorrelation quality
+        let windowSec = totalSec > 0 ? min(60.0, totalSec) : 60.0
+        let startSec  = totalSec > 70 ? 10.0 : 0.0
+
+        var samples = await readBPMSamples(asset: asset, assetTrack: assetTrack,
+                                           settings: settings,
+                                           startSec: startSec,
+                                           windowSec: windowSec,
+                                           onProgress: onProgress.map { cb in { p in cb(p * 0.90) } })
+        if samples.count <= 11025 {
+            samples = await readBPMSamples(asset: asset, assetTrack: assetTrack,
+                                           settings: settings,
+                                           startSec: 0,
+                                           windowSec: windowSec,
+                                           onProgress: onProgress.map { cb in { p in cb(p * 0.90) } })
+        }
+        guard samples.count > 11025 else { return 0 }
+
+        let hopSize   = 128
+        let frameCount = samples.count / hopSize
+        var energy = [Float](repeating: 0, count: frameCount)
+        for i in 0..<frameCount {
+            let start = i * hopSize
+            let end   = min(start + hopSize, samples.count)
+            var rms: Float = 0
+            samples.withUnsafeBufferPointer { buf in
+                guard let base = buf.baseAddress else { return }
+                vDSP_svesq(base.advanced(by: start), 1, &rms, vDSP_Length(end - start))
+            }
+            energy[i] = rms / Float(end - start)
+        }
+        var onset = [Float](repeating: 0, count: frameCount)
+        for i in 1..<frameCount { onset[i] = max(0, energy[i] - energy[i-1]) }
+
+        // Wide search: 30–280 BPM — both 62 BPM and 124 BPM are scored directly
+        let fps     = 11025.0 / Double(hopSize)
+        let wideMin = max(1, Int(fps * 60.0 / 280.0))
+        let wideMax = Int(fps * 60.0 / 30.0)
+        guard wideMin < wideMax, wideMax < frameCount else { return 0 }
+
+        // Use more of the signal than standard analysis
+        let analysisLen = min(frameCount - wideMax, 8192)
+        let referenceOnset = onset[0..<analysisLen]
+
+        var corrValues = [Float](repeating: 0, count: wideMax + 1)
+        for lag in wideMin...wideMax {
+            var corr: Float = 0
+            referenceOnset.withUnsafeBufferPointer { refBuf in
+                onset.withUnsafeBufferPointer { onsBuf in
+                    guard let rb = refBuf.baseAddress, let ob = onsBuf.baseAddress else { return }
+                    vDSP_dotpr(rb, 1, ob.advanced(by: lag), 1, &corr, vDSP_Length(analysisLen))
+                }
+            }
+            corrValues[lag] = corr / Float(analysisLen)
+        }
+
+        // Harmonic scoring (same as standard)
+        var bestLag  = wideMin
+        var bestScore: Float = 0
+        for lag in wideMin...wideMax {
+            let c  = corrValues[lag]
+            let h2: Float = lag * 2 <= wideMax ? corrValues[lag * 2] * 0.35 : 0
+            let h3: Float = lag * 3 <= wideMax ? corrValues[lag * 3] * 0.15 : 0
+            let score = c + h2 + h3
+            if score > bestScore { bestScore = score; bestLag = lag }
+        }
+        guard bestScore > 0 else { return 0 }
+
+        // Half-tempo correction: if bestLag/2 (double tempo) scores ≥60% of best,
+        // the double-tempo is a strong candidate — prefer it to avoid half-tempo output.
+        let halfLag = bestLag / 2
+        if halfLag >= wideMin,
+           corrValues[halfLag] >= bestScore * 0.60 {
+            bestLag = halfLag
+        }
+
+        var bpm = 60.0 * fps / Double(bestLag)
+        // Resolve into user's configured range
+        let lo = max(floor, 1); let hi = max(ceiling, lo + 1)
+        while bpm > 0 && bpm < lo  { bpm *= 2 }
+        while bpm > hi { bpm /= 2 }
+        onProgress?(1.0)
+        return (bpm * 10).rounded() / 10
+    }
 }

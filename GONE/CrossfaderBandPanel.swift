@@ -156,12 +156,12 @@ private final class ScrollWheelNSView: NSView {
     override func scrollWheel(with event: NSEvent) {
         // Ignore trackpad momentum phase — prevents crossfader drifting after finger lift
         guard event.momentumPhase == .stationary else { return }
-        // Combine both axes — user can scroll in any direction to move the crossfader.
-        // Horizontal takes priority; if both are equal use vertical.
         let dx = event.scrollingDeltaX
         let dy = event.scrollingDeltaY
         let delta = abs(dx) >= abs(dy) ? dx : -dy   // right/up = positive (toward B)
-        onScroll(delta)
+        // Non-trackpad mice deliver ~10× larger per-tick deltas — scale down to match trackpad feel
+        let adjusted = event.hasPreciseScrollingDeltas ? delta : delta * 0.1
+        onScroll(adjusted)
     }
 }
 

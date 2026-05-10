@@ -29,7 +29,7 @@ struct TransportView: View {
                         }
                     }
                 )
-                .goneTooltip("Snap to edge — slides off, reappears on hover. Double-click to hide immediately")
+                .goneTooltip("Snap to edge — slides off, reappears on hover")
                 IconBtn(icon: "list.bullet", active: state.playlistOpen) {
                     state.playlistOpen.toggle()
                 }
@@ -48,7 +48,7 @@ struct TransportView: View {
             // Center: transport
             HStack(spacing: 6) {
                 IconBtn(icon: "shuffle", active: state.shuffle, inactiveOpacity: 0.28) { state.shuffle.toggle() }
-                IconBtn(icon: "backward.fill") {
+                HoldSeekBtn(icon: "backward.fill", forward: false, engine: state.audioEngine) {
                     state.selectPreviousTrack()
                 }
                 // Primary play/pause
@@ -68,7 +68,7 @@ struct TransportView: View {
                 .contentShape(Rectangle())
                 .disabled(!canPlayCurrentTrack)
 
-                IconBtn(icon: "forward.fill") {
+                HoldSeekBtn(icon: "forward.fill", forward: true, engine: state.audioEngine) {
                     state.selectNextTrack()
                 }
                 RepeatBtn(mode: state.repeatMode) { state.cycleRepeatMode() }
@@ -120,8 +120,7 @@ struct TransportView: View {
 
     @MainActor
     private func openSettings() {
-        let delegate = NSApp.delegate as? AppDelegate
-        let window = delegate?.resolvedMainWindow()
+        let window = AppDelegate.shared?.resolvedMainWindow()
             ?? WindowSnapManager.shared.currentWindow
         guard let window else { return }
         SettingsPanel.shared.toggle(near: window, state: state)
@@ -134,10 +133,9 @@ struct TransportView: View {
             return
         }
         let newValue = !state.snapEnabled
-        if let appDelegate = NSApp.delegate as? AppDelegate {
+        if let appDelegate = AppDelegate.shared {
             appDelegate.setSnapEnabled(newValue)
-        } else if let window = WindowSnapManager.shared.currentWindow
-            ?? (NSApp.delegate as? AppDelegate)?.resolvedMainWindow() {
+        } else if let window = WindowSnapManager.shared.currentWindow {
             if newValue {
                 WindowSnapManager.shared.enable(window: window)
             } else {
@@ -272,17 +270,182 @@ private struct SnapTimerBtn: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: G.rButton))
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            if snapState == .waiting || snapState == .expanded {
-                snapNow()
-            } else {
-                action()
+        .overlay(
+            ClickDetector(onSingleClick: action, onDoubleClick: {
+                if snapState == .waiting || snapState == .expanded { snapNow() } else { action() }
+            })
+        )
+        .onHover { hovered = $0 }
+    }
+}
+
+// ── Click detector: fires single/double without the 500ms system disambiguation ──
+// SwiftUI's onTapGesture(count:1)+onTapGesture(count:2) waits the full macOS
+// double-click interval (~500ms) before confirming a single click. This NSView
+// replaces that with a 200ms window, cutting the single-click lag by ~60%.
+private struct ClickDetector: NSViewRepresentable {
+    let onSingleClick: () -> Void
+    let onDoubleClick: () -> Void
+
+    func makeNSView(context: Context) -> ClickNSView {
+        let v = ClickNSView()
+        v.onSingleClick = onSingleClick
+        v.onDoubleClick = onDoubleClick
+        return v
+    }
+
+    func updateNSView(_ v: ClickNSView, context: Context) {
+        v.onSingleClick = onSingleClick
+        v.onDoubleClick = onDoubleClick
+    }
+}
+
+final class ClickNSView: NSView {
+    var onSingleClick: (() -> Void)?
+    var onDoubleClick: (() -> Void)?
+    private var pendingTimer: Timer?
+    private var pendingCount = 0
+    private let threshold: TimeInterval = 0.20
+
+    override func mouseDown(with event: NSEvent) {
+        pendingCount += 1
+        pendingTimer?.invalidate()
+        let captured = pendingCount
+        pendingTimer = Timer.scheduledTimer(withTimeInterval: threshold, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.pendingCount == captured else { return }
+                if captured >= 2 { self.onDoubleClick?() } else { self.onSingleClick?() }
+                self.pendingCount = 0
             }
         }
-        .onTapGesture(count: 1) {
-            action()
+    }
+}
+
+// ── Hold-seek transport button ────────────────────────────────────────────────
+// Short press (< 180 ms) → tap action (prev/next track).
+// Hold (≥ 180 ms)        → scrub: forward = 4× varispeed; backward = periodic seek-back.
+private struct HoldSeekBtn: View {
+    let icon: String
+    let forward: Bool
+    let engine: AudioEngineNext
+    let tapAction: () -> Void
+
+    @State private var hovered = false
+    @State private var holding = false
+
+    var body: some View {
+        Image(systemName: icon)
+            .font(.system(size: 13, weight: .regular))
+            .foregroundStyle(holding ? .white : Color.white.opacity(0.50))
+            .frame(width: 24, height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: G.rButton)
+                    .fill(holding ? Color.white.opacity(0.20) : (hovered ? Color.white.opacity(0.08) : .clear))
+            )
+            .overlay(
+                PressDetector(
+                    onTap: tapAction,
+                    onHoldBegan: {
+                        holding = true
+                        engine.startHoldSeek(forward: forward)
+                    },
+                    onHoldEnded: {
+                        holding = false
+                        engine.stopHoldSeek()
+                    },
+                    onPressStart: {
+                        // Safety flush: clears any speedNode.rate override left over
+                        // from a previous interaction where mouseUp was not delivered.
+                        engine.stopHoldSeek()
+                    }
+                )
+            )
+            .onHover { hovered = $0 }
+            .animation(.easeOut(duration: 0.10), value: holding)
+    }
+}
+
+private struct PressDetector: NSViewRepresentable {
+    let onTap: () -> Void
+    let onHoldBegan: () -> Void
+    let onHoldEnded: () -> Void
+    // Fires on every mouseDown before the hold timer starts — used to flush any
+    // previously stuck hold-seek state (e.g. app lost focus during a hold).
+    let onPressStart: () -> Void
+
+    func makeNSView(context: Context) -> PressDetectNSView {
+        let v = PressDetectNSView()
+        v.onTap        = onTap
+        v.onHoldBegan  = onHoldBegan
+        v.onHoldEnded  = onHoldEnded
+        v.onPressStart = onPressStart
+        return v
+    }
+
+    func updateNSView(_ v: PressDetectNSView, context: Context) {
+        v.onTap        = onTap
+        v.onHoldBegan  = onHoldBegan
+        v.onHoldEnded  = onHoldEnded
+        v.onPressStart = onPressStart
+    }
+}
+
+final class PressDetectNSView: NSView {
+    var onTap:        (() -> Void)?
+    var onHoldBegan:  (() -> Void)?
+    var onHoldEnded:  (() -> Void)?
+    var onPressStart: (() -> Void)?
+
+    private var holdTimer: Timer?
+    private var isHolding = false
+    // 300ms: comfortable above typical click duration (~50–200ms) but fast for DJ use.
+    private let holdThreshold: TimeInterval = 0.30
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Flush any state left over from a missed mouseUp (e.g. app lost focus).
+        onPressStart?()
+        isHolding = false
+        holdTimer?.invalidate()
+        // Timer() + RunLoop.main.add(.common) is the correct pattern.
+        // scheduledTimer adds to .default only; combining with add(.common) risks
+        // double-registration of the timer in the .default mode subset.
+        let t = Timer(timeInterval: holdThreshold, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.isHolding = true
+            self.onHoldBegan?()
         }
-        .onHover { hovered = $0 }
+        RunLoop.main.add(t, forMode: .common)
+        holdTimer = t
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        holdTimer?.invalidate()
+        holdTimer = nil
+        if isHolding {
+            isHolding = false
+            onHoldEnded?()
+        } else {
+            onTap?()
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard isHolding else { return }
+        isHolding = false
+        holdTimer?.invalidate()
+        holdTimer = nil
+        onHoldEnded?()
     }
 }
 

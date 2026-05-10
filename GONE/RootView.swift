@@ -156,7 +156,7 @@ struct RootView: View {
         .onChange(of: state.windowScale)   { _ in applyDisplayScale() }
         .onChange(of: state.playlistPanelHeight) { _ in
             guard !state.isSnapping else { return }
-            let appDelegate = NSApp.delegate as? AppDelegate
+            let appDelegate = AppDelegate.shared
             let win = appDelegate?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
             if let maxY = win?.frame.maxY { appDelegate?.windowAnchorMaxY = maxY }
         }
@@ -219,7 +219,7 @@ struct RootView: View {
 
     private func updateWindowSize(to newSize: CGSize, animated: Bool = false) {
         guard !state.isSnapping else { return }
-        let appDelegate = NSApp.delegate as? AppDelegate
+        let appDelegate = AppDelegate.shared
         guard let window = appDelegate?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow else { return }
         let currentFrame = window.frame
 

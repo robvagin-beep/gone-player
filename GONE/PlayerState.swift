@@ -375,7 +375,6 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "autoOpenPlaylist")    != nil { autoOpenPlaylistOnImport = ud.bool(forKey: "autoOpenPlaylist") }
         if ud.object(forKey: "confirmDelete")       != nil { confirmBeforeDelete  = ud.bool(forKey: "confirmDelete") }
         if ud.object(forKey: "hideMissing")         != nil { hideMissingTracks   = ud.bool(forKey: "hideMissing") }
-        if ud.object(forKey: "snapEnabled")         != nil { snapEnabled         = ud.bool(forKey: "snapEnabled") }
         if ud.object(forKey: "alwaysOnTop")         != nil { alwaysOnTop         = ud.bool(forKey: "alwaysOnTop") }
         if ud.object(forKey: "magnifyEnabled")      != nil { magnifyEnabled      = ud.bool(forKey: "magnifyEnabled") }
         if ud.object(forKey: "magnifyProximity")    != nil { magnifyProximity    = ud.double(forKey: "magnifyProximity") }
