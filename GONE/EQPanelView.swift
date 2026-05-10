@@ -435,6 +435,7 @@ struct EQCurveView: View {
     @State private var displayedBands: [Float] = Array(repeating: 0, count: 10)
     @State private var displayedPreamp: Float = 0
     @State private var animTask: Task<Void, Never>? = nil
+    @State private var lastEQChangeTime: Date = .distantPast
 
     private let bandFreqs: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
     private let dbLines: [Float] = [-12, -6, 0, 6, 12]
@@ -704,10 +705,26 @@ struct EQCurveView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: G.rBadge))
         .onChange(of: state.eqBands) { newBands in
-            animateTo(bands: newBands, preamp: displayedPreamp)
+            let now = Date()
+            let rapid = now.timeIntervalSince(lastEQChangeTime) < 0.034  // ≤ 30fps cadence = drag
+            lastEQChangeTime = now
+            if rapid {
+                animTask?.cancel(); animTask = nil
+                displayedBands = newBands  // snap — no Task churn during drag
+            } else {
+                animateTo(bands: newBands, preamp: displayedPreamp)
+            }
         }
         .onChange(of: state.eqPreamp) { newPreamp in
-            animateTo(bands: displayedBands, preamp: newPreamp)
+            let now = Date()
+            let rapid = now.timeIntervalSince(lastEQChangeTime) < 0.034
+            lastEQChangeTime = now
+            if rapid {
+                animTask?.cancel(); animTask = nil
+                displayedPreamp = newPreamp
+            } else {
+                animateTo(bands: displayedBands, preamp: newPreamp)
+            }
         }
         .onAppear {
             displayedBands  = state.eqBands

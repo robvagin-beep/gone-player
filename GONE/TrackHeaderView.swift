@@ -268,43 +268,42 @@ struct BadgeView: View {
 
 // ── BPM re-analysis sweep badge ───────────────────────────────────────────────
 private struct BPMAnalyzingBadge: View {
-    private let cycleTime: Double = 0.65
+    @State private var phase: CGFloat = 0
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { tl in
-            let phase = CGFloat(
-                tl.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: cycleTime) / cycleTime
-            )
-            Text("ANALYZING")
-                .font(G.mono(8, weight: .semibold))
-                .foregroundStyle(G.textSecondary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1.5)
-                .background(
-                    GeometryReader { geo in
-                        let w = geo.size.width
-                        let stripW = w * 0.55
-                        ZStack(alignment: .leading) {
-                            Color.white.opacity(0.08)
-                            LinearGradient(
-                                stops: [
-                                    .init(color: .clear, location: 0),
-                                    .init(color: Color.white.opacity(0.28), location: 0.35),
-                                    .init(color: Color.white.opacity(0.28), location: 0.65),
-                                    .init(color: .clear, location: 1),
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                            .frame(width: stripW)
-                            .offset(x: -stripW + (w + stripW) * phase)
-                        }
+        Text("ANALYZING")
+            .font(G.mono(8, weight: .semibold))
+            .foregroundStyle(G.textSecondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let stripW = w * 0.55
+                    ZStack(alignment: .leading) {
+                        Color.white.opacity(0.08)
+                        LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: Color.white.opacity(0.28), location: 0.35),
+                                .init(color: Color.white.opacity(0.28), location: 0.65),
+                                .init(color: .clear, location: 1),
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .frame(width: stripW)
+                        .offset(x: -stripW + (w + stripW) * phase)
                     }
-                )
-                .clipShape(RoundedRectangle(cornerRadius: G.rBadge))
-        }
-        .allowsHitTesting(false)
-        .fixedSize()
+                }
+            )
+            .clipShape(RoundedRectangle(cornerRadius: G.rBadge))
+            .onAppear {
+                withAnimation(.linear(duration: 0.65).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
+            .allowsHitTesting(false)
+            .fixedSize()
     }
 }

@@ -84,7 +84,7 @@ final class CrossfaderGapWindow: NSPanel {
             guard let self,
                   let a = self.windowA, let b = self.windowB else { return }
             // Reposition + resize window to new bounding box
-            self.setFrame(Self.boundingRect(a: a, b: b), display: true, animate: false)
+            self.setFrame(Self.boundingRect(a: a, b: b), display: false, animate: false)
             self.updateGeometry()
             // Increment geometryVersion instead of replacing rootView —
             // Canvas already reads panel geometry directly; this just triggers a redraw
