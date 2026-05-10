@@ -203,7 +203,8 @@ final class AudioEngineNext {
             progressTimer?.invalidate()
             progressTimer = nil
         } else {
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isUserPlaying else { return }
                 self.progressTimer?.invalidate()
                 self.progressTimer = nil
             }
@@ -260,7 +261,8 @@ final class AudioEngineNext {
     func setOutputDevice(_ deviceID: AudioDeviceID) {
         guard let unit = engine.outputNode.audioUnit else { return }
         var id = deviceID == kAudioObjectUnknown ? systemDefaultOutputDeviceID() : deviceID
-        AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
+        let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
+        if status != noErr { print("[AudioEngineNext] setOutputDevice failed: \(status)") }
     }
 
     private func systemDefaultOutputDeviceID() -> AudioDeviceID {
@@ -306,10 +308,12 @@ final class AudioEngineNext {
             // Use Timer() constructor — scheduledTimer adds to .default mode only,
             // then RunLoop.main.add would double-register it causing erratic firing.
             let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                let snap = self.snapshot()
-                let newTime = max(0, snap.currentTime - 0.75)
-                self.seek(ratio: newTime / dur, autoplay: snap.isPlaying)
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let snap = self.snapshot()
+                    let newTime = max(0, snap.currentTime - 0.75)
+                    self.seek(ratio: newTime / dur, autoplay: snap.isPlaying)
+                }
             }
             RunLoop.main.add(t, forMode: .common)
             holdSeekTimer = t

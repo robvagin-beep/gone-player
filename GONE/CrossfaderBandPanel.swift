@@ -111,8 +111,10 @@ final class CrossfaderGapWindow: NSPanel {
     }
 
     override func close() {
-        observers.forEach { NotificationCenter.default.removeObserver($0) }
-        observers = []
+        if !observers.isEmpty {
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+            observers = []
+        }
         super.close()
     }
 
