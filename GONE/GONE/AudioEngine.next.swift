@@ -332,10 +332,16 @@ final class AudioEngineNext {
         }
     }
 
-    // Safe to call at any time — also called from stop() as a safety net.
+    // Safe to call at any time — also called from stop() which may run off main.
     func stopHoldSeek() {
-        holdSeekTimer?.invalidate()
+        let t = holdSeekTimer
         holdSeekTimer = nil
+        holdSeekStep = 0
+        if Thread.isMainThread {
+            t?.invalidate()
+        } else {
+            DispatchQueue.main.async { t?.invalidate() }
+        }
         applyPitchState()
     }
 
