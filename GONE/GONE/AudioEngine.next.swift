@@ -289,16 +289,31 @@ final class AudioEngineNext {
     // MARK: - Hold-seek (transport button scrub)
 
     private var holdSeekTimer: Timer?
+    private var holdSeekStep: Int = 0  // counts ticks for forward ramp-up
 
-    // Called when the user holds a transport arrow. Forward: 4× varispeed rush.
+    // Called when the user holds a transport arrow.
+    // Forward: Pioneer-style ramp — starts at 1.5×, eases to 4× over ~2s.
     // Backward: periodic seek-back at ~5× reverse (0.15s tick × 0.75s step).
     func startHoldSeek(forward: Bool) {
         stopHoldSeek()
         if forward {
+            holdSeekStep = 0
             pitchNode.bypass = true
             pitchNode.rate = 1.0
             pitchNode.pitch = 0
-            speedNode.rate = 4.0
+            speedNode.rate = 1.5   // initial gentle push
+            let t = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.holdSeekStep += 1
+                    // Ease from 1.5× to 4.0× over ~25 ticks (~2s)
+                    let progress = min(1.0, Double(self.holdSeekStep) / 25.0)
+                    let eased = 1.0 - pow(1.0 - progress, 2.0)   // ease-out quad
+                    self.speedNode.rate = Float(1.5 + eased * 2.5)
+                }
+            }
+            RunLoop.main.add(t, forMode: .common)
+            holdSeekTimer = t
         } else {
             let dur = durationSeconds
             guard dur > 0 else { return }
