@@ -904,6 +904,7 @@ struct PlaylistRowView: View {
     var isSelected: Bool = false
 
     @EnvironmentObject var state: PlayerState
+    @EnvironmentObject var analysisFeed: AnalysisProgressFeed
     @State private var hovered = false
     @State private var showCompletion: Bool = false
     @State private var showDeleteConfirm = false
@@ -911,7 +912,7 @@ struct PlaylistRowView: View {
     private var scanFrac: Double {
         if showCompletion { return 1.0 }
         guard track.bpmAnalysisState == .analyzing else { return 0 }
-        return state.analysisProgress[track.id] ?? 0
+        return analysisFeed.progress[track.id] ?? 0
     }
 
     private var contentOpacity: Double {

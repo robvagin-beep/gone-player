@@ -74,6 +74,7 @@ struct FullPlayerView: View {
                 .stroke(Color.black.opacity(0.6), lineWidth: 1)
                 .blur(radius: 0.2)
         }
+        .environmentObject(state.analysisFeed)
     }
 }
 

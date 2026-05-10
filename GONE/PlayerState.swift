@@ -122,7 +122,7 @@ final class PlayerState: ObservableObject {
 
     var isAnalyzingBPM = false
     var isComputingWaveforms = false
-    @Published var analysisProgress: [UUID: Double] = [:]
+    let analysisFeed = AnalysisProgressFeed()
     var bpmPriorityId: UUID? = nil
     var waveformPriorityId: UUID? = nil
     var isPresentingImportPanel = false

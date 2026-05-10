@@ -3,6 +3,7 @@ import AppKit
 
 struct TrackHeaderView: View {
     @EnvironmentObject var state: PlayerState
+    @EnvironmentObject var analysisFeed: AnalysisProgressFeed
 
     @State private var isBPMHovered = false
     @State private var feedCurrentTime: Double = 0
@@ -39,7 +40,7 @@ struct TrackHeaderView: View {
                         }
                         if t.bpm > 0 {
                             let isAnalyzing = t.bpmAnalysisState == .analyzing
-                            let bpmProgress = state.analysisProgress[t.id] ?? 0
+                            let bpmProgress = analysisFeed.progress[t.id] ?? 0
                             Button { state.reanalyzeBPMDeep(for: t.id) } label: {
                                 if isAnalyzing {
                                     BPMAnalyzingBadge()

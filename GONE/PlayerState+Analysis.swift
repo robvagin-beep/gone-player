@@ -27,12 +27,12 @@ extension PlayerState {
                 url: track.url, floor: floor, ceiling: ceiling
             ) { progress in
                 Task { @MainActor [weak self] in
-                    self?.analysisProgress[trackId] = progress
+                    self?.analysisFeed.progress[trackId] = progress
                 }
             }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.analysisProgress.removeValue(forKey: trackId)
+                self.analysisFeed.progress.removeValue(forKey: trackId)
                 guard let i = self.tracks.firstIndex(where: { $0.id == trackId }) else { return }
                 if bpm > 0 { self.tracks[i].bpm = bpm; self.tracks[i].bpmAnalysisState = .analyzed }
                 else       { self.tracks[i].bpmAnalysisState = .failed }
@@ -130,11 +130,11 @@ extension PlayerState {
         let ceiling = await MainActor.run { state.bpmAnalysisCeiling }
         let bpm = await LibraryScanner().analyzeBPM(url: track.url, floor: floor, ceiling: ceiling) { progress in
             Task { @MainActor [weak state] in
-                state?.analysisProgress[track.id] = progress
+                state?.analysisFeed.progress[track.id] = progress
             }
         }
         await MainActor.run {
-            state.analysisProgress.removeValue(forKey: track.id)
+            state.analysisFeed.progress.removeValue(forKey: track.id)
             guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
             if bpm > 0 { state.tracks[idx].bpm = bpm; state.tracks[idx].bpmAnalysisState = .analyzed }
             else       { state.tracks[idx].bpmAnalysisState = .failed }
