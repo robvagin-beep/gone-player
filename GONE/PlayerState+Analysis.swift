@@ -34,10 +34,8 @@ extension PlayerState {
                 guard let self else { return }
                 self.analysisProgress.removeValue(forKey: trackId)
                 guard let i = self.tracks.firstIndex(where: { $0.id == trackId }) else { return }
-                var t = self.tracks
-                if bpm > 0 { t[i].bpm = bpm; t[i].bpmAnalysisState = .analyzed }
-                else       { t[i].bpmAnalysisState = .failed }
-                self.tracks = t
+                if bpm > 0 { self.tracks[i].bpm = bpm; self.tracks[i].bpmAnalysisState = .analyzed }
+                else       { self.tracks[i].bpmAnalysisState = .failed }
             }
         }
     }
@@ -60,7 +58,7 @@ extension PlayerState {
         }
 
         var pending = tracks.filter {
-            !$0.isMissing && ($0.bpmAnalysisState == .pending || $0.bpmAnalysisState == .failed)
+            !$0.isMissing && $0.bpmAnalysisState == .pending
         }
         guard !pending.isEmpty else { return }
 
@@ -72,9 +70,7 @@ extension PlayerState {
 
         // Mark all as .analyzing upfront so progress bars appear immediately.
         let pendingIds = Set(pending.map(\.id))
-        var t = tracks
-        for i in t.indices where pendingIds.contains(t[i].id) { t[i].bpmAnalysisState = .analyzing }
-        tracks = t
+        for i in tracks.indices where pendingIds.contains(tracks[i].id) { tracks[i].bpmAnalysisState = .analyzing }
 
         Task.detached(priority: .utility) { [self] in
             // Wait out any active import — competing AVAssetReaders freeze the UI.
@@ -122,7 +118,7 @@ extension PlayerState {
                 self.isAnalyzingBPM = false
                 self.bpmPriorityId = nil
                 let hasMore = self.tracks.contains {
-                    !$0.isMissing && ($0.bpmAnalysisState == .pending || $0.bpmAnalysisState == .failed)
+                    !$0.isMissing && $0.bpmAnalysisState == .pending
                 }
                 if hasMore { self.scheduleBPMAnalysis() }
             }
@@ -140,10 +136,8 @@ extension PlayerState {
         await MainActor.run {
             state.analysisProgress.removeValue(forKey: track.id)
             guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
-            var u = state.tracks
-            if bpm > 0 { u[idx].bpm = bpm; u[idx].bpmAnalysisState = .analyzed }
-            else       { u[idx].bpmAnalysisState = .failed }
-            state.tracks = u
+            if bpm > 0 { state.tracks[idx].bpm = bpm; state.tracks[idx].bpmAnalysisState = .analyzed }
+            else       { state.tracks[idx].bpmAnalysisState = .failed }
         }
     }
 
