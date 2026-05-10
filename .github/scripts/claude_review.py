@@ -57,9 +57,11 @@ def post_comment(repo: str, pr_number: str, body: str, token: str) -> None:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        if resp.status not in (200, 201):
-            raise RuntimeError(f"GitHub API error: {resp.status}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"GitHub API error: {e.code} {e.reason}") from e
 
 
 def main() -> None:

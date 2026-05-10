@@ -54,7 +54,7 @@ final class ArtworkCache: @unchecked Sendable {
         guard let thumb = ctx.makeImage() else { return }
         let rep = NSBitmapImageRep(cgImage: thumb)
         guard let jpg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else { return }
-        try? jpg.write(to: url)
+        try? jpg.write(to: url, options: .atomic)
     }
 
     private func prune() {
