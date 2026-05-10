@@ -119,10 +119,15 @@ struct ClonePlayerShell: View {
         var f = current
         f.origin.y = current.maxY - size.height   // top-fixed, grows downward
         f.size = size
-        // Clamp to screen: bottom >= vis.minY AND top <= vis.maxY
+        // Clamp to screen. When content exceeds screen height, pin top on screen
+        // and let bottom overflow rather than pushing the header off the top.
         if let screen = w.screen ?? NSScreen.main {
             let vis = screen.visibleFrame
-            f.origin.y = max(vis.minY, min(vis.maxY - f.size.height, f.origin.y))
+            if f.size.height > vis.height {
+                f.origin.y = vis.maxY - f.size.height
+            } else {
+                f.origin.y = max(vis.minY, min(vis.maxY - f.size.height, f.origin.y))
+            }
         }
         w.setFrame(f, display: true, animate: true)
     }

@@ -371,6 +371,9 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "autoBPMOnImport")     != nil { autoBPMOnImport     = ud.bool(forKey: "autoBPMOnImport") }
         if ud.object(forKey: "bpmFloor")            != nil { bpmAnalysisFloor    = ud.double(forKey: "bpmFloor") }
         if ud.object(forKey: "bpmCeiling")          != nil { bpmAnalysisCeiling  = ud.double(forKey: "bpmCeiling") }
+        if !bpmAnalysisFloor.isFinite || bpmAnalysisFloor < 30 || bpmAnalysisFloor > 300 { bpmAnalysisFloor = 60 }
+        if !bpmAnalysisCeiling.isFinite || bpmAnalysisCeiling < 60 || bpmAnalysisCeiling > 400 { bpmAnalysisCeiling = 180 }
+        if bpmAnalysisCeiling <= bpmAnalysisFloor { bpmAnalysisCeiling = bpmAnalysisFloor + 30 }
         if ud.object(forKey: "autoPlay")            != nil { autoPlayOnImport    = ud.bool(forKey: "autoPlay") }
         if ud.object(forKey: "autoOpenPlaylist")    != nil { autoOpenPlaylistOnImport = ud.bool(forKey: "autoOpenPlaylist") }
         if ud.object(forKey: "confirmDelete")       != nil { confirmBeforeDelete  = ud.bool(forKey: "confirmDelete") }
@@ -379,6 +382,9 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "magnifyEnabled")      != nil { magnifyEnabled      = ud.bool(forKey: "magnifyEnabled") }
         if ud.object(forKey: "magnifyProximity")    != nil { magnifyProximity    = ud.double(forKey: "magnifyProximity") }
         if ud.object(forKey: "magnifySpeed")        != nil { magnifySpeed        = ud.double(forKey: "magnifySpeed") }
+        if !windowScale.isFinite || windowScale < 0.5 || windowScale > 2.0 { windowScale = 1.0 }
+        if !magnifyProximity.isFinite || magnifyProximity <= 0 { magnifyProximity = 120 }
+        if !magnifySpeed.isFinite || magnifySpeed <= 0 { magnifySpeed = 0.18 }
     }
 
     func persistSettings() {

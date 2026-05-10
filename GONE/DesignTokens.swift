@@ -6,6 +6,7 @@ enum G {
     // ── Colors ────────────────────────────────────────────────────────────────
     static let bgWindow       = Color(hex: "#141414")
     static let bgPage         = Color(hex: "#0e0e0e")
+    static let bgFloatingPanel = Color(hex: "#191919")
     static let bgPanelEQ      = Color.black.opacity(0.18)
     static let bgPanelPL      = Color.black.opacity(0.18)
     static let bgPitchRail    = Color.black.opacity(0.18)

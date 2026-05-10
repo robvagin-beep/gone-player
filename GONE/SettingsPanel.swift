@@ -31,7 +31,6 @@ final class AudioDeviceHelper {
 
         var devices: [AudioOutputDevice] = [.systemDefault]
         for id in ids {
-            // Skip devices with no output streams
             var outAddr = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyStreams,
                 mScope: kAudioObjectPropertyScopeOutput,
@@ -41,14 +40,15 @@ final class AudioDeviceHelper {
             guard AudioObjectGetPropertyDataSize(id, &outAddr, 0, nil, &streamSize) == noErr,
                   streamSize > 0 else { continue }
 
-            // Get device name
             var nameAddr = AudioObjectPropertyAddress(
                 mSelector: kAudioObjectPropertyName,
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain
             )
+            // Core Audio writes a retained CFStringRef (pointer-sized) into the buffer.
+            // Measure pointer size directly to be unambiguous about the buffer requirement.
             var cfName: CFString = "" as CFString
-            var nameSize = UInt32(MemoryLayout<CFString>.stride)
+            var nameSize = UInt32(MemoryLayout<UnsafeRawPointer>.size)
             guard AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfName) == noErr else { continue }
             devices.append(AudioOutputDevice(id: id, name: cfName as String))
         }
@@ -103,27 +103,26 @@ final class SettingsPanel {
         hc.view.layoutSubtreeIfNeeded()
         let size  = hc.view.fittingSize
         let winF  = window.frame
-        // Appear just below the base player body, left-aligned with the player
         let baseBottom = winF.maxY - FullPlayerView.baseHeight - 12
         let x = winF.minX + 8
         let y = baseBottom - size.height - 4
         panel!.setFrame(CGRect(origin: CGPoint(x: x, y: y), size: size), display: true)
         panel!.orderFront(nil)
 
-        // Local: clicks inside the app (player window behind the panel).
-        // Returning nil consumes the event — prevents triggering controls behind the panel
-        // and fixes the gear-button reopen loop (click closes, click is consumed, button doesn't reopen).
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self, let p = self.panel, p.isVisible else { return event }
+            // Don't dismiss while dragging the panel itself
+            if (self.hostController?.rootView.state) != nil,
+               SettingsView.isDraggingGlobal { return event }
             if !p.frame.contains(NSEvent.mouseLocation) {
                 Task { @MainActor in self.hide() }
                 return nil
             }
             return event
         }
-        // Global: clicks in other apps
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             guard let self, let p = self.panel, p.isVisible else { return }
+            if SettingsView.isDraggingGlobal { return }
             Task { @MainActor in self.hide() }
         }
     }
@@ -136,7 +135,7 @@ final class SettingsPanel {
     }
 }
 
-// MARK: - SwiftUI host (passes ObservedObject across the bridge)
+// MARK: - SwiftUI host
 
 struct SettingsHostView: View {
     @ObservedObject var state: PlayerState
@@ -148,14 +147,35 @@ struct SettingsHostView: View {
 struct SettingsView: View {
     @ObservedObject var state: PlayerState
 
-    enum Tab: String, CaseIterable { case audio = "AUDIO"; case playback = "PLAY"; case analysis = "SCAN"; case visual = "LOOK"; case scale = "SCALE"; case files = "FILES"; case info = "INFO" }
+    // Shared drag flag: prevents monitor from dismissing the panel mid-drag.
+    // SettingsPanel.show closure reads this via the static so we don't need a binding.
+    static var isDraggingGlobal = false
+
+    enum Tab: String, CaseIterable {
+        case audio    = "AUDIO"
+        case playback = "PLAYBACK"
+        case display  = "DISPLAY"
+        case info     = "INFO"
+    }
     @State private var tab: Tab = .audio
     @State private var dragStartOrigin: NSPoint?
     @State private var dragStartMouse: NSPoint = .zero
 
     var body: some View {
         VStack(spacing: 0) {
-            // Tab bar — drag from here to reposition the panel
+            // Drag affordance dots — standard macOS borderless panel pattern
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { _ in
+                    Circle()
+                        .fill(Color.white.opacity(0.18))
+                        .frame(width: 3, height: 3)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 6)
+            .padding(.bottom, 4)
+
+            // Tab bar — also the drag handle
             HStack(spacing: 0) {
                 CloseTabBtn()
                 Rectangle()
@@ -181,9 +201,10 @@ struct SettingsView: View {
             .background(Color.white.opacity(0.025))
             .cursor(.openHand)
             .simultaneousGesture(
-                DragGesture(minimumDistance: 8)
+                DragGesture(minimumDistance: 3)
                     .onChanged { _ in
                         guard let p = SettingsPanel.shared.currentPanel else { return }
+                        SettingsView.isDraggingGlobal = true
                         if dragStartOrigin == nil {
                             dragStartOrigin = p.frame.origin
                             dragStartMouse  = NSEvent.mouseLocation
@@ -192,7 +213,10 @@ struct SettingsView: View {
                         let dy = NSEvent.mouseLocation.y - dragStartMouse.y
                         p.setFrameOrigin(NSPoint(x: dragStartOrigin!.x + dx, y: dragStartOrigin!.y + dy))
                     }
-                    .onEnded { _ in dragStartOrigin = nil }
+                    .onEnded { _ in
+                        dragStartOrigin = nil
+                        SettingsView.isDraggingGlobal = false
+                    }
             )
 
             Divider().overlay(Color.white.opacity(0.07))
@@ -201,17 +225,14 @@ struct SettingsView: View {
                 switch tab {
                 case .audio:    AudioSettingsTab(state: state)
                 case .playback: PlaybackSettingsTab(state: state)
-                case .analysis: AnalysisSettingsTab(state: state)
-                case .visual:   VisualSettingsTab(state: state)
-                case .scale:    ScaleSettingsTab(state: state)
-                case .files:    FilesSettingsTab(state: state)
+                case .display:  DisplaySettingsTab(state: state)
                 case .info:     InfoSettingsTab()
                 }
             }
             .frame(maxWidth: .infinity)
         }
         .frame(width: 360)
-        .background(Color(hex: "#191919"))
+        .background(G.bgFloatingPanel)
         .clipShape(RoundedRectangle(cornerRadius: G.rFloatingPanel))
         .overlay {
             RoundedRectangle(cornerRadius: G.rFloatingPanel)
@@ -289,6 +310,7 @@ private struct SDivider: View {
 
 struct MiniToggle: View {
     @Binding var isOn: Bool
+    @State private var hovered = false
 
     var body: some View {
         Button { isOn.toggle() } label: {
@@ -296,14 +318,19 @@ struct MiniToggle: View {
                 Capsule()
                     .fill(isOn ? Color.white.opacity(0.80) : Color.white.opacity(0.10))
                     .frame(width: 28, height: 15)
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.white.opacity(hovered ? 0.18 : 0), lineWidth: 1)
+                    }
                 Circle()
-                    .fill(isOn ? Color(hex: "#191919") : Color.white.opacity(0.40))
+                    .fill(isOn ? G.bgFloatingPanel : Color.white.opacity(0.40))
                     .frame(width: 11, height: 11)
                     .offset(x: isOn ? 6.5 : -6.5)
             }
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.20, dampingFraction: 0.78), value: isOn)
+        .onHover { hovered = $0 }
     }
 }
 
@@ -320,9 +347,10 @@ private struct NumStepper: View {
                 Image(systemName: "minus")
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.45))
-                    .frame(width: 18, height: 18)
+                    .frame(width: 24, height: 24)
                     .background(Color.white.opacity(0.07))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -338,11 +366,62 @@ private struct NumStepper: View {
                 Image(systemName: "plus")
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.45))
-                    .frame(width: 18, height: 18)
+                    .frame(width: 24, height: 24)
                     .background(Color.white.opacity(0.07))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+        }
+    }
+}
+
+// Unified slider used for both gradient-map (custom track) and fill-bar (magnify, scale) styles.
+private struct SettingsSlider: View {
+    let label: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    var track: AnyView? = nil   // nil = fill-bar style
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !label.isEmpty {
+                Text(label)
+                    .font(G.mono(7, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.30))
+                    .tracking(0.6)
+            }
+            GeometryReader { geo in
+                let fraction = CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))
+                let thumbX   = fraction * max(0, geo.size.width - 13)
+
+                ZStack(alignment: .leading) {
+                    if let t = track {
+                        RoundedRectangle(cornerRadius: 3)
+                            .overlay { t.clipShape(RoundedRectangle(cornerRadius: 3)) }
+                            .frame(height: 7)
+                            .opacity(0.85)
+                    } else {
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color.white.opacity(0.10))
+                            .frame(height: 7)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color.white.opacity(0.28))
+                            .frame(width: thumbX + 6.5, height: 7)
+                    }
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 13, height: 13)
+                        .shadow(color: .black.opacity(0.45), radius: 2, x: 0, y: 1)
+                        .offset(x: thumbX)
+                }
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { g in
+                    let frac = max(0, min(1, g.location.x / geo.size.width))
+                    value = range.lowerBound + frac * (range.upperBound - range.lowerBound)
+                })
+            }
+            .frame(height: 14)
         }
     }
 }
@@ -353,6 +432,7 @@ private struct AudioSettingsTab: View {
     @ObservedObject var state: PlayerState
     @State private var devices: [AudioOutputDevice] = []
     @State private var currentID: AudioDeviceID = kAudioObjectUnknown
+    @State private var hoveredID: AudioDeviceID? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -367,6 +447,7 @@ private struct AudioSettingsTab: View {
             } else {
                 ForEach(devices) { device in
                     let isSel = device.id == currentID
+                    let isHov = hoveredID == device.id
                     Button {
                         currentID = device.id
                         AudioEngineNext.shared.setOutputDevice(device.id)
@@ -385,8 +466,10 @@ private struct AudioSettingsTab: View {
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 7)
+                        .background(isHov && !isSel ? Color.white.opacity(0.04) : Color.clear)
                     }
                     .buttonStyle(.plain)
+                    .onHover { hoveredID = $0 ? device.id : nil }
 
                     if device.id != devices.last?.id {
                         SDivider()
@@ -403,7 +486,7 @@ private struct AudioSettingsTab: View {
     }
 }
 
-// MARK: - Tab: PLAYBACK
+// MARK: - Tab: PLAYBACK (merged PLAY + SCAN)
 
 private struct PlaybackSettingsTab: View {
     @ObservedObject var state: PlayerState
@@ -413,56 +496,56 @@ private struct PlaybackSettingsTab: View {
             SHead(text: "ON IMPORT")
             SRow(label: "Auto-play") { MiniToggle(isOn: $state.autoPlayOnImport) }
             SDivider()
-            SRow(label: "Open playlist", sub: "show track list after drop") { MiniToggle(isOn: $state.autoOpenPlaylistOnImport) }
+            SRow(label: "Open playlist", sub: "show track list after drop") {
+                MiniToggle(isOn: $state.autoOpenPlaylistOnImport)
+            }
 
             SHead(text: "LIBRARY")
-            SRow(label: "Confirm delete", sub: "ask before removing from library") { MiniToggle(isOn: $state.confirmBeforeDelete) }
+            SRow(label: "Confirm delete", sub: "ask before removing from library") {
+                MiniToggle(isOn: $state.confirmBeforeDelete)
+            }
             SDivider()
             SRow(label: "Hide missing tracks") { MiniToggle(isOn: $state.hideMissingTracks) }
 
-            SHead(text: "SESSION")
-            SRow(label: "Restore on launch", sub: "coming soon") {
-                MiniToggle(isOn: .constant(false))
-                    .opacity(0.35)
-                    .allowsHitTesting(false)
-            }
-
-            Spacer().frame(height: 14)
-        }
-    }
-}
-
-// MARK: - Tab: ANALYSIS
-
-private struct AnalysisSettingsTab: View {
-    @ObservedObject var state: PlayerState
-
-    var body: some View {
-        VStack(spacing: 0) {
             SHead(text: "BPM DETECTION")
             SRow(label: "Auto-scan on import") { MiniToggle(isOn: $state.autoBPMOnImport) }
 
             SHead(text: "DETECTION RANGE")
-            SRow(label: "Min BPM") { NumStepper(value: $state.bpmAnalysisFloor, range: 30...150, step: 5) }
+            SRow(label: "Min BPM") {
+                NumStepper(value: $state.bpmAnalysisFloor, range: 30...150, step: 5)
+            }
             SDivider()
-            SRow(label: "Max BPM") { NumStepper(value: $state.bpmAnalysisCeiling, range: 100...240, step: 5) }
-
-            Spacer().frame(height: 14)
+            SRow(label: "Max BPM") {
+                NumStepper(value: $state.bpmAnalysisCeiling, range: 100...240, step: 5)
+            }
         }
+        // Keep floor < ceiling with a minimum gap of one step (5 BPM)
+        .onChange(of: state.bpmAnalysisFloor) { floor in
+            if state.bpmAnalysisCeiling <= floor { state.bpmAnalysisCeiling = floor + 5 }
+        }
+        .onChange(of: state.bpmAnalysisCeiling) { ceiling in
+            if state.bpmAnalysisFloor >= ceiling { state.bpmAnalysisFloor = ceiling - 5 }
+        }
+        .padding(.bottom, 14)
     }
 }
 
-// MARK: - Tab: VISUAL
+// MARK: - Tab: DISPLAY (merged LOOK + SCALE)
 
-private struct VisualSettingsTab: View {
+private struct DisplaySettingsTab: View {
     @ObservedObject var state: PlayerState
+
+    private let presets: [(String, Double)] = [
+        ("50%", 0.50), ("60%", 0.60), ("70%", 0.70),
+        ("80%", 0.80), ("90%", 0.90), ("100%", 1.00)
+    ]
 
     var body: some View {
         VStack(spacing: 0) {
             SHead(text: "GRADIENT MAP")
 
             VStack(spacing: 14) {
-                GMapSlider(
+                SettingsSlider(
                     label: "COLOR",
                     value: $state.gradientMapHue,
                     range: 0...360,
@@ -471,8 +554,7 @@ private struct VisualSettingsTab: View {
                         startPoint: .leading, endPoint: .trailing
                     ))
                 )
-
-                GMapSlider(
+                SettingsSlider(
                     label: "SATURATION",
                     value: $state.gradientMapSaturation,
                     range: 0...100,
@@ -486,114 +568,12 @@ private struct VisualSettingsTab: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 14)
 
-            Spacer().frame(height: 6)
-        }
-    }
-}
+            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
 
-private struct GMapSlider: View {
-    let label: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let track: AnyView
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
-                .font(G.mono(7, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.30))
-                .tracking(0.6)
-
-            GeometryReader { geo in
-                let fraction = CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))
-                let thumbX   = fraction * max(0, geo.size.width - 12)
-
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .overlay { track.clipShape(RoundedRectangle(cornerRadius: 3)) }
-                        .frame(height: 7)
-                        .opacity(0.85)
-
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: 13, height: 13)
-                        .shadow(color: .black.opacity(0.45), radius: 2, x: 0, y: 1)
-                        .offset(x: thumbX - 0.5, y: 0)
-                }
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0).onChanged { g in
-                    let frac = max(0, min(1, g.location.x / geo.size.width))
-                    value = range.lowerBound + frac * (range.upperBound - range.lowerBound)
-                })
-            }
-            .frame(height: 14)
-        }
-    }
-}
-
-// MARK: - Tab: INFO
-
-private struct InfoSettingsTab: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Wordmark — constrained to ~65% of panel width, centered
-            Image("GoneWordmark")
-                .resizable()
-                .renderingMode(.template)
-                .aspectRatio(contentMode: .fit)
-                .foregroundStyle(Color.white.opacity(0.80))
-                .frame(maxWidth: 150)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 16)
-                .padding(.bottom, 10)
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Quick tracklist prep for DJs.\nDrop a folder, sort by BPM,\ncheck tempo before the set.\nNo Rekordbox. No database. Just prep.")
-                    .font(G.mono(10))
-                    .foregroundStyle(Color.white.opacity(0.46))
-                    .lineSpacing(3)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    infoRow("VERSION", "0.4 BETA")
-                    infoRow("BUILD",   "MAY 2026")
-                    infoRow("BY",      "HEARTBEAT STUDIO")
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
-            .padding(.bottom, 18)
-        }
-    }
-
-    private func infoRow(_ label: String, _ value: String) -> some View {
-        HStack(spacing: 0) {
-            Text(label)
-                .font(G.mono(8))
-                .foregroundStyle(Color.white.opacity(0.20))
-                .frame(width: 58, alignment: .leading)
-            Text(value)
-                .font(G.mono(8, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.46))
-        }
-    }
-}
-
-// MARK: - Tab: SCALE
-
-private struct ScaleSettingsTab: View {
-    @ObservedObject var state: PlayerState
-
-    private let presets: [(String, Double)] = [
-        ("50%", 0.50), ("60%", 0.60), ("70%", 0.70),
-        ("80%", 0.80), ("90%", 0.90), ("100%", 1.00)
-    ]
-
-    var body: some View {
-        VStack(spacing: 0) {
             SHead(text: "DISPLAY SCALE")
 
-            GMapSlider(
-                label: "SCALE",
+            SettingsSlider(
+                label: "",
                 value: $state.windowScale,
                 range: 0.50...1.00,
                 track: AnyView(LinearGradient(
@@ -605,7 +585,6 @@ private struct ScaleSettingsTab: View {
             .padding(.top, 14)
             .padding(.bottom, 10)
 
-            // Preset taps
             HStack(spacing: 4) {
                 ForEach(presets, id: \.0) { label, value in
                     Button {
@@ -629,7 +608,6 @@ private struct ScaleSettingsTab: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 14)
 
-            // ── Magnify ──────────────────────────────────────────────────────
             Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
 
             SHead(text: "MAGNIFY")
@@ -640,7 +618,6 @@ private struct ScaleSettingsTab: View {
             if state.magnifyEnabled {
                 SDivider()
 
-                // Proximity slider
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("PROXIMITY")
@@ -653,7 +630,7 @@ private struct ScaleSettingsTab: View {
                             .foregroundStyle(Color.white.opacity(0.55))
                             .monospacedDigit()
                     }
-                    MagnifySlider(value: $state.magnifyProximity, range: 20...200)
+                    SettingsSlider(label: "", value: $state.magnifyProximity, range: 20...200)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
@@ -678,71 +655,53 @@ private struct ScaleSettingsTab: View {
                     }
                 }
             }
-
-            Spacer().frame(height: 14)
         }
+        .padding(.bottom, 14)
     }
 }
 
-private struct MagnifySlider: View {
-    @Binding var value: Double
-    let range: ClosedRange<Double>
+// MARK: - Tab: INFO
 
+private struct InfoSettingsTab: View {
     var body: some View {
-        GeometryReader { geo in
-            let fraction = CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))
-            let thumbX   = fraction * max(0, geo.size.width - 12)
+        VStack(alignment: .leading, spacing: 0) {
+            Image("GoneWordmark")
+                .resizable()
+                .renderingMode(.template)
+                .aspectRatio(contentMode: .fit)
+                .foregroundStyle(Color.white.opacity(0.80))
+                .frame(maxWidth: 150)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 16)
+                .padding(.bottom, 10)
 
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.white.opacity(0.10))
-                    .frame(height: 7)
-                // Fill left of thumb
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.white.opacity(0.28))
-                    .frame(width: thumbX + 6, height: 7)
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 13, height: 13)
-                    .shadow(color: .black.opacity(0.45), radius: 2, x: 0, y: 1)
-                    .offset(x: thumbX - 0.5)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Quick tracklist prep for DJs.\nDrop a folder, sort by BPM,\ncheck tempo before the set.\nNo Rekordbox. No database. Just prep.")
+                    .font(G.mono(10))
+                    .foregroundStyle(Color.white.opacity(0.46))
+                    .lineSpacing(3)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    SInfoRow("VERSION", "0.4 BETA")
+                    SInfoRow("BUILD",   "MAY 2026")
+                    SInfoRow("BY",      "HEARTBEAT STUDIO")
+                }
             }
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { g in
-                let frac = max(0, min(1, g.location.x / geo.size.width))
-                value = range.lowerBound + frac * (range.upperBound - range.lowerBound)
-            })
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 18)
         }
-        .frame(height: 14)
     }
-}
 
-// MARK: - Tab: FILES
-
-private struct FilesSettingsTab: View {
-    @ObservedObject var state: PlayerState
-
-    var body: some View {
-        VStack(spacing: 0) {
-            SHead(text: "WATCH FOLDER")
-            SRow(label: "Default folder", sub: "auto-open on launch") {
-                Text("COMING SOON")
-                    .font(G.mono(8, weight: .semibold))
-                    .foregroundStyle(G.textMuted)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Color.white.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: G.rBadge))
-            }
-
-            SHead(text: "BPM CACHE")
-            SRow(label: "Cache analysis results", sub: "skip re-scan on next import") {
-                MiniToggle(isOn: .constant(false))
-                    .opacity(0.35)
-                    .allowsHitTesting(false)
-            }
-
-            Spacer().frame(height: 14)
+    private func SInfoRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 0) {
+            Text(label)
+                .font(G.mono(8))
+                .foregroundStyle(Color.white.opacity(0.20))
+                .frame(width: 58, alignment: .leading)
+            Text(value)
+                .font(G.mono(8, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.46))
         }
     }
 }

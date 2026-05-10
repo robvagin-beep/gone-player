@@ -124,7 +124,8 @@ final class LibraryScanner {
         let bpmItems = AVMetadataItem.metadataItems(
             from: id3Meta ?? [], withKey: "TBPM", keySpace: .id3)
         if let val = try? await bpmItems.first?.load(.stringValue),
-           let bpmVal = Double(val.trimmingCharacters(in: .whitespaces)) {
+           let bpmVal = Double(val.trimmingCharacters(in: .whitespaces)),
+           bpmVal.isFinite && bpmVal > 0 && bpmVal < 1000 {
             bpm = bpmVal
         }
 
@@ -319,12 +320,14 @@ final class LibraryScanner {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: folderURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
         var urls: [URL] = []
         while let fileURL = enumerator.nextObject() as? URL {
+            if let vals = try? fileURL.resourceValues(forKeys: [.isSymbolicLinkKey]),
+               vals.isSymbolicLink == true { continue }
             if Self.supportedExtensions.contains(fileURL.pathExtension.lowercased()) {
                 urls.append(fileURL)
             }
@@ -426,10 +429,12 @@ final class LibraryScanner {
     }
 
     private func sanitizedArtworkKey(_ value: String) -> String {
-        value
+        let sanitized = value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
+        guard !sanitized.contains("..") else { return "" }
+        return sanitized
     }
 
     private func normalizedArtworkData(from data: Data, maxPixelSize: CGFloat = 256) -> Data? {
