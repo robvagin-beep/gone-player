@@ -103,7 +103,7 @@ final class AudioEngineNext {
     private let spectrumQueue = DispatchQueue(label: "gone.spectrum", qos: .utility)
     private var audioActivity: NSObjectProtocol?
 
-    init() {
+    private init() {
         var window = [Float](repeating: 0, count: fftSize)
         vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
         hannWindow = window
@@ -121,8 +121,10 @@ final class AudioEngineNext {
     }
 
     deinit {
-        progressTimer?.invalidate()
-        holdSeekTimer?.invalidate()
+        let pt = progressTimer; let ht = holdSeekTimer
+        progressTimer = nil;   holdSeekTimer = nil
+        if Thread.isMainThread { pt?.invalidate(); ht?.invalidate() }
+        else { DispatchQueue.main.async { pt?.invalidate(); ht?.invalidate() } }
         engine.mainMixerNode.removeTap(onBus: 0)
         if let obs = configChangeObserver { NotificationCenter.default.removeObserver(obs) }
         if let fftSetup {

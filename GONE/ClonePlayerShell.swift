@@ -114,6 +114,11 @@ struct ClonePlayerShell: View {
         var f = current
         f.origin.y = current.maxY - size.height   // top-fixed, grows downward
         f.size = size
+        // Clamp to screen so expanding panels don't push below the dock
+        if let screen = w.screen ?? NSScreen.main {
+            let vis = screen.visibleFrame
+            f.origin.y = max(vis.minY, f.origin.y)
+        }
         w.setFrame(f, display: true)
     }
 }

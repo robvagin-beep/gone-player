@@ -7,7 +7,7 @@ import SwiftUI
 final class BandHitTestView: NSView {
     var segA: NSPoint = .zero
     var segB: NSPoint = .zero
-    var hitRadius: CGFloat = 60
+    let hitRadius: CGFloat = 60
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Require endpoints to be meaningfully apart (> 4pt) before accepting hits.

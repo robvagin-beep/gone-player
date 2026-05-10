@@ -53,6 +53,17 @@ playerNode → speedNode → pitchNode → hpfNode → lpfNode → eqNode → di
 - `AudioEngineNext.secondary` eager init: pre-existing architecture, out of scope for this PR
 - `currentURL`/`audioFile` thread safety: pre-existing architecture concern, out of scope
 - `EQCurveView.animateTo` Task churn: pre-existing, out of scope
+- `AudioEngineNext.init()` is `private` — enforces 2-instance invariant
+- `AudioEngineNext.deinit` timer thread guard: capture pattern added, same as `stop()`
+- `BandHitTestView.hitRadius` is `let` — never reassigned
+- `ClonePlayerShell.resizeWindow` screen bounds: clamps to `screen.visibleFrame`
+- `EmptyOverlayView.startTypewriter`: `animTask?.cancel()` called at top before new task
+- `CrossfaderBridgeView` `@ObservedObject var manager`: correctly declared, Canvas redraws on crossfade change ✓
+- `SplitModeManager.activate()` copies `primaryState.volume` to `secondaryState` ✓
+- `bumpToken()` discarded in `stop()`: intentional — stop() does not schedule any buffers
+- `AudioEngineNext.stop()` `stopHoldSeek()` off-main: has main-thread dispatch guard for timer invalidation
+- `CrossfaderGapWindow` double-close observer cleanup: idempotent, safe
+- `ClonePlayerShell.resizeWindow` vs snap: clone window is never snap-managed, no conflict possible
 
 ## Output format:
 Write in English. Group findings by severity:
