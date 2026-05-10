@@ -40,7 +40,7 @@ struct TrackHeaderView: View {
                         if t.bpm > 0 {
                             let isAnalyzing = t.bpmAnalysisState == .analyzing
                             let bpmProgress = state.analysisProgress[t.id] ?? 0
-                            Button { state.reanalyzeBPM(for: t.id) } label: {
+                            Button { state.reanalyzeBPMDeep(for: t.id) } label: {
                                 if isAnalyzing {
                                     Text("ANALYZING")
                                         .font(G.mono(8, weight: .semibold))
@@ -67,7 +67,7 @@ struct TrackHeaderView: View {
                             .disabled(isAnalyzing)
                             .onHover { isBPMHovered = isAnalyzing ? false : $0 }
                             .cursor(isAnalyzing ? .arrow : .pointingHand)
-                            .goneTooltip(isAnalyzing ? "Analyzing…" : "Re-analyze BPM")
+                            .goneTooltip(isAnalyzing ? "Analyzing…" : "Deep BPM re-analysis — wider range, half-tempo correction")
                         }
                         if state.pitch != 0, t.bpm > 0 {
                             BadgeView("\(Int((t.bpm * (1 + state.pitch / 100)).rounded())) BPM",
@@ -133,7 +133,7 @@ struct TrackHeaderView: View {
     }
 
     private var subtitleText: String {
-        guard let t = state.current else { return "DROP A TRACK TO BEGIN" }
+        guard let t = state.current else { return "beta 0.7" }
         let artist = t.artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let album  = t.album.trimmingCharacters(in: .whitespacesAndNewlines)
         switch (artist.isEmpty, album.isEmpty) {
