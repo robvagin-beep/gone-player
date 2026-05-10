@@ -64,6 +64,10 @@ playerNode → speedNode → pitchNode → hpfNode → lpfNode → eqNode → di
 - `AudioEngineNext.stop()` `stopHoldSeek()` off-main: has main-thread dispatch guard for timer invalidation
 - `CrossfaderGapWindow` double-close observer cleanup: idempotent, safe
 - `ClonePlayerShell.resizeWindow` vs snap: clone window is never snap-managed, no conflict possible
+- `ClonePlayerShell.resizeWindow` y-clamping: clamps both bottom (>= vis.minY) AND top (<= vis.maxY - height)
+- `ScrollWheelNSView` momentum gating: `guard event.momentumPhase == .stationary` blocks trackpad inertia
+- `EmptyOverlayView` in clone: gated with `state.audioEngine !== AudioEngineNext.secondary` — clone never shows import UX
+- `BandHitTestView.hitTest` pass-through: root content view returning nil causes AppKit to pass event to window below ✓
 
 ## Output format:
 Write in English. Group findings by severity:
