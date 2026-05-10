@@ -127,6 +127,7 @@ struct EmptyOverlayView: View {
     }
 
     private func startTypewriter() {
+        animTask?.cancel()
         animTask = Task { @MainActor in
             var idx = 0
             while !Task.isCancelled {

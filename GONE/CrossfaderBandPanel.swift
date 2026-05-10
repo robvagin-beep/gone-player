@@ -92,6 +92,14 @@ final class CrossfaderGapWindow: NSPanel {
                 NotificationCenter.default.addObserver(forName: name, object: windowB, queue: .main, using: refresh)
             ])
         }
+        // Tear down proactively if either player window closes independently
+        for win in [windowA, windowB] {
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: NSWindow.willCloseNotification, object: win, queue: .main
+                ) { [weak self] _ in self?.close() }
+            )
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }

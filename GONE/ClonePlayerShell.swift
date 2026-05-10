@@ -101,11 +101,8 @@ struct ClonePlayerShell: View {
                 .allowsHitTesting(false)
         )
         // Auto-resize clone window when panels open/close
-        .onChange(of: shellSize.height) { newH in
-            resizeWindow(to: shellSize)
-        }
-        .onChange(of: shellSize.width) { newW in
-            resizeWindow(to: shellSize)
+        .onChange(of: shellSize) { newSize in
+            resizeWindow(to: newSize)
         }
     }
 

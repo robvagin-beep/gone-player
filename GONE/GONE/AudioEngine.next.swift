@@ -38,23 +38,30 @@ final class AudioEngineNext {
 
     private var audioFile: AVAudioFile?
     private var currentURL: URL?
-    private var scheduledStartFrame: AVAudioFramePosition = 0
-    private var pausedFrameOffset: AVAudioFramePosition = 0
-    private var progressTimer: Timer?
-    private var playbackToken: UInt64 = 0
+    private var scheduledStartFrame: AVAudioFramePosition = 0  // Main-thread only
+    private var pausedFrameOffset: AVAudioFramePosition = 0    // Main-thread only
+    private var progressTimer: Timer?                          // Main-thread only
+    // playbackToken is read on bufferQueue and written on main — guard with lock
+    private let tokenLock = NSLock()
+    private var _playbackToken: UInt64 = 0
+    private var playbackToken: UInt64 {
+        get { tokenLock.withLock { _playbackToken } }
+        set { tokenLock.withLock { _playbackToken = newValue } }
+    }
     private var isScheduled = false
     private var configChangeObserver: NSObjectProtocol?
 
-    private var pitchPercent: Double = 0
-    private var masterTempo = true
-    private var currentRate: Double = 1.0
-    private var isUserPlaying = false   // tracks user intent, not hardware node state
+    private var pitchPercent: Double = 0       // Main-thread only
+    private var masterTempo = true              // Main-thread only
+    private var currentRate: Double = 1.0      // Main-thread only
+    private var isUserPlaying = false           // Main-thread only; tracks user intent, not hardware node state
 
-    // Pre-decoded PCM prefetch — keeps 15s of audio in RAM so the render
-    // thread never blocks on disk I/O or a compressed-format decoder.
+    // Pre-decoded PCM prefetch — keeps 3s of audio in RAM ahead of playhead.
+    // 1s chunk: the sync read on seek/hot-cue decodes only ~350KB instead of
+    // the previous ~1.7MB, cutting the perceived hot-cue latency ~5×.
     private let bufferQueue = DispatchQueue(label: "gone.audio.prefetch", qos: .userInteractive)
-    private let prefetchChunkSeconds: Double = 5.0
-    private let prefetchDepth: Int = 3  // chunks queued ahead (3 × 5s = 15s)
+    private let prefetchChunkSeconds: Double = 1.0
+    private let prefetchDepth: Int = 3  // chunks queued ahead (3 × 1s = 3s)
 
     private var fileSampleRate: Double {
         audioFile?.processingFormat.sampleRate ?? 44_100
@@ -182,11 +189,20 @@ final class AudioEngineNext {
 
     func stop(resetProgress: Bool = true) {
         isUserPlaying = false
-        playbackToken &+= 1             // cancel pending scheduling before flush
-        bufferQueue.sync {              // drain any in-flight schedulePCMChunk
-            self.playerNode.stop()      // flush all queued buffers only after drain
+        // Ensure any stuck hold-seek rate override is cleared before stopping.
+        stopHoldSeek()
+        playbackToken &+= 1             // cancels pending scheduling (checked in schedulePCMChunk)
+        playerNode.stop()               // flush queued buffers; completions use .async so no deadlock risk
+        // Timer must be invalidated on the thread it was installed on (RunLoop.main).
+        if Thread.isMainThread {
+            progressTimer?.invalidate()
+            progressTimer = nil
+        } else {
+            DispatchQueue.main.sync {
+                self.progressTimer?.invalidate()
+                self.progressTimer = nil
+            }
         }
-        progressTimer?.invalidate()
         isScheduled = false
         endAudioActivity()
 
@@ -213,10 +229,8 @@ final class AudioEngineNext {
         let shouldResume = autoplay ?? playerNode.isPlaying
 
         progressTimer?.invalidate()
-        playbackToken &+= 1             // cancel pending scheduling before flush
-        bufferQueue.sync {              // drain any in-flight schedulePCMChunk
-            self.playerNode.stop()      // flush all queued buffers only after drain
-        }
+        playbackToken &+= 1             // cancels pending scheduling (checked in schedulePCMChunk)
+        playerNode.stop()               // flush queued buffers
 
         scheduledStartFrame = targetFrame
         pausedFrameOffset = targetFrame
@@ -265,6 +279,42 @@ final class AudioEngineNext {
     func setPitch(_ percent: Double, masterTempo: Bool) {
         pitchPercent = percent
         self.masterTempo = masterTempo
+        applyPitchState()
+    }
+
+    // MARK: - Hold-seek (transport button scrub)
+
+    private var holdSeekTimer: Timer?
+
+    // Called when the user holds a transport arrow. Forward: 4× varispeed rush.
+    // Backward: periodic seek-back at ~5× reverse (0.15s tick × 0.75s step).
+    func startHoldSeek(forward: Bool) {
+        stopHoldSeek()
+        if forward {
+            pitchNode.bypass = true
+            pitchNode.rate = 1.0
+            pitchNode.pitch = 0
+            speedNode.rate = 4.0
+        } else {
+            let dur = durationSeconds
+            guard dur > 0 else { return }
+            // Use Timer() constructor — scheduledTimer adds to .default mode only,
+            // then RunLoop.main.add would double-register it causing erratic firing.
+            let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                let snap = self.snapshot()
+                let newTime = max(0, snap.currentTime - 0.75)
+                self.seek(ratio: newTime / dur, autoplay: snap.isPlaying)
+            }
+            RunLoop.main.add(t, forMode: .common)
+            holdSeekTimer = t
+        }
+    }
+
+    // Safe to call at any time — also called from stop() as a safety net.
+    func stopHoldSeek() {
+        holdSeekTimer?.invalidate()
+        holdSeekTimer = nil
         applyPitchState()
     }
 
@@ -422,10 +472,8 @@ final class AudioEngineNext {
         progressTimer?.invalidate()
         progressTimer = nil
         isScheduled = false
-        playbackToken &+= 1              // cancel pending scheduling before flush
-        bufferQueue.sync {               // drain any in-flight schedulePCMChunk
-            self.playerNode.stop()       // flush all queued buffers only after drain
-        }
+        playbackToken &+= 1              // cancels pending scheduling (checked in schedulePCMChunk)
+        playerNode.stop()                // flush queued buffers
         let token = playbackToken
 
         ensureEngineRunning()
@@ -559,6 +607,9 @@ final class AudioEngineNext {
         } catch {
             return
         }
+
+        // Second check after disk I/O: token may have changed while reading
+        guard token == playbackToken else { return }
 
         let nextStart = startFrame + AVAudioFramePosition(framesToRead)
         let isLastChunk = nextStart >= totalFrames

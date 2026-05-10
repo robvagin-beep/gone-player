@@ -34,7 +34,9 @@ final class ArtworkCache: @unchecked Sendable {
         cache.setObject(native, forKey: key)
         let url = dir.appendingPathComponent(id.uuidString + ".jpg")
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
-        writeToDisk(native, to: url)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.writeToDisk(native, to: url)
+        }
     }
 
     private func writeToDisk(_ image: NSImage, to url: URL) {
