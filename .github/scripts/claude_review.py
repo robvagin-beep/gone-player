@@ -4,78 +4,30 @@ import urllib.request
 import urllib.error
 import json
 
-SYSTEM_PROMPT = """You are a senior Swift/macOS engineer reviewing a pull request for GONE Player — a lightweight macOS pre-listen tool for hobbyist DJs (macOS 13+, 100% Apple native frameworks, no external dependencies).
+SYSTEM_HEADER = """You are a senior Swift/macOS engineer reviewing a pull request for GONE Player.
 
-## Critical architecture rules to enforce:
+The full project context, architecture rules, and list of already-resolved items are in CLAUDE.md below.
+Read the "PR Review — Already Resolved" section carefully — do NOT flag anything listed there.
 
-**Audio graph node order is FIXED** — never reorder:
-playerNode → speedNode → pitchNode → hpfNode → lpfNode → eqNode → distortionNode → delayNode → reverbNode → gateNode → mainMixerNode
+"""
 
-**Per-player DI pattern** — NEVER call `AudioEngineNext.shared` directly inside PlayerState extensions or View files. Always use `self.audioEngine` or `state.audioEngine`.
-
-**Progress feed** — `progress` and `currentTime` are NOT `@Published` on PlayerState. They live on `PlaybackProgressFeed`. Always use `state.progressFeed.reset()`, NEVER `PlaybackProgressFeed.shared.reset()` from extension code.
-
-**Spectrum feed** — `@Published var spectrumData` was removed from PlayerState. Lives in `SpectrumFeed.shared`.
-
-**WindowSnapManager state machine** — sequence must be: isSnapping=true → slideOffScreen → prepareForSnap → snapState=.docked → lockFrame → isSnapping=false. Never use NSAnimationContext for off-screen animation.
-
-**Window settings** — `windowResizability(.automatic)` and `isMovableByWindowBackground = false` must never change.
-
-**Timers** — always `RunLoop.main.add(timer, forMode: .common)`, callbacks use `MainActor.assumeIsolated`.
-
-**XY FX** — `applyXYEffect` must NOT write to @Published state (prevents SwiftUI re-render loop).
-
-**No external dependencies** — 100% Apple native frameworks only.
-
-## What to look for:
-- Bugs and crashes (force unwraps, race conditions, memory leaks, retain cycles)
-- Violations of the architecture rules above
-- Main thread blocking (audio/analysis work must be Task.detached)
-- SwiftUI re-render loops
-- Timer/observer leaks (missing invalidate/removeObserver)
-- Incorrect use of shared singletons vs per-player instances
-
-## Already resolved — do NOT flag these again:
-- `playbackToken` / `bumpToken()` locking: NSLock-protected, atomic increment, correct usage throughout
-- `progressTimer` capture pattern: local `let t = progressTimer; progressTimer = nil` before async dispatch — intentional
-- `stopHoldSeek()` thread safety: has same main-thread dispatch guard as progressTimer
-- `holdSeekTimer` in deinit: already invalidated
-- `AudioEngineNext.secondary.pause()` before window close in `SplitModeManager.deactivate()`: intentional hang-fix
-- `stopHoldSeek()` restoring pitch state: `applyPitchState()` is called at end — restores pitchNode.bypass and speedNode.rate
-- `CrossfaderGapWindow.close()` + deinit observer cleanup: both paths clear observers, idempotent by design
-- `BandHitTestView.hitRadius`: set to 60px (matches spec)
-- `BandHitTestView` segment guard: uses distance² > 16 (not exact equality)
-- `ArtworkCache.writeToDisk`: runs on background queue, uses `.atomic` write
-- `DispatchQueue.main.async` (not sync) for timer invalidation off-main: intentional deadlock prevention
-- `MainActor.assumeIsolated` in RunLoop.main timer callbacks: correct pattern per CLAUDE.md
-- `model="claude-opus-4-7"`: this model ID is valid and the workflow runs successfully — do not flag
-- `Task.sleep(nanoseconds:)` deprecation: acknowledged tech debt in CLAUDE.md, out of scope for this PR
-- `AudioEngineNext.secondary` eager init: pre-existing architecture, out of scope for this PR
-- `currentURL`/`audioFile` thread safety: pre-existing architecture concern, out of scope
-- `EQCurveView.animateTo` Task churn: pre-existing, out of scope
-- `AudioEngineNext.init()` is `private` — enforces 2-instance invariant
-- `AudioEngineNext.deinit` timer thread guard: capture pattern added, same as `stop()`
-- `BandHitTestView.hitRadius` is `let` — never reassigned
-- `ClonePlayerShell.resizeWindow` screen bounds: clamps to `screen.visibleFrame`
-- `EmptyOverlayView.startTypewriter`: `animTask?.cancel()` called at top before new task
-- `CrossfaderBridgeView` `@ObservedObject var manager`: correctly declared, Canvas redraws on crossfade change ✓
-- `SplitModeManager.activate()` copies `primaryState.volume` to `secondaryState` ✓
-- `bumpToken()` discarded in `stop()`: intentional — stop() does not schedule any buffers
-- `AudioEngineNext.stop()` `stopHoldSeek()` off-main: has main-thread dispatch guard for timer invalidation
-- `CrossfaderGapWindow` double-close observer cleanup: idempotent, safe
-- `ClonePlayerShell.resizeWindow` vs snap: clone window is never snap-managed, no conflict possible
-- `ClonePlayerShell.resizeWindow` y-clamping: clamps both bottom (>= vis.minY) AND top (<= vis.maxY - height)
-- `ScrollWheelNSView` momentum gating: `guard event.momentumPhase == .stationary` blocks trackpad inertia
-- `EmptyOverlayView` in clone: gated with `state.audioEngine !== AudioEngineNext.secondary` — clone never shows import UX
-- `BandHitTestView.hitTest` pass-through: root content view returning nil causes AppKit to pass event to window below ✓
-
+OUTPUT_FORMAT = """
 ## Output format:
 Write in English. Group findings by severity:
 - 🔴 **Critical** — crashes, data loss, broken architecture invariants
 - 🟡 **Warning** — performance issues, potential bugs, rule violations
 - 🟢 **Suggestion** — minor improvements, style, cleanup
 
-Only flag issues NOT in the "Already resolved" list above. End with a brief summary (2-3 sentences). Be direct, no filler."""
+Only flag issues NOT listed in the "Already Resolved" section of CLAUDE.md above.
+End with a brief summary (2-3 sentences). Be direct, no filler."""
+
+
+def load_claude_md() -> str:
+    try:
+        with open("CLAUDE.md", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "(CLAUDE.md not found)"
 
 
 def post_comment(repo: str, pr_number: str, body: str, token: str) -> None:
@@ -105,10 +57,12 @@ def main() -> None:
     repo = os.environ["REPO"]
     pr_title = os.environ.get("PR_TITLE", "")
 
+    claude_md = load_claude_md()
+    system_prompt = SYSTEM_HEADER + claude_md + OUTPUT_FORMAT
+
     with open("pr_diff.txt", "r", encoding="utf-8", errors="replace") as f:
         diff = f.read()
 
-    # Truncate if massive — Claude handles up to ~180k tokens, cap at 120k chars
     MAX_DIFF = 120_000
     truncated = ""
     if len(diff) > MAX_DIFF:
@@ -124,7 +78,7 @@ def main() -> None:
     message = client.messages.create(
         model="claude-opus-4-7",
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[
             {
                 "role": "user",

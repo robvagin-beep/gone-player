@@ -257,3 +257,47 @@ GONE/GONE/
 - `presentImportPanel` uses `NSApp.keyWindow` — should use `AppDelegate.resolvedMainWindow()` (low risk)
 - `Track.artworkData: Data?` in struct — causes array copy overhead during import batches (significant refactor, coordinate separately)
 - `splitPlaylistView` / `secondaryPlaylistTabId` in PlayerState — orphan state, no UI yet
+
+---
+
+## PR Review — Already Resolved (do NOT flag again)
+
+These items have been explicitly fixed or are intentional design decisions. Flagging them wastes review budget.
+
+### Threading / Timers
+- `playbackToken` / `bumpToken()`: NSLock-protected, atomic `&+=`, correct usage — no race
+- `progressTimer` capture: `let t = progressTimer; progressTimer = nil` before dispatch — intentional deadlock prevention (async, not sync)
+- `stopHoldSeek()` off-main: has identical main-thread dispatch guard as `progressTimer`
+- `holdSeekTimer` in `deinit`: captured and dispatched to main in deinit, same pattern as progressTimer
+- `DispatchQueue.main.async` (not sync) for timer invalidation: intentional — `stop()` called from `Task.detached` in Split Mode deactivate; sync would deadlock
+- `MainActor.assumeIsolated` in RunLoop.main timer callbacks: correct pattern per project rules
+- `bumpToken()` discarded in `stop()`: intentional — `stop()` does not schedule buffers, only needs to invalidate in-flight ones
+
+### Audio Engine
+- `AudioEngineNext.init()` is `private` — enforces 2-instance invariant (`shared` + `secondary`)
+- `AudioEngineNext.secondary` eager init: pre-existing architecture — out of scope
+- `currentURL`/`audioFile` thread safety: pre-existing architecture concern — out of scope
+- `stopHoldSeek()` → `applyPitchState()`: correctly restores `pitchNode.bypass`, `speedNode.rate`, and pitch state on hold-seek end
+- `SplitModeManager.deactivate()` calls `AudioEngineNext.secondary.pause()` on main before `stop()` off-main — hang fix, intentional sequence
+- `SplitModeManager.activate()` copies `primaryState.volume` to `secondaryState` on line ~126 ✓
+
+### Crossfader / Clone
+- `CrossfaderBridgeView` `@ObservedObject var manager`: correctly declared, Canvas redraws on `crossfade` change ✓
+- `CrossfaderGapWindow` double-close observer cleanup: idempotent by design — both `close()` and `deinit` remove observers safely
+- `ClonePlayerShell.resizeWindow` vs snap: clone window is never snap-managed — no conflict possible
+- `ClonePlayerShell.resizeWindow` screen bounds: clamps both bottom (`>= vis.minY`) AND top (`<= vis.maxY - height`)
+- `ScrollWheelNSView` momentum: `guard event.momentumPhase == .stationary` blocks trackpad inertia ✓
+- `EmptyOverlayView` in clone: gated with `state.audioEngine !== AudioEngineNext.secondary`
+- `BandHitTestView.hitTest` pass-through: root content view returning `nil` causes AppKit to route event to window below ✓
+- `BandHitTestView.hitRadius`: `let`, value 60px — matches spec
+- `BandHitTestView` segment guard: uses `distance² > 16` (not exact equality) to handle pre-geometry and coincident-window states
+
+### SwiftUI / Views
+- `EmptyOverlayView.startTypewriter`: `animTask?.cancel()` called at top of method before creating new task ✓
+- `EQCurveView.animateTo` Task churn: pre-existing, acknowledged tech debt — out of scope
+- `Task.sleep(nanoseconds:)` deprecation: acknowledged tech debt in CLAUDE.md — out of scope for this PR
+- `ArtworkCache.writeToDisk`: runs on `.utility` background queue, uses `.atomic` write option ✓
+
+### CI / Tooling
+- `model="claude-opus-4-7"` in `claude_review.py`: this model ID is valid and the workflow runs successfully — do not flag as invalid
+- `urllib` timeout: `urlopen(req, timeout=30)` added ✓
