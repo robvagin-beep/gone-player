@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // Isolated ObservableObject for XY pad interaction state.
 // Extracted from PlayerState so 60Hz writes during drag/spring don't

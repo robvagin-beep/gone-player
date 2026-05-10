@@ -1,3 +1,4 @@
+import Foundation
 import Combine
 
 // Per-player BPM scan progress, isolated from PlayerState so writes during
