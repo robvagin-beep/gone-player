@@ -42,7 +42,6 @@ struct TrackHeaderView: View {
                         }
                         if t.bpm > 0 {
                             let isAnalyzing = t.bpmAnalysisState == .analyzing
-                            let bpmProgress = analysisFeed.progress[t.id] ?? 0
                             Button { state.reanalyzeBPMDeep(for: t.id) } label: {
                                 if isAnalyzing {
                                     BPMAnalyzingBadge()

@@ -45,12 +45,17 @@ final class AudioDeviceHelper {
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain
             )
-            // Core Audio writes a retained CFStringRef (pointer-sized) into the buffer.
-            // Measure pointer size directly to be unambiguous about the buffer requirement.
-            var cfName: CFString = "" as CFString
-            var nameSize = UInt32(MemoryLayout<UnsafeRawPointer>.size)
-            guard AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfName) == noErr else { continue }
-            devices.append(AudioOutputDevice(id: id, name: cfName as String))
+            // Core Audio writes a retained CFStringRef into the buffer.
+            // Use Unmanaged<CFString> so Swift knows this is a managed reference,
+            // avoiding the UnsafeMutableRawPointer-to-CFString warning.
+            var cfNameUnmanaged: Unmanaged<CFString>? = nil
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            let nameStatus = withUnsafeMutablePointer(to: &cfNameUnmanaged) { ptr in
+                AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize,
+                                           UnsafeMutableRawPointer(ptr))
+            }
+            guard nameStatus == noErr, let name = cfNameUnmanaged?.takeRetainedValue() else { continue }
+            devices.append(AudioOutputDevice(id: id, name: name as String))
         }
         return devices
     }
