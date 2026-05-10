@@ -233,6 +233,7 @@ final class AudioEngineNext {
         let shouldResume = autoplay ?? playerNode.isPlaying
 
         progressTimer?.invalidate()
+        progressTimer = nil
         let token = bumpToken()         // cancels pending scheduling (checked in schedulePCMChunk)
         playerNode.stop()               // flush queued buffers
 

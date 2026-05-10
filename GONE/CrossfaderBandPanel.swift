@@ -7,7 +7,7 @@ import SwiftUI
 final class BandHitTestView: NSView {
     var segA: NSPoint = .zero
     var segB: NSPoint = .zero
-    var hitRadius: CGFloat = 55
+    var hitRadius: CGFloat = 60
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Before segments are set both are .zero → distance 0 → always captures.
@@ -108,6 +108,7 @@ final class CrossfaderGapWindow: NSPanel {
 
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers = []
     }
 
     override func close() {
