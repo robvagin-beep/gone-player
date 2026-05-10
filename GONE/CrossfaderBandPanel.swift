@@ -194,6 +194,7 @@ struct CrossfaderBridgeView: View {
         GeometryReader { _ in
             Canvas { ctx, _ in
                 guard let panel else { return }
+                let _ = manager.geometryVersion   // forces Canvas redraw on window move
                 let fA     = panel.frameA()
                 let fB     = panel.frameB()
                 let origin = panel.panelOrigin()

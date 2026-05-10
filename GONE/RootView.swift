@@ -425,10 +425,10 @@ struct WindowBorderDragOverlay: View {
                     .frame(width: 14, height: geo.size.height)
                     .position(x: 7, y: geo.size.height / 2)
 
-                // Right side strip — stays in shell border area, avoids pitch rail
+                // Right side strip — 4pt wide, stays within shell border, avoids pitch rail buttons
                 WindowDragHandle()
-                    .frame(width: 10, height: geo.size.height)
-                    .position(x: geo.size.width - 5, y: geo.size.height / 2)
+                    .frame(width: 4, height: geo.size.height)
+                    .position(x: geo.size.width - 2, y: geo.size.height / 2)
             } else {
                 // Empty state: wide perimeter strips — center stays interactive for drops
                 WindowDragHandle()
