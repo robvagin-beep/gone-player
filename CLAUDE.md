@@ -286,6 +286,8 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `CrossfaderGapWindow` double-close observer cleanup: idempotent by design — both `close()` and `deinit` remove observers safely
 - `ClonePlayerShell.resizeWindow` vs snap: clone window is never snap-managed — no conflict possible
 - `ClonePlayerShell.resizeWindow` screen bounds: clamps both bottom (`>= vis.minY`) AND top (`<= vis.maxY - height`)
+- `ClonePlayerShell.WindowRefCapture` initial nil race: fixed — capture callback calls `resizeWindow(to: shellSize, window: w)` directly with the freshly received window, reconciling any frame mismatch before `myWindow` state propagates ✓
+- `ClonePlayerShell` playlist height bounds `max(160, min(700, newH))`: `// MIRROR: RootView.swift` comment added; intentional duplication, no shared helper ✓
 - `ScrollWheelNSView` momentum: `guard event.momentumPhase == .stationary` blocks trackpad inertia ✓. Regular mouse wheel and Magic Mouse wheel events arrive with `momentumPhase = .stationary` and ARE captured. The guard only drops trackpad inertia (post-lift coasting) — active scroll phases are correctly handled.
 - `ScrollWheelNSView hasPreciseScrollingDeltas` mouse scaling: trackpad gives pixel-scale continuous deltas (large); mouse wheel gives ~1.0 per notch. Non-precise (mouse) events are boosted by `mouseDetentScale = 10.0` so ~30 notches spans full crossfader range. Intentional direction. Named constant ✓
 - `EmptyOverlayView` in clone: gated with `state.audioEngine !== AudioEngineNext.secondary`
@@ -309,6 +311,12 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `ArtworkCache.prune` frequency: runs once at launch; 30-day expiry on 256px JPEGs. Growth is negligible — periodic pruning is out of scope.
 - `BandHitTestView.hitRadius` vs plaque dimensions: 60px is intentionally generous for usability; not coupled to visual plaque size by design. `pad = 60` in `CrossfaderGapWindow` serves a different purpose (bounding box expansion) and is coincidentally the same value. Code comment added to `CrossfaderGapWindow` explaining the distinction ✓
 - `CrossfaderBridgeView` edge threshold `> 10`: 4 occurrences across Canvas and drag gesture — intentionally co-located, named constant would be premature abstraction for a single-file component. DO NOT FLAG.
+- `CrossfaderBridgeView` `t_edgeA`/`t_edgeB` duplication between Canvas and DragGesture: both closures compute the same active-range geometry. This is intentional — Canvas and gesture handler are independent SwiftUI callbacks that each run in different contexts; a shared helper would require a method on the view. Out of scope. DO NOT FLAG.
+- `BandHitTestView.distanceToSegment` distance² vs distance units: `dx*dx+dy*dy > 16` is the guard for segment length (4² = 16pt², distance). `distanceToSegment` returns Euclidean distance, compared against `hitRadius` (also distance). No unit mismatch. Named constant `4*4` vs `16` is cosmetic. DO NOT FLAG.
+- `EmptyOverlayView.startTypewriter` displayText mutation before cancel check: cosmetic — view disappears on track load. DO NOT FLAG.
+- `EmptyOverlayView.messages` localization: app is not localized, these strings are intentional product copy. DO NOT FLAG.
+- `FullPlayerView.contentHeight` / `ClonePlayerShell.contentSize` static helper: intentional duplication, `MIRROR` comment adequate. DO NOT FLAG.
+- `EQCurveView.animateTo` step/duration constants: acknowledged tech debt. DO NOT FLAG.
 - `CrossfaderBridgeView` Canvas magic numbers (`barHW`, `ext`, `tHL`, `tHW`, `cornerR`): geometry constants local to the Canvas closure — no duplication elsewhere. DO NOT FLAG.
 - `CrossfaderGapWindow` `pad = 60` vs `BandHitTestView.hitRadius = 60`: two different purposes, coincidentally same value. Code comment added explaining this. Renaming to `boundingBoxPad`/`clickHitRadius` is unnecessary verbosity. DO NOT FLAG.
 - `AudioEngineNext.tokenLock` vs `OSAllocatedUnfairLock`: `NSLock` is correct and clear; lock is NOT on the hot render path (it guards scheduling, not buffer decode). Not a performance concern.

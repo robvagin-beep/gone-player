@@ -86,7 +86,7 @@ struct ClonePlayerShell: View {
             // ── Playlist resize handle ─────────────────────────────────────────
             if !state.tracks.isEmpty && state.playlistOpen {
                 BottomResizeHandle(eqOpen: state.eqOpen, windowScale: 1.0) { newH in
-                    state.playlistPanelHeight = max(160, min(700, newH))
+                    state.playlistPanelHeight = max(160, min(700, newH)) // MIRROR: RootView.swift
                 }
                 .frame(height: 10)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -96,9 +96,14 @@ struct ClonePlayerShell: View {
         .background(Color.clear)
         // Capture window reference once the view is in the hierarchy
         .background(
-            WindowRefCapture { w in myWindow = w }
-                .frame(width: 1, height: 1)
-                .allowsHitTesting(false)
+            WindowRefCapture { w in
+                myWindow = w
+                // Reconcile size at capture time: shellSize may have changed
+                // while myWindow was still nil, so the .onChange never fired.
+                resizeWindow(to: shellSize, window: w)
+            }
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
         )
         // Auto-resize clone window when panels open/close
         .onChange(of: shellSize) { newSize in
@@ -106,8 +111,8 @@ struct ClonePlayerShell: View {
         }
     }
 
-    private func resizeWindow(to size: CGSize) {
-        guard let w = myWindow else { return }
+    private func resizeWindow(to size: CGSize, window: NSWindow? = nil) {
+        guard let w = window ?? myWindow else { return }
         let current = w.frame
         guard abs(current.height - size.height) > 0.5 ||
               abs(current.width  - size.width)  > 0.5 else { return }
