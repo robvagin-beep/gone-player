@@ -436,6 +436,10 @@ struct EQCurveView: View {
     @State private var displayedPreamp: Float = 0
     @State private var animTask: Task<Void, Never>? = nil
     @State private var lastEQChangeTime: Date = .distantPast
+    // Pre-computed per-frequency dB contribution from EQ bands + preamp only (no filters).
+    // Recomputed when displayedBands/displayedPreamp change; reused at 60Hz during XY drag.
+    // Reduces hot-path work from O(N × 10 exp) to O(N) per Canvas tick.
+    @State private var bandBaseDb: [Float] = Array(repeating: 0, count: 80)
 
     private let bandFreqs: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
     private let dbLines: [Float] = [-12, -6, 0, 6, 12]
@@ -548,17 +552,14 @@ struct EQCurveView: View {
             }
 
             // EQ + HP/LP filter response
+            // bandBaseDb is pre-computed (band gaussians + preamp); only filters are hot-path.
             let N = 80
+            let base = bandBaseDb  // local copy — avoids repeated property access in loop
             var pts = [CGPoint]()
+            pts.reserveCapacity(N)
             for i in 0..<N {
-                let t = Float(i) / Float(N - 1)
-                var total = preamp
-
-                for (b, gain) in bands.enumerated() {
-                    let ct   = tForHz(bandFreqs[b])
-                    let dist = t - ct
-                    total += gain * exp(-(dist * dist) / 0.012)
-                }
+                let t    = Float(i) / Float(N - 1)
+                var total = base[i]  // gaussian + preamp, already computed
 
                 let freq = powf(10.0, logFmin + (logFmax - logFmin) * t)
                 if hpfCut > 0.015 {
@@ -570,7 +571,6 @@ struct EQCurveView: View {
                     let fc = 20000.0 * powf(0.01, lpfCut)
                     let r  = freq / fc
                     if xyActive && xyResoBW < 0.9 {
-                        // Resonant 2nd-order LPF: shows pole peak as bandwidth → 0
                         let Q  = 1.0 / max(0.05, xyResoBW)
                         let r2 = r * r
                         total += -10.0 * log10(max(1e-12, (1.0 - r2) * (1.0 - r2) + r2 / (Q * Q)))
@@ -729,8 +729,31 @@ struct EQCurveView: View {
         .onAppear {
             displayedBands  = state.eqBands
             displayedPreamp = state.eqPreamp
+            recomputeBandBase()
         }
+        .onChange(of: displayedBands)  { _ in recomputeBandBase() }
+        .onChange(of: displayedPreamp) { _ in recomputeBandBase() }
         } // GeometryReader
+    }
+
+    // Recomputes the 80-point gaussian response for the current EQ bands + preamp.
+    // Called only when those values change — not on every Canvas tick.
+    private func recomputeBandBase() {
+        let logFmin = log10(Float(20))
+        let logFmax = log10(Float(20000))
+        let N = 80
+        var base = [Float](repeating: 0, count: N)
+        for i in 0..<N {
+            let t = Float(i) / Float(N - 1)
+            var db = displayedPreamp
+            for (b, gain) in displayedBands.enumerated() {
+                let ct   = (log10(max(bandFreqs[b], 1)) - logFmin) / (logFmax - logFmin)
+                let dist = t - ct
+                db += gain * exp(-(dist * dist) / 0.012)
+            }
+            base[i] = db
+        }
+        bandBaseDb = base
     }
 
     private func animateTo(bands target: [Float], preamp targetPre: Float) {

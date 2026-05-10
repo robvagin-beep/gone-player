@@ -23,6 +23,13 @@ struct ProgressRulerRow: View {
     }
 }
 
+// Class-based storage for bar animation timestamps.
+// Mutations don't trigger SwiftUI invalidation — the TimelineView Canvas
+// already re-runs at 30fps and reads the latest values on each tick.
+private final class BarTracker {
+    var playedAt: [Int: Date] = [:]
+}
+
 struct ProgressRuler: View {
     let progress: Double
     let waveform: [Float]
@@ -31,7 +38,7 @@ struct ProgressRuler: View {
     let onSeek: (Double) -> Void
 
     @State private var dragRatio: Double?
-    @State private var barPlayedAt: [Int: Date] = [:]
+    @State private var tracker = BarTracker()
     @State private var lastKnownProgress: Double = -1
     @State private var waveMinCache: CGFloat = 0
     @State private var waveRangeCache: CGFloat = 1
@@ -70,16 +77,16 @@ struct ProgressRuler: View {
             let last = lastKnownProgress < 0 ? 0.0 : lastKnownProgress
             defer { lastKnownProgress = newProgress }
             if abs(newProgress - last) > 0.05 {
-                barPlayedAt.removeAll()
+                tracker.playedAt.removeAll()
                 return
             }
             let now = Date()
             for i in 0..<121 {
                 let barFrac = Double(i) / 120.0
                 if barFrac <= newProgress && barFrac > last {
-                    barPlayedAt[i] = now
+                    tracker.playedAt[i] = now
                 } else if barFrac > newProgress && barFrac <= last {
-                    barPlayedAt.removeValue(forKey: i)
+                    tracker.playedAt.removeValue(forKey: i)
                 }
             }
         }
@@ -111,6 +118,11 @@ struct ProgressRuler: View {
         let waveMin   = waveMinCache
         let waveRange = waveRangeCache
 
+        // Prune entries whose animation has completed (elapsed > animDuration).
+        // Runs on each Canvas tick so the dict stays bounded.
+        let expiryCutoff = now.addingTimeInterval(-Self.animDuration)
+        tracker.playedAt = tracker.playedAt.filter { $0.value > expiryCutoff }
+
         for i in 0..<totalTicks {
             let frac    = CGFloat(i) / CGFloat(totalTicks - 1)
             let x       = frac * size.width
@@ -124,7 +136,7 @@ struct ProgressRuler: View {
                 animT = played ? 1 : 0
             } else if !played {
                 animT = 0
-            } else if let playedAt = barPlayedAt[i] {
+            } else if let playedAt = tracker.playedAt[i] {
                 let elapsed = now.timeIntervalSince(playedAt)
                 let t = min(1.0, elapsed / Self.animDuration)
                 animT = CGFloat(1.0 - pow(1.0 - t, 2.5))  // ease-out
