@@ -65,10 +65,9 @@ final class PlayerState: ObservableObject {
     @Published var reverbPreset: String = "Room"
 
     // MARK: — EQ XY Point
-    @Published var xyPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
-    @Published var xyHoldMode = false
-    @Published var xyActive = false
-    @Published var xyEffectAxis: XYEffectAxis = .filter
+    // xyPoint/xyActive/xyEffectAxis/xyHoldMode live on XYPadState (isolated ObservableObject)
+    // so 60Hz writes during drag/spring don't broadcast PlayerState.objectWillChange to the full tree.
+    let xyPad = XYPadState()
     @Published var xyResonance: Float = 1.0  // LPF bandwidth for RESO axis (lower = more resonant)
 
     // MARK: — Panels
@@ -197,17 +196,15 @@ final class PlayerState: ObservableObject {
         lfoUITick = 0
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.xyActive, self.xyEffectAxis == .lfo else {
+                guard let self, self.xyPad.active, self.xyPad.effectAxis == .lfo else {
                     self?.stopLFO(); return
                 }
-                let rate  = Double(self.xyPoint.x) * 7.9 + 0.1  // 0.1–8 Hz
-                let depth = Double(self.xyPoint.y) * 0.45         // 0–45% LPF sweep
+                let rate  = Double(self.xyPad.point.x) * 7.9 + 0.1  // 0.1–8 Hz
+                let depth = Double(self.xyPad.point.y) * 0.45         // 0–45% LPF sweep
                 self.lfoPhase += rate / 60.0 * 2 * .pi
                 let cutoff = Float(max(0.01, min(0.99, 0.5 + sin(self.lfoPhase) * depth)))
                 self.audioEngine.setLPF(cutoff: cutoff)
-                // @Published write throttled to ~15fps — audio engine still gets every tick
                 self.lfoUITick = (self.lfoUITick + 1) % 4
-                if self.lfoUITick == 0 { self.lpfCutoff = cutoff }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -226,26 +223,23 @@ final class PlayerState: ObservableObject {
         bpmChopUITick = 0
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.xyActive, self.xyEffectAxis == .bpmChop else {
+                guard let self, self.xyPad.active, self.xyPad.effectAxis == .bpmChop else {
                     self?.stopBPMChop(); return
                 }
                 guard let bpm = self.current?.bpm, bpm > 0 else { return }
 
-                let subdivIdx = Int(Double(self.xyPoint.x) * 3.99)  // 0–3
-                let subdivMult = pow(2.0, Double(subdivIdx))          // 1, 2, 4, 8
+                let subdivIdx = Int(Double(self.xyPad.point.x) * 3.99)  // 0–3
+                let subdivMult = pow(2.0, Double(subdivIdx))               // 1, 2, 4, 8
                 let gateHz = bpm / 60.0 * subdivMult
 
                 let snap = self.audioEngine.snapshot()
                 let phase = (snap.currentTime * gateHz).truncatingRemainder(dividingBy: 1.0)
-                let depth = Double(self.xyPoint.y)
+                let depth = Double(self.xyPad.point.y)
 
                 // Reverse-sawtooth: LPF sweeps open on each beat → "zoom" opening surge
                 let cutoff = Float((1.0 - phase) * depth * 0.72)
                 self.audioEngine.setLPF(cutoff: cutoff)
-
-                // UI throttle ~15fps
                 self.bpmChopUITick = (self.bpmChopUITick + 1) % 4
-                if self.bpmChopUITick == 0 { self.lpfCutoff = cutoff }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -263,18 +257,18 @@ final class PlayerState: ObservableObject {
         guard slicerTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.xyActive, self.xyEffectAxis == .slicer else {
+                guard let self, self.xyPad.active, self.xyPad.effectAxis == .slicer else {
                     self?.stopSlicer(); return
                 }
                 guard let bpm = self.current?.bpm, bpm > 0 else { return }
 
-                let subdivIdx = Int(Double(self.xyPoint.x) * 3.99)  // 0–3
-                let subdivMult = pow(2.0, Double(subdivIdx))          // 1, 2, 4, 8
+                let subdivIdx = Int(Double(self.xyPad.point.x) * 3.99)  // 0–3
+                let subdivMult = pow(2.0, Double(subdivIdx))               // 1, 2, 4, 8
                 let gateHz = bpm / 60.0 * subdivMult
 
                 let snap = self.audioEngine.snapshot()
                 let phase = (snap.currentTime * gateHz).truncatingRemainder(dividingBy: 1.0)
-                let depth = Float(self.xyPoint.y)
+                let depth = Float(self.xyPad.point.y)
 
                 // 50% duty: first half open, second half gated
                 let volume: Float = phase < 0.5 ? 1.0 : max(0.02, 1.0 - depth)
@@ -293,7 +287,7 @@ final class PlayerState: ObservableObject {
 
     func startXYSpring(onComplete: (() -> Void)? = nil) {
         xySpringTimer?.invalidate()
-        xySpringFrom = xyPoint
+        xySpringFrom = xyPad.point
         xySpringStep = 0
         let steps = 22
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
@@ -302,14 +296,14 @@ final class PlayerState: ObservableObject {
                 self.xySpringStep += 1
                 let t    = Double(self.xySpringStep) / Double(steps)
                 let ease = 1.0 - pow(1.0 - t, 3.0)
-                self.xyPoint = CGPoint(
+                self.xyPad.point = CGPoint(
                     x: self.xySpringFrom.x + (0.5 - self.xySpringFrom.x) * ease,
                     y: self.xySpringFrom.y + (0.5 - self.xySpringFrom.y) * ease
                 )
                 if self.xySpringStep >= steps {
                     self.xySpringTimer?.invalidate()
                     self.xySpringTimer = nil
-                    self.xyPoint = CGPoint(x: 0.5, y: 0.5)
+                    self.xyPad.point = CGPoint(x: 0.5, y: 0.5)
                     onComplete?()
                 }
             }

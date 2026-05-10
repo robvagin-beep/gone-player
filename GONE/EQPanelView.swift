@@ -431,6 +431,7 @@ struct EQMiniKnob: View {
 // ── EQ frequency response curve ───────────────────────────────────────────────
 struct EQCurveView: View {
     @EnvironmentObject var state: PlayerState
+    @EnvironmentObject var xyPad: XYPadState
     @State private var displayedBands: [Float] = Array(repeating: 0, count: 10)
     @State private var displayedPreamp: Float = 0
     @State private var animTask: Task<Void, Never>? = nil
@@ -449,9 +450,9 @@ struct EQCurveView: View {
         Canvas { ctx, size in
             let bands  = displayedBands
             let preamp = displayedPreamp
-            let xyPt     = state.xyPoint
-            let xyActive = state.xyActive
-            let xyAxis   = state.xyEffectAxis
+            let xyPt     = xyPad.point
+            let xyActive = xyPad.active
+            let xyAxis   = xyPad.effectAxis
 
             // When XY is active, derive filter values from xyPoint directly.
             // applyXYEffect no longer writes @Published state at 60fps — this
@@ -689,10 +690,10 @@ struct EQCurveView: View {
                     let iH = geo.size.height - padT - padB
                     let nx = max(0, min(1, (g.location.x - padL) / iW))
                     let ny = max(0, min(1, 1.0 - (g.location.y - padT) / iH))
-                    state.xyPoint = CGPoint(x: nx, y: ny)
+                    xyPad.point = CGPoint(x: nx, y: ny)
                 }
                 .onEnded { _ in
-                    guard !state.xyHoldMode else { return }
+                    guard !xyPad.holdMode else { return }
                     state.startXYSpring()
                 }
         )
@@ -737,24 +738,25 @@ struct EQCurveView: View {
 // ── XY control row: ON · [← AXIS →] · HOLD ──────────────────────────────────
 struct XYControlRow: View {
     @EnvironmentObject var state: PlayerState
+    @EnvironmentObject var xyPad: XYPadState
 
     var body: some View {
         HStack(spacing: 4) {
             // ON — left
-            XYCtrlButton(label: state.xyActive ? "ON" : "OFF", active: state.xyActive) {
-                if state.xyActive { state.xyHoldMode = false }
-                state.xyActive.toggle()
+            XYCtrlButton(label: xyPad.active ? "ON" : "OFF", active: xyPad.active) {
+                if xyPad.active { xyPad.holdMode = false }
+                xyPad.active.toggle()
             }
             .frame(width: 32)
 
             // AXIS — wide selector with chevrons, cycles FLTR → VERB → RESO
-            XYAxisSelector(axis: state.xyEffectAxis) {
-                state.xyEffectAxis = state.xyEffectAxis.next
+            XYAxisSelector(axis: xyPad.effectAxis) {
+                xyPad.effectAxis = xyPad.effectAxis.next
             }
 
             // HOLD — right
-            XYCtrlButton(label: "HOLD", active: state.xyHoldMode) {
-                state.xyHoldMode.toggle()
+            XYCtrlButton(label: "HOLD", active: xyPad.holdMode) {
+                xyPad.holdMode.toggle()
             }
             .frame(width: 32)
         }

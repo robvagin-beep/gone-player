@@ -54,6 +54,7 @@ struct FullPlayerView: View {
                 if state.eqOpen {
                     EQPanelView()
                         .frame(height: Self.eqPanelHeight, alignment: .top)
+                        .environmentObject(state.xyPad)
                 }
                 if state.playlistOpen {
                     PlaylistView()

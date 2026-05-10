@@ -160,18 +160,20 @@ struct RootView: View {
             let win = appDelegate?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
             if let maxY = win?.frame.maxY { appDelegate?.windowAnchorMaxY = maxY }
         }
-        // XY pad → audio engine wiring (always active regardless of EQ panel visibility)
-        .onChange(of: state.xyPoint) { pt in
-            guard state.xyActive else { return }
+        // XY pad → audio engine wiring (always active regardless of EQ panel visibility).
+        // Uses onReceive(.dropFirst()) — same semantics as onChange but subscribes to XYPadState
+        // directly, so these writes don't route through PlayerState.objectWillChange.
+        .onReceive(state.xyPad.$point.dropFirst()) { pt in
+            guard state.xyPad.active else { return }
             applyXYEffect(pt)
         }
-        .onChange(of: state.xyActive) { active in
+        .onReceive(state.xyPad.$active.dropFirst()) { active in
             if active {
                 state.cancelXYSpring()
-                if state.xyEffectAxis == .lfo     { state.startLFO() }
-                if state.xyEffectAxis == .bpmChop { state.startBPMChop() }
-                if state.xyEffectAxis == .slicer  { state.startSlicer() }
-                applyXYEffect(state.xyPoint)
+                if state.xyPad.effectAxis == .lfo     { state.startLFO() }
+                if state.xyPad.effectAxis == .bpmChop { state.startBPMChop() }
+                if state.xyPad.effectAxis == .slicer  { state.startSlicer() }
+                applyXYEffect(state.xyPad.point)
             } else {
                 state.stopLFO()
                 state.stopBPMChop()
@@ -189,7 +191,7 @@ struct RootView: View {
                 state.startXYSpring()
             }
         }
-        .onChange(of: state.xyEffectAxis) { _ in
+        .onReceive(state.xyPad.$effectAxis.dropFirst()) { _ in
             state.stopLFO()
             state.stopBPMChop()
             state.stopSlicer()
@@ -197,17 +199,17 @@ struct RootView: View {
             state.audioEngine.setLPF(cutoff: 0)
             state.audioEngine.resetFXNodes()
             state.lpfCutoff = 0
-            guard state.xyActive else { return }
-            if state.xyEffectAxis == .lfo     { state.startLFO() }
-            if state.xyEffectAxis == .bpmChop { state.startBPMChop() }
-            if state.xyEffectAxis == .slicer  { state.startSlicer() }
-            applyXYEffect(state.xyPoint)
+            guard state.xyPad.active else { return }
+            if state.xyPad.effectAxis == .lfo     { state.startLFO() }
+            if state.xyPad.effectAxis == .bpmChop { state.startBPMChop() }
+            if state.xyPad.effectAxis == .slicer  { state.startSlicer() }
+            applyXYEffect(state.xyPad.point)
         }
-        .onChange(of: state.xyHoldMode) { holdMode in
-            guard !holdMode, state.xyActive else { return }
+        .onReceive(state.xyPad.$holdMode.dropFirst()) { holdMode in
+            guard !holdMode, state.xyPad.active else { return }
             // Spring back to center, then deactivate XY (center = zero effect)
             state.startXYSpring {
-                state.xyActive = false
+                state.xyPad.active = false
             }
         }
         .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: handleDrop)
@@ -268,85 +270,56 @@ struct RootView: View {
     private func applyXYEffect(_ point: CGPoint) {
         let x = Float(point.x)
         let y = Float(point.y)
-        // Audio engine updates at full rate.
-        // @Published state vars (hpfCutoff, lpfCutoff, xyResonance) are updated
-        // so EQKnobStack labels and EQCurveView reflect the XY position.
-        switch state.xyEffectAxis {
+        // Audio engine gets every tick at full rate.
+        // @Published writes (hpfCutoff, lpfCutoff, etc.) are intentionally removed from this
+        // hot path — EQCurveView derives display values from xyPad.point directly, so no
+        // PlayerState.objectWillChange broadcast is needed at 60Hz.
+        switch state.xyPad.effectAxis {
         case .filter:
-            let hpf = x * 0.55
-            let lpf = (1 - y) * 0.55
-            state.audioEngine.setHPF(cutoff: hpf)
-            state.audioEngine.setLPF(cutoff: lpf)
+            state.audioEngine.setHPF(cutoff: x * 0.55)
+            state.audioEngine.setLPF(cutoff: (1 - y) * 0.55)
             state.audioEngine.setLPFResonance(1.0)
-            state.hpfCutoff  = hpf
-            state.lpfCutoff  = lpf
-            state.xyResonance = 1.0
         case .lowpass:
             let bw = Float(max(0.05, 2.0 * pow(0.025, Double(y))))
             state.audioEngine.setHPF(cutoff: 0)
             state.audioEngine.setLPF(cutoff: x * 0.85)
             state.audioEngine.setLPFResonance(bw)
-            state.hpfCutoff  = 0
-            state.lpfCutoff  = x * 0.85
-            state.xyResonance = bw
         case .highpass:
             let bw = Float(max(0.05, 2.0 * pow(0.025, Double(y))))
             state.audioEngine.setLPF(cutoff: 0)
             state.audioEngine.setHPF(cutoff: x * 0.85)
             state.audioEngine.setHPFResonance(bw)
-            state.lpfCutoff  = 0
-            state.hpfCutoff  = x * 0.85
-            state.xyResonance = bw
         case .bandpass:
             let centerHz = 100.0 * pow(80.0, Double(x))
             let widthOct = 0.5 + (1.0 - Double(y)) * 3.0
             let hpfHz    = centerHz / pow(2.0, widthOct * 0.5)
             let lpfHz    = centerHz * pow(2.0, widthOct * 0.5)
-            let hpfCut   = Float(max(0, min(1, log(max(20, hpfHz) / 20.0) / log(100.0))))
-            let lpfCut   = Float(max(0, min(1, log(20000.0 / max(200, lpfHz)) / log(100.0))))
-            state.audioEngine.setHPF(cutoff: hpfCut)
-            state.audioEngine.setLPF(cutoff: lpfCut)
+            state.audioEngine.setHPF(cutoff: Float(max(0, min(1, log(max(20, hpfHz) / 20.0) / log(100.0)))))
+            state.audioEngine.setLPF(cutoff: Float(max(0, min(1, log(20000.0 / max(200, lpfHz)) / log(100.0)))))
             state.audioEngine.setLPFResonance(1.0)
-            state.hpfCutoff  = hpfCut
-            state.lpfCutoff  = lpfCut
-            state.xyResonance = 1.0
         case .reso:
-            let cutoff    = x * 0.75
-            let bandwidth = Float(max(0.05, 2.0 * pow(0.025, Double(y))))
             state.audioEngine.setHPF(cutoff: 0)
-            state.audioEngine.setLPF(cutoff: cutoff)
-            state.audioEngine.setLPFResonance(bandwidth)
-            state.hpfCutoff  = 0
-            state.lpfCutoff  = cutoff
-            state.xyResonance = bandwidth
+            state.audioEngine.setLPF(cutoff: x * 0.75)
+            state.audioEngine.setLPFResonance(Float(max(0.05, 2.0 * pow(0.025, Double(y)))))
         case .lfo:
             state.audioEngine.setHPF(cutoff: 0)
             state.audioEngine.setLPFResonance(1.0)
-            state.hpfCutoff = 0
             state.startLFO()
         case .bpmChop:
             state.audioEngine.setHPF(cutoff: 0)
             state.audioEngine.setLPFResonance(1.0)
-            state.hpfCutoff = 0
             state.startBPMChop()
         case .slicer:
             state.audioEngine.setHPF(cutoff: 0)
             state.audioEngine.setLPF(cutoff: 0)
-            state.hpfCutoff = 0
-            state.lpfCutoff = 0
             state.startSlicer()
         case .reverb:
             state.audioEngine.setReverb(amount: x)
-            state.reverbAmount = x
         case .filtVerb:
-            let lpf = x * 0.7
             state.audioEngine.setHPF(cutoff: 0)
-            state.audioEngine.setLPF(cutoff: lpf)
+            state.audioEngine.setLPF(cutoff: x * 0.7)
             state.audioEngine.setLPFResonance(1.0)
             state.audioEngine.setReverb(amount: y)
-            state.hpfCutoff   = 0
-            state.lpfCutoff   = lpf
-            state.reverbAmount = y
         case .simpleDelay:
             let time     = Double(x) * 1.0
             let feedback = y * 0.75
