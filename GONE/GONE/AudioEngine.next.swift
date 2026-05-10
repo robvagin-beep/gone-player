@@ -140,8 +140,8 @@ final class AudioEngineNext {
             currentURL = url
             scheduledStartFrame = 0
             pausedFrameOffset = 0
-            bumpToken()
-            scheduleFrom(frame: 0, token: playbackToken)
+            let token = bumpToken()
+            scheduleFrom(frame: 0, token: token)
             emitProgress(currentFrame: 0)
 
             if autoplay {
@@ -170,8 +170,8 @@ final class AudioEngineNext {
         }
 
         if !hasScheduledAudio {
-            bumpToken()
-            scheduleFrom(frame: pausedFrameOffset, token: playbackToken)
+            let token = bumpToken()
+            scheduleFrom(frame: pausedFrameOffset, token: token)
         }
 
         playerNode.play()
@@ -199,15 +199,12 @@ final class AudioEngineNext {
         // Timer must be invalidated on the thread it was installed on (RunLoop.main).
         // Use async (not sync) — stop() may be called from Task.detached (Split Mode deactivate)
         // and sync to main while main awaits the task is a deadlock.
+        let t = progressTimer
+        progressTimer = nil
         if Thread.isMainThread {
-            progressTimer?.invalidate()
-            progressTimer = nil
+            t?.invalidate()
         } else {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isUserPlaying else { return }
-                self.progressTimer?.invalidate()
-                self.progressTimer = nil
-            }
+            DispatchQueue.main.async { t?.invalidate() }
         }
         isScheduled = false
         endAudioActivity()
@@ -235,12 +232,12 @@ final class AudioEngineNext {
         let shouldResume = autoplay ?? playerNode.isPlaying
 
         progressTimer?.invalidate()
-        bumpToken()             // cancels pending scheduling (checked in schedulePCMChunk)
+        let token = bumpToken()         // cancels pending scheduling (checked in schedulePCMChunk)
         playerNode.stop()               // flush queued buffers
 
         scheduledStartFrame = targetFrame
         pausedFrameOffset = targetFrame
-        scheduleFrom(frame: targetFrame, token: playbackToken)
+        scheduleFrom(frame: targetFrame, token: token)
         emitProgress(currentFrame: targetFrame)
 
         if shouldResume {
