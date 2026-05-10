@@ -28,6 +28,18 @@ struct RootView: View {
         )
     }
 
+    // Shell dimensions after display scale is applied — passed to updateWindowSize
+    // so the NSWindow frame matches the visually-scaled content.
+    private var scaledShellSize: CGSize {
+        CGSize(width: shellSize.width * state.windowScale,
+               height: shellSize.height * state.windowScale)
+    }
+
+    // Resize the window to match scaledShellSize. Called on any layout-affecting change.
+    private func applyDisplayScale() {
+        updateWindowSize(to: scaledShellSize)
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             RoundedRectangle(cornerRadius: outerShellRadius)
@@ -71,12 +83,53 @@ struct RootView: View {
             .padding(.top, shellInsetTop)
             .padding(.bottom, shellInsetBottom)
             .frame(width: shellSize.width, height: shellSize.height, alignment: .top)
+
+            // Single gradient map — clipped to rounded shell so corners stay clean.
+            if state.gradientMapSaturation > 0.5 {
+                Color(hue: state.gradientMapHue / 360,
+                      saturation: state.gradientMapSaturation / 100,
+                      brightness: 0.5)
+                    .blendMode(.color)
+                    .clipShape(RoundedRectangle(cornerRadius: outerShellRadius))
+                    .allowsHitTesting(false)
+            }
+
+            // Currently playing artwork — real colors floated above gradient map.
+            // Top offset = shellInsetTop(6) + VStack.padding.top(4) + TrackHeaderView.padding.top(8) = 18
+            if state.gradientMapSaturation > 0.5,
+               let currentId = state.currentId,
+               let artData = state.current?.artworkData {
+                ArtSwatchView(
+                    index: state.tracks.firstIndex(where: { $0.id == currentId }) ?? 0,
+                    size: 48,
+                    cornerRadius: 7,
+                    artworkData: artData,
+                    trackId: currentId
+                )
+                .allowsHitTesting(false)
+                .padding(.top, shellInsetTop + 4 + 8)
+                .padding(.leading, shellInsetX + 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+
+            // Drag handles inside scaleEffect — hit areas match the visual scale.
+            WindowBorderDragOverlay(hasContent: !state.tracks.isEmpty)
+
+            // Resize handle at bottom — inside scaleEffect so it's at the right visual position.
+            if !state.tracks.isEmpty && state.playlistOpen {
+                BottomResizeHandle(eqOpen: state.eqOpen, windowScale: state.windowScale) { newH in
+                    state.playlistPanelHeight = max(160, min(700, newH))
+                }
+                .frame(height: 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
         }
         .frame(width: shellSize.width, height: shellSize.height, alignment: .top)
+        // Scale the ENTIRE shell — glass border + content scale together.
+        // Math: SwiftUI centers shellSize in scaledShellSize window; scaleEffect
+        // from view center equals window center → visual fills window exactly.
+        .scaleEffect(state.windowScale)
         .background(Color.clear)
-        .overlay {
-            WindowBorderDragOverlay(hasContent: !state.tracks.isEmpty)
-        }
         // Drop zone highlight
         .overlay {
             if isDropTarget {
@@ -95,11 +148,12 @@ struct RootView: View {
             }
         }
         .onAppear {
-            DispatchQueue.main.async { updateWindowSize(to: shellSize) }
+            DispatchQueue.main.async { applyDisplayScale() }
             WindowSnapManager.shared.playerState = state
         }
-        .onChange(of: state.eqOpen) { _ in updateWindowSize(to: shellSize) }
-        .onChange(of: state.playlistOpen) { _ in updateWindowSize(to: shellSize) }
+        .onChange(of: state.eqOpen)        { _ in applyDisplayScale() }
+        .onChange(of: state.playlistOpen)  { _ in applyDisplayScale() }
+        .onChange(of: state.windowScale)   { _ in applyDisplayScale() }
         .onChange(of: state.playlistPanelHeight) { _ in
             guard !state.isSnapping else { return }
             let appDelegate = NSApp.delegate as? AppDelegate
@@ -116,30 +170,37 @@ struct RootView: View {
                 state.cancelXYSpring()
                 if state.xyEffectAxis == .lfo     { state.startLFO() }
                 if state.xyEffectAxis == .bpmChop { state.startBPMChop() }
+                if state.xyEffectAxis == .slicer  { state.startSlicer() }
                 applyXYEffect(state.xyPoint)
             } else {
                 state.stopLFO()
                 state.stopBPMChop()
+                state.stopSlicer()
                 state.cancelXYSpring()
                 state.hpfCutoff    = 0
                 state.lpfCutoff    = 0
                 state.reverbAmount = 0
                 state.xyResonance  = 1.0
-                AudioEngineNext.shared.setHPF(cutoff: 0)
-                AudioEngineNext.shared.setLPF(cutoff: 0)
-                AudioEngineNext.shared.setLPFResonance(1.0)
-                AudioEngineNext.shared.setReverb(amount: 0)
+                state.audioEngine.setHPF(cutoff: 0)
+                state.audioEngine.setLPF(cutoff: 0)
+                state.audioEngine.setLPFResonance(1.0)
+                state.audioEngine.setReverb(amount: 0)
+                state.audioEngine.resetFXNodes()
                 state.startXYSpring()
             }
         }
         .onChange(of: state.xyEffectAxis) { _ in
             state.stopLFO()
             state.stopBPMChop()
-            AudioEngineNext.shared.setLPF(cutoff: 0)
+            state.stopSlicer()
+            state.audioEngine.setHPF(cutoff: 0)
+            state.audioEngine.setLPF(cutoff: 0)
+            state.audioEngine.resetFXNodes()
             state.lpfCutoff = 0
             guard state.xyActive else { return }
             if state.xyEffectAxis == .lfo     { state.startLFO() }
             if state.xyEffectAxis == .bpmChop { state.startBPMChop() }
+            if state.xyEffectAxis == .slicer  { state.startSlicer() }
             applyXYEffect(state.xyPoint)
         }
         .onChange(of: state.xyHoldMode) { holdMode in
@@ -153,14 +214,6 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .headerDoubleClick)) { _ in
             guard !state.tracks.isEmpty else { return }
             state.toggleAccordionPanels()
-        }
-        .overlay(alignment: .bottom) {
-            if !state.tracks.isEmpty && state.playlistOpen {
-                BottomResizeHandle(eqOpen: state.eqOpen) { newH in
-                    state.playlistPanelHeight = max(160, min(700, newH))
-                }
-                .frame(height: 10)
-            }
         }
     }
 
@@ -215,36 +268,98 @@ struct RootView: View {
     private func applyXYEffect(_ point: CGPoint) {
         let x = Float(point.x)
         let y = Float(point.y)
-        // Audio engine updates at full rate. No @Published writes here —
-        // avoids secondary SwiftUI update cascade on every 60fps XY tick.
-        // EQCurveView derives filter values from xyPoint directly.
-        // EQKnobStack labels remain at pre-XY values during XY (acceptable).
+        // Audio engine updates at full rate.
+        // @Published state vars (hpfCutoff, lpfCutoff, xyResonance) are updated
+        // so EQKnobStack labels and EQCurveView reflect the XY position.
         switch state.xyEffectAxis {
         case .filter:
-            AudioEngineNext.shared.setHPF(cutoff: x * 0.55)
-            AudioEngineNext.shared.setLPF(cutoff: (1 - y) * 0.55)
-            AudioEngineNext.shared.setLPFResonance(1.0)
-        case .reverb:
-            AudioEngineNext.shared.setReverb(amount: x)
+            let hpf = x * 0.55
+            let lpf = (1 - y) * 0.55
+            state.audioEngine.setHPF(cutoff: hpf)
+            state.audioEngine.setLPF(cutoff: lpf)
+            state.audioEngine.setLPFResonance(1.0)
+            state.hpfCutoff  = hpf
+            state.lpfCutoff  = lpf
+            state.xyResonance = 1.0
+        case .lowpass:
+            let bw = Float(max(0.05, 2.0 * pow(0.025, Double(y))))
+            state.audioEngine.setHPF(cutoff: 0)
+            state.audioEngine.setLPF(cutoff: x * 0.85)
+            state.audioEngine.setLPFResonance(bw)
+            state.hpfCutoff  = 0
+            state.lpfCutoff  = x * 0.85
+            state.xyResonance = bw
+        case .highpass:
+            let bw = Float(max(0.05, 2.0 * pow(0.025, Double(y))))
+            state.audioEngine.setLPF(cutoff: 0)
+            state.audioEngine.setHPF(cutoff: x * 0.85)
+            state.audioEngine.setHPFResonance(bw)
+            state.lpfCutoff  = 0
+            state.hpfCutoff  = x * 0.85
+            state.xyResonance = bw
+        case .bandpass:
+            let centerHz = 100.0 * pow(80.0, Double(x))
+            let widthOct = 0.5 + (1.0 - Double(y)) * 3.0
+            let hpfHz    = centerHz / pow(2.0, widthOct * 0.5)
+            let lpfHz    = centerHz * pow(2.0, widthOct * 0.5)
+            let hpfCut   = Float(max(0, min(1, log(max(20, hpfHz) / 20.0) / log(100.0))))
+            let lpfCut   = Float(max(0, min(1, log(20000.0 / max(200, lpfHz)) / log(100.0))))
+            state.audioEngine.setHPF(cutoff: hpfCut)
+            state.audioEngine.setLPF(cutoff: lpfCut)
+            state.audioEngine.setLPFResonance(1.0)
+            state.hpfCutoff  = hpfCut
+            state.lpfCutoff  = lpfCut
+            state.xyResonance = 1.0
         case .reso:
             let cutoff    = x * 0.75
             let bandwidth = Float(max(0.05, 2.0 * pow(0.025, Double(y))))
-            AudioEngineNext.shared.setHPF(cutoff: 0)
-            AudioEngineNext.shared.setLPF(cutoff: cutoff)
-            AudioEngineNext.shared.setLPFResonance(bandwidth)
-        case .filtVerb:
-            AudioEngineNext.shared.setHPF(cutoff: 0)
-            AudioEngineNext.shared.setLPF(cutoff: x * 0.7)
-            AudioEngineNext.shared.setLPFResonance(1.0)
-            AudioEngineNext.shared.setReverb(amount: y)
+            state.audioEngine.setHPF(cutoff: 0)
+            state.audioEngine.setLPF(cutoff: cutoff)
+            state.audioEngine.setLPFResonance(bandwidth)
+            state.hpfCutoff  = 0
+            state.lpfCutoff  = cutoff
+            state.xyResonance = bandwidth
         case .lfo:
-            AudioEngineNext.shared.setHPF(cutoff: 0)
-            AudioEngineNext.shared.setLPFResonance(1.0)
+            state.audioEngine.setHPF(cutoff: 0)
+            state.audioEngine.setLPFResonance(1.0)
+            state.hpfCutoff = 0
             state.startLFO()
         case .bpmChop:
-            AudioEngineNext.shared.setHPF(cutoff: 0)
-            AudioEngineNext.shared.setLPFResonance(1.0)
+            state.audioEngine.setHPF(cutoff: 0)
+            state.audioEngine.setLPFResonance(1.0)
+            state.hpfCutoff = 0
             state.startBPMChop()
+        case .slicer:
+            state.audioEngine.setHPF(cutoff: 0)
+            state.audioEngine.setLPF(cutoff: 0)
+            state.hpfCutoff = 0
+            state.lpfCutoff = 0
+            state.startSlicer()
+        case .reverb:
+            state.audioEngine.setReverb(amount: x)
+            state.reverbAmount = x
+        case .filtVerb:
+            let lpf = x * 0.7
+            state.audioEngine.setHPF(cutoff: 0)
+            state.audioEngine.setLPF(cutoff: lpf)
+            state.audioEngine.setLPFResonance(1.0)
+            state.audioEngine.setReverb(amount: y)
+            state.hpfCutoff   = 0
+            state.lpfCutoff   = lpf
+            state.reverbAmount = y
+        case .simpleDelay:
+            let time     = Double(x) * 1.0
+            let feedback = y * 0.75
+            let wet      = min(1.0, y * 1.5)
+            state.audioEngine.setDelay(time: time, feedback: feedback, wet: wet)
+        case .dubDelay:
+            let time      = Double(x) * 0.75
+            let feedback  = y * 0.65
+            let wet       = min(1.0, y * 1.2)
+            let darkness  = Float(max(200, 22050.0 * pow(0.005, Double(y))))
+            state.audioEngine.setDelay(time: time, feedback: feedback, wet: wet, lowPassCutoff: darkness)
+        case .lofi:
+            state.audioEngine.setLoFi(wet: x * y)
         }
     }
 
@@ -253,11 +368,11 @@ struct RootView: View {
         if snap.snapState == .docked || snap.snapState == .peeking {
             snap.expandCurrentWindow()
         }
-        var urls: [URL] = []
+        var slots: [URL?] = Array(repeating: nil, count: providers.count)
         let group = DispatchGroup()
         let lock = NSLock()
 
-        for provider in providers {
+        for (i, provider) in providers.enumerated() {
             group.enter()
             provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
                 defer { group.leave() }
@@ -272,11 +387,12 @@ struct RootView: View {
                     resolved = URL(string: str)
                 }
                 guard let url = resolved else { return }
-                lock.withLock { urls.append(url) }
+                lock.withLock { slots[i] = url }
             }
         }
 
         group.notify(queue: .main) {
+            let urls = slots.compactMap { $0 }
             guard !urls.isEmpty else { return }
             Task { @MainActor in
                 if state.splitPlaylistView, state.secondaryPlaylistTabId != nil {
@@ -390,23 +506,27 @@ final class DragHandleNSView: NSView {
 // ── Bottom resize handle — outer shell border ─────────────────────────────────
 struct BottomResizeHandle: NSViewRepresentable {
     let eqOpen: Bool
+    let windowScale: CGFloat
     let onResize: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> BottomResizeHandleNSView {
         let v = BottomResizeHandleNSView()
         v.eqOpen = eqOpen
+        v.windowScale = windowScale
         v.onResize = onResize
         return v
     }
 
     func updateNSView(_ nsView: BottomResizeHandleNSView, context: Context) {
         nsView.eqOpen = eqOpen
+        nsView.windowScale = windowScale
         nsView.onResize = onResize
     }
 }
 
 final class BottomResizeHandleNSView: NSView {
     var eqOpen = false
+    var windowScale: CGFloat = 1.0
     var onResize: (CGFloat) -> Void = { _ in }
 
     private var startScreenY: CGFloat = 0
@@ -436,13 +556,15 @@ final class BottomResizeHandleNSView: NSView {
         let shellInsets: CGFloat = 12
         let baseH = FullPlayerView.baseHeight
         let eqH: CGFloat = eqOpen ? FullPlayerView.eqPanelHeight : 0
-        let minH = baseH + eqH + 160 + shellInsets
-        let maxH = baseH + eqH + 700 + shellInsets
+        // Bounds in actual window pixels (scaled); unscaled constants × scale = real pixel size
+        let minH = (baseH + eqH + 160 + shellInsets) * windowScale
+        let maxH = (baseH + eqH + 700 + shellInsets) * windowScale
         var newFrame = startWindowFrame
         newFrame.size.height = max(minH, min(maxH, startWindowFrame.height + delta))
         newFrame.origin.y = startWindowFrame.maxY - newFrame.size.height
         window.setFrame(newFrame, display: true)
-        onResize(newFrame.height - baseH - eqH - shellInsets)
+        // Divide by scale to get back to unscaled SwiftUI units that playlistPanelHeight expects
+        onResize(newFrame.height / windowScale - baseH - eqH - shellInsets)
     }
 
     override func mouseUp(with event: NSEvent) {

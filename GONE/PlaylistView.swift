@@ -1,12 +1,15 @@
 import SwiftUI
+import Combine
 import UniformTypeIdentifiers
 
 struct PlaylistView: View {
     @EnvironmentObject var state: PlayerState
+    @ObservedObject private var split = SplitModeManager.shared
     @State private var isDropTarget = false
     @State private var isSecondaryDropTarget = false
     @State private var primarySelectedIds: Set<UUID> = []
     @State private var secondarySelectedIds: Set<UUID> = []
+    @State private var activePaneTabId: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,7 +25,11 @@ struct PlaylistView: View {
                         selectedIds: $primarySelectedIds,
                         isDropTarget: $isDropTarget,
                         onDrop: { providers in handleDrop(providers: providers, toPlaylistTabId: state.activePlaylistTabId) },
-                        onBecomeActive: { secondarySelectedIds = [] }
+                        onBecomeActive: {
+                            secondarySelectedIds = []
+                            activePaneTabId = state.activePlaylistTabId
+                        },
+                        activePaneBinder: $activePaneTabId
                     )
 
                     Rectangle()
@@ -35,7 +42,11 @@ struct PlaylistView: View {
                         selectedIds: $secondarySelectedIds,
                         isDropTarget: $isSecondaryDropTarget,
                         onDrop: { providers in handleDrop(providers: providers, toPlaylistTabId: secondaryId) },
-                        onBecomeActive: { primarySelectedIds = [] }
+                        onBecomeActive: {
+                            primarySelectedIds = []
+                            activePaneTabId = secondaryId
+                        },
+                        activePaneBinder: $activePaneTabId
                     )
                 }
                 .frame(maxHeight: .infinity)
@@ -54,6 +65,17 @@ struct PlaylistView: View {
             SplitToggleButton()
                 .padding(.trailing, 10)
                 .padding(.bottom, 10)
+        }
+        .overlay {
+            GeometryReader { geo in
+                ClonePlayerButton()
+                    .position(
+                        x: state.splitPlaylistView
+                            ? geo.size.width / 2 - 19   // 10px from divider + half button (9)
+                            : geo.size.width / 2,
+                        y: geo.size.height - 19         // 10px from bottom + half button (9)
+                    )
+            }
         }
         .background(G.bgPanelPL)
         .overlay {
@@ -221,15 +243,19 @@ struct PlaylistTracksPane: View {
     @Binding var isDropTarget: Bool
     let onDrop: ([NSItemProvider]) -> Bool
     var onBecomeActive: (() -> Void)? = nil
+    var activePaneBinder: Binding<UUID?> = .constant(nil)
 
     @State private var isDropHintHovered = false
     @State private var selectionAnchorId: UUID? = nil
     @State private var draggingId: UUID? = nil
     @State private var dragStartIdx: Int? = nil
     @State private var insertionIdx: Int? = nil
+    @State private var lastTapId: UUID? = nil
+    @State private var lastTapTime: Date = .distantPast
 
     private var visibleTracks: [Track] {
-        state.sortedTracks(forPlaylistTabId: tabId)
+        let all = state.sortedTracks(forPlaylistTabId: tabId)
+        return state.hideMissingTracks ? all.filter { !$0.isMissing } : all
     }
 
     private func handleRowTap(_ track: Track) {
@@ -271,12 +297,19 @@ struct PlaylistTracksPane: View {
     @State private var contentHeight: CGFloat = 0
     @State private var keyMonitor: Any?
     @State private var scrollerObserver: NSObjectProtocol?
+    @State private var focusScrollTarget: UUID? = nil
+
+    // Reference-type box so the NSEvent monitor closure always reads live values.
+    // SwiftUI struct copies freeze @State reads inside closures captured at onAppear;
+    // a class reference escapes that problem entirely.
+    @StateObject private var cursor: PlaylistCursorBox = PlaylistCursorBox()
 
     var body: some View {
         VStack(spacing: 0) {
             PlaylistHeaderRow(tabId: tabId, scrollerOffset: scrollerOffset)
 
             GeometryReader { geo in
+                ScrollViewReader { scrollProxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 0) {
                         // Scroll offset tracker — zero-height, reads position in scroll coordinate space
@@ -339,14 +372,20 @@ struct PlaylistTracksPane: View {
                                             .allowsHitTesting(false)
                                     }
                                 }
-                                .onTapGesture(count: 2) {
-                                    onBecomeActive?()
-                                    selectedIds = [track.id]
-                                    selectionAnchorId = track.id
-                                    state.playTrack(id: track.id)
-                                }
                                 .onTapGesture {
-                                    handleRowTap(track)
+                                    let now = Date()
+                                    if lastTapId == track.id, now.timeIntervalSince(lastTapTime) < 0.35 {
+                                        onBecomeActive?()
+                                        selectedIds = [track.id]
+                                        selectionAnchorId = track.id
+                                        state.playTrack(id: track.id, fromTabId: tabId)
+                                        lastTapId = nil
+                                        lastTapTime = .distantPast
+                                    } else {
+                                        handleRowTap(track)
+                                        lastTapId = track.id
+                                        lastTapTime = now
+                                    }
                                 }
                                 .simultaneousGesture(
                                     DragGesture(minimumDistance: 12)
@@ -419,13 +458,20 @@ struct PlaylistTracksPane: View {
                                                 state.crossPaneDragInsertionIdx = nil
                                                 if needsCursorPop { NSCursor.pop() }
                                             }
-                                            // Cross-pane move or copy
+                                            // Cross-pane move or copy — includes full selection when dragged track is selected
                                             if let dragId = draggingId,
                                                let targetTab = state.crossPaneDragTargetTabId {
-                                                if state.crossPaneDragIsCopy {
-                                                    state.copyTrackAt(dragId, to: targetTab, insertionIndex: state.crossPaneDragInsertionIdx)
-                                                } else {
-                                                    state.moveTrackAt(dragId, from: tabId, to: targetTab, insertionIndex: state.crossPaneDragInsertionIdx)
+                                                let idsToMove: [UUID] = selectedIds.contains(dragId) && selectedIds.count > 1
+                                                    ? visibleTracks.filter { selectedIds.contains($0.id) }.map(\.id)
+                                                    : [dragId]
+                                                var insertAt = state.crossPaneDragInsertionIdx
+                                                for id in idsToMove {
+                                                    if state.crossPaneDragIsCopy {
+                                                        state.copyTrackAt(id, to: targetTab, insertionIndex: insertAt)
+                                                    } else {
+                                                        state.moveTrackAt(id, from: tabId, to: targetTab, insertionIndex: insertAt)
+                                                    }
+                                                    if let i = insertAt { insertAt = i + 1 }
                                                 }
                                                 return
                                             }
@@ -465,6 +511,7 @@ struct PlaylistTracksPane: View {
                                         )
                                     }
                                 }
+                                .id(track.id)  // anchor for ScrollViewReader
                             }
                         }
 
@@ -580,7 +627,27 @@ struct PlaylistTracksPane: View {
                 .animation(.easeInOut(duration: 0.12), value: isDropTarget)
                 .animation(.easeInOut(duration: 0.12), value: state.crossPaneDragTargetTabId == tabId)
                 .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: onDrop)
+                // Scroll to playing track when playlist opens or current track changes
+                .onChange(of: state.playlistOpen) { isOpen in
+                    guard isOpen, let id = state.currentId,
+                          visibleTracks.contains(where: { $0.id == id }) else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                        withAnimation(.easeInOut(duration: 0.30)) { scrollProxy.scrollTo(id, anchor: .center) }
+                    }
+                }
+                .onChange(of: state.currentId) { id in
+                    guard state.playlistOpen, let id,
+                          visibleTracks.contains(where: { $0.id == id }) else { return }
+                    withAnimation(.easeInOut(duration: 0.30)) { scrollProxy.scrollTo(id, anchor: .center) }
+                }
+                .onChange(of: focusScrollTarget) { id in
+                    guard let id else { return }
+                    withAnimation(.easeInOut(duration: 0.20)) {
+                        scrollProxy.scrollTo(id, anchor: .center)
+                    }
+                }
             }
+            } // ScrollViewReader
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {
                     LinearGradient(
@@ -613,16 +680,93 @@ struct PlaylistTracksPane: View {
             ) { _ in
                 scrollerOffset = 0
             }
-            // NSEvent monitor is more reliable than a hidden Button on macOS —
-            // works regardless of scroll view focus
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                      event.charactersIgnoringModifiers == "a",
-                      !(NSApp.keyWindow?.firstResponder is NSText)
-                else { return event }
-                onBecomeActive?()
-                selectedIds = Set(visibleTracks.map(\.id))
-                return nil
+
+            // Wire up the cursor box — capture stable reference types only.
+            // The box object itself is heap-allocated and lives for the view's lifetime,
+            // so every closure that reads from it always sees the live value.
+            let box = cursor          // cursor is @StateObject — a stable class reference
+            box.tabId = tabId
+
+            // Reads that must stay fresh: pull directly from the class reference (state, binder).
+            // The monitor block captures `box`, `state`, and `activePaneBinder` — all reference
+            // types or Binding structs with a stable storage pointer — so they stay current.
+            let binder = activePaneBinder
+
+            // Write-closures post back onto the main actor so @State mutations are safe.
+            box.writeSelection = { @MainActor newSet in selectedIds = newSet }
+            box.writeAnchor    = { @MainActor newId  in selectionAnchorId = newId }
+            box.writeScroll    = { @MainActor newId  in focusScrollTarget  = newId }
+            box.readTracks     = { [weak state] in
+                guard let state else { return [] }
+                let all = state.sortedTracks(forPlaylistTabId: box.tabId)
+                return state.hideMissingTracks ? all.filter { !$0.isMissing } : all
+            }
+
+            // NSEvent monitor — captures only the box (class ref) and stable bindings.
+            // Never reads @State variables directly: those would be frozen struct copies.
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak state] event in
+                guard let state else { return event }
+                guard !(NSApp.keyWindow?.firstResponder is NSText) else { return event }
+                // Strip numericPad/function — arrow keys always carry these on macOS hardware.
+                let mods = event.modifierFlags
+                    .intersection(.deviceIndependentFlagsMask)
+                    .subtracting([.numericPad, .function])
+
+                // Cmd+A: select all
+                if mods == .command, event.charactersIgnoringModifiers == "a" {
+                    if state.splitPlaylistView {
+                        let activeId = binder.wrappedValue ?? state.activePlaylistTabId
+                        guard activeId == box.tabId else { return event }
+                    }
+                    let tracks = box.readTracks?() ?? []
+                    DispatchQueue.main.async {
+                        box.writeSelection?(Set(tracks.map(\.id)))
+                    }
+                    return nil
+                }
+
+                // ↑ / ↓ / Enter: browse cursor — no modifier, playlist must be open
+                guard mods.isEmpty, state.playlistOpen else { return event }
+                if state.splitPlaylistView {
+                    let activeId = binder.wrappedValue ?? state.activePlaylistTabId
+                    guard activeId == box.tabId else { return event }
+                }
+
+                let tracks = box.readTracks?() ?? []
+                switch event.keyCode {
+                case 125: // ↓ arrow
+                    guard !tracks.isEmpty else { return event }
+                    let startId = box.anchorId ?? state.currentId
+                    let curIdx  = startId.flatMap { id in tracks.firstIndex(where: { $0.id == id }) }
+                    let nextIdx = curIdx.map { min($0 + 1, tracks.count - 1) } ?? 0
+                    let next    = tracks[nextIdx]
+                    box.anchorId = next.id
+                    DispatchQueue.main.async {
+                        box.writeSelection?([next.id])
+                        box.writeAnchor?(next.id)
+                        box.writeScroll?(next.id)
+                    }
+                    return nil
+                case 126: // ↑ arrow
+                    guard !tracks.isEmpty else { return event }
+                    let startId = box.anchorId ?? state.currentId
+                    let curIdx  = startId.flatMap { id in tracks.firstIndex(where: { $0.id == id }) }
+                    let prevIdx = curIdx.map { max($0 - 1, 0) } ?? 0
+                    let prev    = tracks[prevIdx]
+                    box.anchorId = prev.id
+                    DispatchQueue.main.async {
+                        box.writeSelection?([prev.id])
+                        box.writeAnchor?(prev.id)
+                        box.writeScroll?(prev.id)
+                    }
+                    return nil
+                case 36: // Return/Enter — play the single selected track
+                    guard let id = box.anchorId else { return event }
+                    DispatchQueue.main.async { state.playTrack(id: id, fromTabId: box.tabId) }
+                    return nil
+                default:
+                    return event
+                }
             }
         }
         .onDisappear {
@@ -630,7 +774,14 @@ struct PlaylistTracksPane: View {
             if let m = scrollerObserver { NotificationCenter.default.removeObserver(m); scrollerObserver = nil }
         }
         .onChange(of: selectedIds.isEmpty) { isEmpty in
-            if isEmpty { selectionAnchorId = nil }
+            if isEmpty {
+                selectionAnchorId = nil
+                cursor.anchorId   = nil   // keep box in sync
+            }
+        }
+        // Keep box.anchorId in sync whenever selectionAnchorId changes from tap/click.
+        .onChange(of: selectionAnchorId) { newId in
+            cursor.anchorId = newId
         }
     }
 }
@@ -768,6 +919,7 @@ struct PlaylistRowView: View {
     @EnvironmentObject var state: PlayerState
     @State private var hovered = false
     @State private var showCompletion: Bool = false
+    @State private var showDeleteConfirm = false
 
     private var scanFrac: Double {
         if showCompletion { return 1.0 }
@@ -827,47 +979,50 @@ struct PlaylistRowView: View {
                 }
                 .frame(width: 24)
 
-                // Title + artist (marquee on hover)
-                MarqueeTextRow(
-                    title: track.title,
-                    artist: track.isMissing ? "" : track.artist,
-                    isCurrent: isCurrent,
-                    hovered: hovered
-                )
-                .padding(.horizontal, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
+                // Title + artist, BPM, duration
+                Group {
+                    MarqueeTextRow(
+                        title: track.title,
+                        artist: track.isMissing ? "" : track.artist,
+                        isCurrent: isCurrent,
+                        hovered: hovered
+                    )
+                    .padding(.horizontal, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
 
-                // Reveal in Finder (hover only)
-                if hovered && !track.isMissing {
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([track.url])
-                    } label: {
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(G.textTertiary)
-                            .frame(width: 18, height: 18)
-                            .background(Color.white.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: G.rRow))
+                    // Reveal in Finder (hover only)
+                    if hovered && !track.isMissing {
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([track.url])
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(G.textTertiary)
+                                .frame(width: 18, height: 18)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(RoundedRectangle(cornerRadius: G.rRow))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 2)
+                        .transition(.opacity)
+                        .goneTooltip("Show in Finder")
                     }
-                    .buttonStyle(.plain)
-                    .padding(.trailing, 2)
-                    .transition(.opacity)
+
+                    // BPM — .id forces view recreation when state changes (Track.== compares only id)
+                    BPMCell(track: track, isCurrent: isCurrent)
+                        .id(track.bpmAnalysisState)
+                        .padding(.horizontal, 4)
+
+                    // Duration
+                    Text(fmtTime(track.duration))
+                        .font(G.mono(10.5))
+                        .foregroundStyle(isCurrent ? Color.white : Color.white.opacity(0.5))
+                        .monospacedDigit()
+                        .frame(width: 40, alignment: .trailing)
+                        .padding(.leading, 3)
+                        .padding(.trailing, 7)
                 }
-
-                // BPM — .id forces view recreation when state changes (Track.== compares only id)
-                BPMCell(track: track, isCurrent: isCurrent)
-                    .id(track.bpmAnalysisState)
-                    .padding(.horizontal, 4)
-
-                // Duration
-                Text(fmtTime(track.duration))
-                    .font(G.mono(10.5))
-                    .foregroundStyle(isCurrent ? Color.white : Color.white.opacity(0.5))
-                    .monospacedDigit()
-                    .frame(width: 40, alignment: .trailing)
-                    .padding(.leading, 3)
-                    .padding(.trailing, 7)
             }
             .opacity(contentOpacity)
             .animation(.easeInOut(duration: 0.25), value: contentOpacity)
@@ -892,7 +1047,7 @@ struct PlaylistRowView: View {
         .contextMenu {
             if !track.isMissing {
                 Button("Play") {
-                    state.playTrack(id: track.id)
+                    state.playTrack(id: track.id, fromTabId: playlistTabId)
                 }
 
                 Button("Reveal in Finder") {
@@ -908,7 +1063,8 @@ struct PlaylistRowView: View {
             }
 
             Button("Delete from Library", role: .destructive) {
-                state.deleteFromLibrary(id: track.id)
+                if state.confirmBeforeDelete { showDeleteConfirm = true }
+                else { state.deleteFromLibrary(id: track.id) }
             }
         }
         .onChange(of: track.bpmAnalysisState) { new in
@@ -918,6 +1074,12 @@ struct PlaylistRowView: View {
                 try? await Task.sleep(nanoseconds: 450_000_000)
                 withAnimation(.easeOut(duration: 0.35)) { showCompletion = false }
             }
+        }
+        .alert("Delete \"\(track.title)\"?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) { state.deleteFromLibrary(id: track.id) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the track from the library and all playlists.")
         }
     }
 }
@@ -957,6 +1119,7 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
 
     private struct PromiseInfo { let url: URL; let name: String }
     private var promises:    [UUID: PromiseInfo] = [:]
+    private var draggedURLs: [URL] = []   // ordered source URLs for NSFilenamesPboardType
     private var downEvent:   NSEvent?
     private var didHandOff   = false
     private var downMonitor: Any?
@@ -982,6 +1145,8 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
         stopMonitors()
         downMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] ev in
             guard let self else { return ev }
+            // Ignore events from any window other than the player (settings panel, etc.)
+            guard ev.window == self.window else { return ev }
             // Convert the row's bounds TO window space (not the inverse) — avoids
             // the flipped-coordinate ambiguity in the SwiftUI-AppKit NSHostingView bridge.
             let rowInWindow = self.convert(self.bounds, to: nil)
@@ -1004,7 +1169,7 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
         }
 
         upMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] ev in
-            guard let self else { return ev }
+            guard let self, ev.window == self.window else { return ev }
             self.downEvent  = nil   // gesture over, reset for next press
             self.didHandOff = false
             return ev
@@ -1012,6 +1177,7 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
 
         dragMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDragged) { [weak self] ev in
             guard let self,
+                  ev.window == self.window,
                   !self.didHandOff,
                   self.downEvent != nil,
                   let win = self.window else { return ev }
@@ -1046,6 +1212,7 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
             : [(trackIndex, cur)]
 
         promises.removeAll()
+        draggedURLs = export.map { $0.1.url }
         let items: [NSDraggingItem] = export.enumerated().compactMap { i, pair in
             let (idx, t) = pair
             let ext  = t.url.pathExtension
@@ -1075,6 +1242,17 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
         ctx == .outsideApplication ? .copy : []
     }
 
+    // Adds NSFilenamesPboardType so apps that don't support file promises (Telegram,
+    // Rekordbox, web browsers, etc.) can still receive files via the standard macOS drag.
+    // Does NOT clear the existing file-promise items — Finder still gets cue-renamed files.
+    func draggingSession(_ s: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        let paths = draggedURLs.map { $0.path }
+        guard !paths.isEmpty else { return }
+        let pb = s.draggingPasteboard
+        pb.addTypes([NSPasteboard.PasteboardType("NSFilenamesPboardType")], owner: nil)
+        pb.setPropertyList(paths, forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+    }
+
     // MARK: NSFilePromiseProviderDelegate
     func filePromiseProvider(_ p: NSFilePromiseProvider, fileNameForType _: String) -> String {
         guard let idStr = p.userInfo as? String, let id = UUID(uuidString: idStr) else { return "" }
@@ -1088,6 +1266,8 @@ final class RowDragNSView: NSView, NSDraggingSource, NSFilePromiseProviderDelega
               let src   = promises[id]?.url else {
             completionHandler(NSError(domain: "GONE", code: -1, userInfo: nil)); return
         }
+        let accessing = src.startAccessingSecurityScopedResource()
+        defer { if accessing { src.stopAccessingSecurityScopedResource() } }
         do {
             try? FileManager.default.removeItem(at: destURL)
             try FileManager.default.copyItem(at: src, to: destURL)
@@ -1156,6 +1336,41 @@ struct SplitToggleButton: View {
         .onHover { hovered = $0 }
         .animation(.easeInOut(duration: 0.12), value: hovered)
         .animation(.easeInOut(duration: 0.12), value: state.splitPlaylistView)
+    }
+}
+
+// ── Clone player button — bottom-center "+" that opens a second player window ──
+struct ClonePlayerButton: View {
+    @EnvironmentObject var state: PlayerState
+    @ObservedObject private var split = SplitModeManager.shared
+    @State private var hovered = false
+
+    var body: some View {
+        Button {
+            Task { @MainActor in
+                if split.isActive {
+                    split.deactivate()
+                } else {
+                    let delegate = NSApp.delegate as? AppDelegate
+                    let win = delegate?.resolvedMainWindow()
+                        ?? WindowSnapManager.shared.currentWindow
+                    guard let win else { return }
+                    split.activate(primaryWindow: win, primaryState: state)
+                }
+            }
+        } label: {
+            Image(systemName: split.isActive ? "square.slash" : "square.on.square")
+                .font(.system(size: 9, weight: .regular))
+                .foregroundColor(Color.white.opacity(hovered ? 0.50 : 0.20))
+                .frame(width: 18, height: 18)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.white.opacity(hovered ? 0.18 : 0), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovered)
     }
 }
 
@@ -1309,6 +1524,22 @@ private struct PlaylistScrollbar: View {
     }
 }
 
+
+// ── Cursor box — reference type so NSEvent monitor closure sees live values ────
+// @StateObject keeps one instance alive for the whole lifetime of PlaylistTracksPane.
+// The closure captures the box object (heap-allocated), not a struct snapshot,
+// so anchorId and the write-closures always reflect current state.
+final class PlaylistCursorBox: ObservableObject {
+    @Published var anchorId: UUID?
+    var writeSelection: ((Set<UUID>) -> Void)?
+    var writeAnchor: ((UUID?) -> Void)?
+    var writeScroll: ((UUID?) -> Void)?
+    var readTracks: (() -> [Track])?
+    var readPlaylistOpen: (() -> Bool)?
+    var readSplitView: (() -> Bool)?
+    var readActiveTabId: (() -> UUID?)?
+    var tabId: UUID = UUID()
+}
 
 private enum PlaylistScrollOffsetKey: PreferenceKey {
     static var defaultValue: CGFloat = 0

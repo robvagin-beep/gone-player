@@ -2,33 +2,39 @@ import SwiftUI
 
 struct ProgressRulerRow: View {
     @EnvironmentObject var state: PlayerState
+    @State private var feedProgress: Double = 0
 
     var body: some View {
         ProgressRuler(
-            progress: state.progress,
+            progress: feedProgress,
             waveform: state.current?.waveform ?? [],
+            hotCues: state.hotCues,
             isPlaying: state.isPlaying,
             onSeek: { ratio in
-                state.progress = ratio
-                AudioEngineNext.shared.seek(ratio: ratio)
+                feedProgress = ratio
+                state.audioEngine.seek(ratio: ratio)
             }
         )
         .frame(height: 22)
         .padding(.horizontal, 12)
         .padding(.top, 3)
         .padding(.bottom, 4)
+        .onReceive(state.progressFeed.$progress) { feedProgress = $0 }
     }
 }
 
 struct ProgressRuler: View {
     let progress: Double
     let waveform: [Float]
+    var hotCues: [Double?] = []
     var isPlaying: Bool = true
     let onSeek: (Double) -> Void
 
     @State private var dragRatio: Double?
     @State private var barPlayedAt: [Int: Date] = [:]
     @State private var lastKnownProgress: Double = -1
+    @State private var waveMinCache: CGFloat = 0
+    @State private var waveRangeCache: CGFloat = 1
 
     private static let animDuration: Double = 0.38
 
@@ -58,6 +64,8 @@ struct ProgressRuler: View {
                 )
                 .cursor(.pointingHand)
         }
+        .onAppear { updateWaveCache() }
+        .onChange(of: waveform) { _ in updateWaveCache() }
         .onChange(of: progress) { newProgress in
             let last = lastKnownProgress < 0 ? 0.0 : lastKnownProgress
             defer { lastKnownProgress = newProgress }
@@ -77,6 +85,14 @@ struct ProgressRuler: View {
         }
     }
 
+    private func updateWaveCache() {
+        guard !waveform.isEmpty else { waveMinCache = 0; waveRangeCache = 1; return }
+        let lo = CGFloat(waveform.min()!)
+        let hi = CGFloat(waveform.max()!)
+        waveMinCache   = lo
+        waveRangeCache = max(hi - lo, 0.02)
+    }
+
     private func drawRuler(ctx: GraphicsContext, size: CGSize, now: Date) {
         // 121 = 4×30+1 → quarters land exactly at indices 0,30,60,90,120
         let totalTicks = 121
@@ -92,16 +108,8 @@ struct ProgressRuler: View {
 
         let majorSet: Set<Int> = [0, 30, 60, 90, 120]
 
-        let waveMin: CGFloat
-        let waveRange: CGFloat
-        if waveform.isEmpty {
-            waveMin = 0; waveRange = 1
-        } else {
-            let lo = CGFloat(waveform.min() ?? 0.04)
-            let hi = CGFloat(waveform.max() ?? 0.90)
-            waveMin   = lo
-            waveRange = max(hi - lo, 0.02)
-        }
+        let waveMin   = waveMinCache
+        let waveRange = waveRangeCache
 
         for i in 0..<totalTicks {
             let frac    = CGFloat(i) / CGFloat(totalTicks - 1)
@@ -152,6 +160,23 @@ struct ProgressRuler: View {
             path.addLine(to: CGPoint(x: x, y: baseline - tickH))
             ctx.stroke(path, with: .color(.white.opacity(alpha)),
                        style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+        }
+
+        // Hot cue markers — small colored ticks at the top of the ruler
+        let cueColors: [Color] = [
+            Color(red: 1.0, green: 0.35, blue: 0.35),   // 1 · red
+            Color(red: 0.35, green: 0.70, blue: 1.0),   // 2 · blue
+            Color(red: 1.0, green: 0.82, blue: 0.25),   // 3 · yellow
+            Color(red: 0.35, green: 0.90, blue: 0.55),  // 4 · green
+        ]
+        for (idx, cue) in hotCues.prefix(4).enumerated() {
+            guard let ratio = cue else { continue }
+            let cx = CGFloat(ratio) * size.width
+            var cuePath = Path()
+            cuePath.move(to:    CGPoint(x: cx, y: 0))
+            cuePath.addLine(to: CGPoint(x: cx, y: 5))
+            ctx.stroke(cuePath, with: .color(cueColors[idx]),
+                       style: StrokeStyle(lineWidth: 2.0, lineCap: .butt))
         }
     }
 }

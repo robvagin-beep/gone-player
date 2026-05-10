@@ -28,6 +28,7 @@ final class WindowSnapManager {
     private var savedOrigin:      NSPoint?
     private var savedFrame:       NSRect?
     private var savedDockedY:     CGFloat?
+    private var dockToken:        UInt64 = 0  // incremented per dock attempt; guards completion against rapid toggle
 
     // Captured at enable(), used for the full lifecycle.
     private weak var snapWindow: NSWindow?
@@ -121,13 +122,21 @@ final class WindowSnapManager {
     // MARK: – Inactivity
 
     private func scheduleInactivityDock(window: NSWindow) {
+        // Settings panel counts as user activity — don't tick down while it's open
+        guard SettingsPanel.shared.currentPanel?.isVisible != true else {
+            inactivityTimer?.invalidate()
+            inactivityTimer = nil
+            playerState?.snapTimerStart = nil
+            return
+        }
         inactivityTimer?.invalidate()
         playerState?.snapTimerStart = Date()
         let timer = Timer(timeInterval: inactivityDelay, repeats: false) { [weak self, weak window] _ in
             MainActor.assumeIsolated {
                 guard let self,
                       let window,
-                      self.snapState == .waiting || self.snapState == .expanded
+                      self.snapState == .waiting || self.snapState == .expanded,
+                      SettingsPanel.shared.currentPanel?.isVisible != true
                 else { return }
                 self.dockToEdge(window: window)
             }
@@ -178,13 +187,15 @@ final class WindowSnapManager {
         // isSnapping blocks updateWindowSize during slide so no Y-shift occurs.
         // snapState/.docked and lockFrame are set in completion so PeekPanelView appears
         // only once the window has reached the snap position.
+        dockToken &+= 1
+        let capturedToken = dockToken
         DispatchQueue.main.async { [weak self, weak window] in
             guard let self, let window, let screen = self.screen(for: window) else { return }
             let y = self.savedDockedY ?? self.clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
             self.savedDockedY = y
             self.playerState?.isSnapping = true
             self.slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: self.dockAnimDuration) { [weak self, weak window] in
-                guard let self, let window else { return }
+                guard let self, let window, self.dockToken == capturedToken else { return }
                 self.snapState = .docked
                 self.lockFrame(window: window, x: snapX)
                 self.playerState?.isSnapping = false
@@ -275,10 +286,12 @@ final class WindowSnapManager {
         guard let screen = screen(for: window) else { return }
         let snapX = screen.frame.maxX - tabVisible
         let y = savedDockedY ?? clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
-        snapState = .docked  // set immediately to prevent poll re-triggering
+        snapState = .docked           // set immediately to prevent poll re-triggering
+        playerState?.isSnapping = true // guard updateWindowSize during slide (same as dockToEdge)
         slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: peekAnimDuration) { [weak self, weak window] in
             guard let self, let window else { return }
             self.lockFrame(window: window, x: snapX)
+            self.playerState?.isSnapping = false
         }
     }
 

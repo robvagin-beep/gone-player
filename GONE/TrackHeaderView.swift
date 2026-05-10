@@ -3,19 +3,21 @@ import AppKit
 
 struct TrackHeaderView: View {
     @EnvironmentObject var state: PlayerState
+
     @State private var isBPMHovered = false
+    @State private var feedCurrentTime: Double = 0
 
     var body: some View {
         let track = state.current
 
         HStack(alignment: .top, spacing: 10) {
-            // Art swatch
+            // Art swatch — deliberately excluded from gradient map
             ArtSwatchView(index: trackIndex, size: 48, cornerRadius: 7,
                           artworkData: state.current?.artworkData,
                           trackId: state.current?.id,
                           showsBrandPlaceholder: track == nil)
 
-            // Center: title / artist / badges
+            // Center: title / artist / badges — gradient map applied here (artwork excluded above)
             VStack(alignment: .leading, spacing: 3) {
                 Text(track?.title ?? "GONE PLAYER")
                     .font(G.sans(13, weight: .semibold))
@@ -78,7 +80,6 @@ struct TrackHeaderView: View {
                             .font(G.mono(8, weight: .semibold))
                             .foregroundStyle(state.pitch == 0 ? G.textTertiary : G.textPrimary)
                             .monospacedDigit()
-                            .animation(.easeInOut(duration: 0.2), value: state.pitch)
                             .goneTooltip("How far the speed has shifted from original. 0.0% = no change")
 
                         if t.bpm == 0 && t.bpmAnalysisState == .analyzing {
@@ -107,7 +108,7 @@ struct TrackHeaderView: View {
 
             // Right column: spectrum + time pill full-width under it
             VStack(alignment: .center, spacing: 4) {
-                SpectrumView(isPlaying: state.isPlaying)
+                SpectrumView(feed: state.spectrumFeed, isPlaying: state.isPlaying)
                     .frame(width: 96, height: 34)
                     .goneTooltip("Frequency energy of the audio as it plays. Display only — not an EQ")
 
@@ -128,6 +129,7 @@ struct TrackHeaderView: View {
         .padding(.bottom, 0)
         .animation(.easeInOut(duration: 0.2), value: state.pitch)
         .animation(.easeInOut(duration: 0.2), value: state.pitchBypassed)
+        .onReceive(state.progressFeed.$currentTime) { feedCurrentTime = $0 }
     }
 
     private var subtitleText: String {
@@ -155,7 +157,7 @@ struct TrackHeaderView: View {
     private var timeLabel: String {
         guard let t = state.current else { return "00:00 / 00:00" }
         let speed = 1.0 + state.pitch / 100.0
-        return "\(fmtTime(state.currentTime / speed)) / \(fmtTime(t.duration / speed))"
+        return "\(fmtTime(feedCurrentTime / speed)) / \(fmtTime(t.duration / speed))"
     }
 }
 

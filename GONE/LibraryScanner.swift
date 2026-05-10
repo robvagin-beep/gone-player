@@ -523,7 +523,7 @@ final class LibraryScanner {
     // ── BPM analysis — native Accelerate, no external libs ───────────────────
     // Algorithm: energy envelope → onset strength → autocorrelation → tempo
 
-    func analyzeBPM(url: URL, onProgress: ((Double) -> Void)? = nil) async -> Double {
+    func analyzeBPM(url: URL, floor: Double = 60, ceiling: Double = 200, onProgress: ((Double) -> Void)? = nil) async -> Double {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         let asset = AVURLAsset(url: url)
@@ -580,10 +580,10 @@ final class LibraryScanner {
         var onset = [Float](repeating: 0, count: frameCount)
         for i in 1..<frameCount { onset[i] = max(0, energy[i] - energy[i-1]) }
 
-        // Autocorrelation in BPM range 60–200
+        // Autocorrelation in user-defined BPM range
         let fps     = 11025.0 / Double(hopSize)   // ≈86.1 frames/s
-        let minLag  = max(1, Int(fps * 60.0 / 200.0))
-        let maxLag  = Int(fps * 60.0 / 60.0)
+        let minLag  = max(1, Int(fps * 60.0 / max(ceiling, floor + 1)))
+        let maxLag  = Int(fps * 60.0 / max(floor, 1))
         guard minLag < maxLag, maxLag < frameCount else { return 0 }
 
         let analysisLen = min(frameCount - maxLag, 4096)
@@ -623,9 +623,10 @@ final class LibraryScanner {
         guard bestScore > 0 else { return 0 }
 
         var bpm = 60.0 * fps / Double(bestLag)
-        // Resolve half/double tempo — DJ music lives in 90–180 BPM
-        while bpm > 0 && bpm < 90  { bpm *= 2 }
-        while bpm > 180 { bpm /= 2 }
+        // Resolve half/double tempo within user-defined range
+        let lo = max(floor, 1); let hi = max(ceiling, lo + 1)
+        while bpm > 0 && bpm < lo  { bpm *= 2 }
+        while bpm > hi { bpm /= 2 }
         onProgress?(1.0)
         return (bpm * 10).rounded() / 10
     }

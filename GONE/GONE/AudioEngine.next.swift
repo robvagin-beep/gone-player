@@ -1,6 +1,7 @@
 import AVFoundation
 import Accelerate
 import Foundation
+import CoreAudio
 
 /// A stricter playback core kept separate from the production AudioEngine while
 /// the app is being refactored. The implementation stays intentionally simple:
@@ -8,6 +9,7 @@ import Foundation
 /// and no heavy dependencies or modern-only UI/audio abstractions.
 final class AudioEngineNext {
     static let shared = AudioEngineNext()
+    static let secondary = AudioEngineNext()
 
     struct PlaybackSnapshot {
         let isLoaded: Bool
@@ -29,7 +31,10 @@ final class AudioEngineNext {
     private let hpfNode        = AVAudioUnitEQ(numberOfBands: 1)
     private let lpfNode        = AVAudioUnitEQ(numberOfBands: 1)
     private let eqNode         = AVAudioUnitEQ(numberOfBands: 10)
+    private let distortionNode = AVAudioUnitDistortion()
+    private let delayNode      = AVAudioUnitDelay()
     private let reverbNode     = AVAudioUnitReverb()
+    private let gateNode       = AVAudioMixerNode()
 
     private var audioFile: AVAudioFile?
     private var currentURL: URL?
@@ -64,6 +69,14 @@ final class AudioEngineNext {
     var onSpectrum: (([Float]) -> Void)?
     var onFinished: (() -> Void)?
 
+    private var baseVolume: Double = 72
+    var crossfadeGain: Float = 1.0 {
+        didSet {
+            let g = min(1.0, max(0.0, crossfadeGain))
+            engine.mainMixerNode.outputVolume = Float(baseVolume / 100.0) * g
+        }
+    }
+
     private let spectrumBars = 28
     private let fftLog2n: vDSP_Length = 10
     private let fftSize = 1 << 10
@@ -80,7 +93,7 @@ final class AudioEngineNext {
     private let spectrumQueue = DispatchQueue(label: "gone.spectrum", qos: .utility)
     private var audioActivity: NSObjectProtocol?
 
-    private init() {
+    init() {
         var window = [Float](repeating: 0, count: fftSize)
         vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
         hannWindow = window
@@ -169,17 +182,22 @@ final class AudioEngineNext {
 
     func stop(resetProgress: Bool = true) {
         isUserPlaying = false
-        playerNode.stop()
+        playbackToken &+= 1             // cancel pending scheduling before flush
+        bufferQueue.sync {              // drain any in-flight schedulePCMChunk
+            self.playerNode.stop()      // flush all queued buffers only after drain
+        }
         progressTimer?.invalidate()
-        playbackToken &+= 1
         isScheduled = false
         endAudioActivity()
 
         if resetProgress {
             scheduledStartFrame = 0
             pausedFrameOffset = 0
-            spectrumSmooth = Array(repeating: 0, count: spectrumBars)
             lastSpectrumEmit = 0
+            spectrumQueue.async { [weak self] in
+                guard let self else { return }
+                self.spectrumSmooth = Array(repeating: 0, count: self.spectrumBars)
+            }
             emitProgress(currentFrame: 0)
         } else {
             pausedFrameOffset = currentPlaybackFrame()
@@ -194,9 +212,11 @@ final class AudioEngineNext {
         let targetFrame = AVAudioFramePosition(Double(file.length) * clampedRatio)
         let shouldResume = autoplay ?? playerNode.isPlaying
 
-        playerNode.stop()
         progressTimer?.invalidate()
-        playbackToken &+= 1
+        playbackToken &+= 1             // cancel pending scheduling before flush
+        bufferQueue.sync {              // drain any in-flight schedulePCMChunk
+            self.playerNode.stop()      // flush all queued buffers only after drain
+        }
 
         scheduledStartFrame = targetFrame
         pausedFrameOffset = targetFrame
@@ -210,9 +230,36 @@ final class AudioEngineNext {
         }
     }
 
+    func currentOutputDeviceID() -> AudioDeviceID {
+        guard let unit = engine.outputNode.audioUnit else { return kAudioObjectUnknown }
+        var deviceID: AudioDeviceID = kAudioObjectUnknown
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &deviceID, &size)
+        return deviceID
+    }
+
+    func setOutputDevice(_ deviceID: AudioDeviceID) {
+        guard let unit = engine.outputNode.audioUnit else { return }
+        var id = deviceID == kAudioObjectUnknown ? systemDefaultOutputDeviceID() : deviceID
+        AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
+    }
+
+    private func systemDefaultOutputDeviceID() -> AudioDeviceID {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var id: AudioDeviceID = kAudioObjectUnknown
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        AudioObjectGetPropertyData(AudioObjectID(1), &addr, 0, nil, &size, &id)
+        return id
+    }
+
     func setVolume(_ value: Double) {
         let clamped = max(0, min(100, value))
-        engine.mainMixerNode.outputVolume = Float(clamped / 100.0)
+        baseVolume = clamped
+        engine.mainMixerNode.outputVolume = Float(clamped / 100.0) * crossfadeGain
     }
 
     func setPitch(_ percent: Double, masterTempo: Bool) {
@@ -258,6 +305,31 @@ final class AudioEngineNext {
         reverbNode.wetDryMix = max(0, min(100, amount * 100))
     }
 
+    func setHPFResonance(_ bandwidth: Float) {
+        hpfNode.bands[0].bandwidth = max(0.05, min(4.0, bandwidth))
+    }
+
+    func setDelay(time: Double, feedback: Float, wet: Float, lowPassCutoff: Float = 22050) {
+        delayNode.delayTime = max(0, min(2.0, time))
+        delayNode.feedback = max(-100, min(100, feedback * 100))
+        delayNode.wetDryMix = max(0, min(100, wet * 100))
+        delayNode.lowPassCutoff = max(10, min(22050, lowPassCutoff))
+    }
+
+    func setLoFi(wet: Float) {
+        distortionNode.wetDryMix = max(0, min(100, wet * 100))
+    }
+
+    func setGateVolume(_ volume: Float) {
+        gateNode.outputVolume = max(0, min(1, volume))
+    }
+
+    func resetFXNodes() {
+        delayNode.wetDryMix = 0
+        distortionNode.wetDryMix = 0
+        gateNode.outputVolume = 1.0
+    }
+
     func setReverbPreset(_ name: String) {
         switch name {
         case "Hall":     reverbNode.loadFactoryPreset(.largeHall)
@@ -294,21 +366,34 @@ final class AudioEngineNext {
         engine.attach(hpfNode)
         engine.attach(lpfNode)
         engine.attach(eqNode)
+        engine.attach(distortionNode)
+        engine.attach(delayNode)
         engine.attach(reverbNode)
+        engine.attach(gateNode)
 
         engine.connect(playerNode, to: speedNode, format: nil)
         engine.connect(speedNode, to: pitchNode, format: nil)
         engine.connect(pitchNode, to: hpfNode, format: nil)
         engine.connect(hpfNode, to: lpfNode, format: nil)
         engine.connect(lpfNode, to: eqNode, format: nil)
-        engine.connect(eqNode, to: reverbNode, format: nil)
-        engine.connect(reverbNode, to: engine.mainMixerNode, format: nil)
+        engine.connect(eqNode, to: distortionNode, format: nil)
+        engine.connect(distortionNode, to: delayNode, format: nil)
+        engine.connect(delayNode, to: reverbNode, format: nil)
+        engine.connect(reverbNode, to: gateNode, format: nil)
+        engine.connect(gateNode, to: engine.mainMixerNode, format: nil)
+
+        // drumsBitBrush: warm bit-reduction + soft saturation — musical lo-fi degradation
+        // (multiDecimated2 was too harsh / produced random noise artefacts)
+        distortionNode.loadFactoryPreset(.drumsBitBrush)
+        distortionNode.wetDryMix = 0
+
+        delayNode.wetDryMix = 0
 
         reverbNode.loadFactoryPreset(.smallRoom)
         reverbNode.wetDryMix = 0
 
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(fftSize), format: nil) { [weak self] buffer, _ in
-            guard let self, self.playerNode.isPlaying else { return }
+            guard let self, self.isUserPlaying else { return }
             guard let channelData = buffer.floatChannelData?[0] else { return }
             let frameCount = Int(buffer.frameLength)
             guard frameCount >= self.fftSize else { return }
@@ -336,9 +421,11 @@ final class AudioEngineNext {
 
         progressTimer?.invalidate()
         progressTimer = nil
-        playerNode.stop()
         isScheduled = false
-        playbackToken += 1
+        playbackToken &+= 1              // cancel pending scheduling before flush
+        bufferQueue.sync {               // drain any in-flight schedulePCMChunk
+            self.playerNode.stop()       // flush all queued buffers only after drain
+        }
         let token = playbackToken
 
         ensureEngineRunning()

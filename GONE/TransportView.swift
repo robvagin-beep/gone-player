@@ -21,7 +21,13 @@ struct TransportView: View {
                     snapState: state.snapState,
                     timerStart: state.snapTimerStart,
                     action: { toggleSnapMode() },
-                    snapNow: { WindowSnapManager.shared.snapNow() }
+                    snapNow: {
+                        if SplitModeManager.shared.isActive {
+                            TooltipPanel.shared.show(text: "Exit Clone Mode first", near: NSEvent.mouseLocation)
+                        } else {
+                            WindowSnapManager.shared.snapNow()
+                        }
+                    }
                 )
                 .goneTooltip("Snap to edge — slides off, reappears on hover. Double-click to hide immediately")
                 IconBtn(icon: "list.bullet", active: state.playlistOpen) {
@@ -32,12 +38,16 @@ struct TransportView: View {
                     state.eqOpen.toggle()
                 }
                 .goneTooltip("Open EQ and effect controls")
+                if state.audioEngine !== AudioEngineNext.secondary {
+                    GearBtn { openSettings() }
+                        .goneTooltip("Settings")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             // Center: transport
             HStack(spacing: 6) {
-                IconBtn(icon: "shuffle", active: state.shuffle) { state.shuffle.toggle() }
+                IconBtn(icon: "shuffle", active: state.shuffle, inactiveOpacity: 0.28) { state.shuffle.toggle() }
                 IconBtn(icon: "backward.fill") {
                     state.selectPreviousTrack()
                 }
@@ -50,7 +60,7 @@ struct TransportView: View {
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(G.textOnLight)
                         .frame(width: 28, height: 28)
-                        .background(G.accentPrimary)
+                        .background(Color(white: 0.91))
                         .clipShape(RoundedRectangle(cornerRadius: G.rButtonPrimary))
                         .opacity(canPlayCurrentTrack ? 1 : 0.4)
                 }
@@ -71,12 +81,12 @@ struct TransportView: View {
                     if isMuted {
                         let restore = preMuteVolume ?? 72
                         state.volume = restore
-                        AudioEngineNext.shared.setVolume(restore)
+                        state.audioEngine.setVolume(restore)
                         preMuteVolume = nil
                     } else {
                         preMuteVolume = state.volume
                         state.volume = 0
-                        AudioEngineNext.shared.setVolume(0)
+                        state.audioEngine.setVolume(0)
                     }
                 } label: {
                     Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.fill")
@@ -96,7 +106,7 @@ struct TransportView: View {
                     set: { v in
                         if v > 0 { preMuteVolume = nil }
                         state.volume = v
-                        AudioEngineNext.shared.setVolume(v)
+                        state.audioEngine.setVolume(v)
                     }
                 ))
                 .frame(width: 74)
@@ -109,11 +119,25 @@ struct TransportView: View {
     }
 
     @MainActor
+    private func openSettings() {
+        let delegate = NSApp.delegate as? AppDelegate
+        let window = delegate?.resolvedMainWindow()
+            ?? WindowSnapManager.shared.currentWindow
+        guard let window else { return }
+        SettingsPanel.shared.toggle(near: window, state: state)
+    }
+
+    @MainActor
     private func toggleSnapMode() {
+        if SplitModeManager.shared.isActive {
+            TooltipPanel.shared.show(text: "Exit Clone Mode first", near: NSEvent.mouseLocation)
+            return
+        }
         let newValue = !state.snapEnabled
         if let appDelegate = NSApp.delegate as? AppDelegate {
             appDelegate.setSnapEnabled(newValue)
-        } else if let window = WindowSnapManager.shared.currentWindow ?? NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible }) ?? NSApp.windows.first {
+        } else if let window = WindowSnapManager.shared.currentWindow
+            ?? (NSApp.delegate as? AppDelegate)?.resolvedMainWindow() {
             if newValue {
                 WindowSnapManager.shared.enable(window: window)
             } else {
@@ -173,6 +197,7 @@ struct IconBtn: View {
     let icon: String
     var active: Bool = false
     var size: CGFloat = 24
+    var inactiveOpacity: Double = 0.50
     let action: () -> Void
 
     @State private var hovered = false
@@ -184,7 +209,7 @@ struct IconBtn: View {
     }
 
     private var foregroundColor: Color {
-        active ? .white : Color.white.opacity(0.50)
+        active ? .white : Color.white.opacity(inactiveOpacity)
     }
 
     var body: some View {
@@ -258,6 +283,28 @@ private struct SnapTimerBtn: View {
             action()
         }
         .onHover { hovered = $0 }
+    }
+}
+
+// ── Gear button — secondary, intentionally paler than all other icons ─────────
+private struct GearBtn: View {
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "gearshape")
+                .font(.system(size: 11, weight: .light))
+                .foregroundStyle(Color.white.opacity(hovered ? 0.42 : 0.22))
+                .frame(width: 24, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: G.rButton)
+                        .fill(hovered ? Color.white.opacity(0.06) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovered)
     }
 }
 

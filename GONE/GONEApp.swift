@@ -27,23 +27,36 @@ struct GONEApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var playerState: PlayerState? {
         didSet {
+            playerState?.loadPersistedSettings()
+            bindAudioEngine()
             applyPlaybackSettings()
             if let window = resolvedMainWindow() {
                 applyPresencePolicy(to: window)
             }
             setupRemoteCommands()
             setupNowPlayingObservation()
+            setupSettingsPersistence()
+            if playerState?.magnifyEnabled == true { installMagnifyMonitor() }
+            // Two-stage snap restore: preference loaded above; now activate the runtime
+            // infrastructure. Deferred one tick so configureWindow is guaranteed to have run.
+            DispatchQueue.main.async {
+                guard let state = self.playerState, state.snapEnabled else { return }
+                guard let window = self.resolvedMainWindow() else { return }
+                WindowSnapManager.shared.enable(window: window)
+            }
         }
     }
     private(set) weak var mainWindow: NSWindow?
     private var eventMonitor: Any?
     private var isUserResizing = false
     private var nowPlayingCancellables = Set<AnyCancellable>()
+    private var settingsCancellables = Set<AnyCancellable>()
     var windowAnchorMaxY: CGFloat = 0
     private var isCorrectingFrame = false
+    private var magnifyTimer: Timer? = nil
+    private var magnifyBaseFrame: CGRect = .zero
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        bindAudioEngine()
         installKeyMonitor()
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(systemDidWake),
@@ -53,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // is already on every Space from the very first frame.
         NSApp.windows.forEach {
             $0.alphaValue = 0
-            $0.level = .statusBar
+            $0.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
             $0.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
             $0.hidesOnDeactivate = false
         }
@@ -78,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.isMovableByWindowBackground = false
+        window.isMovableByWindowBackground = false  // DragHandleNSView handles all window movement
         window.acceptsMouseMovedEvents = true
         window.appearance = NSAppearance(named: .darkAqua)
         applyPresencePolicy(to: window)
@@ -129,25 +142,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func bestAvailableWindow() -> NSWindow? {
-        if let keyWindow = NSApp.keyWindow, keyWindow.isVisible, !keyWindow.isMiniaturized {
-            return keyWindow
-        }
-        if let mainAppWindow = NSApp.mainWindow, mainAppWindow.isVisible, !mainAppWindow.isMiniaturized {
-            return mainAppWindow
-        }
-        if let visible = NSApp.windows.first(where: { $0.isVisible && !$0.isMiniaturized }) {
-            return visible
-        }
-        return NSApp.windows.first
+        // Exclude NSPanel subclasses — floating panels (Tooltip, DragValue, Settings) must
+        // never be returned as the main window for snap/settings positioning.
+        let isMainWin: (NSWindow) -> Bool = { !($0 is NSPanel) && $0.isVisible && !$0.isMiniaturized }
+        if let keyWindow = NSApp.keyWindow, isMainWin(keyWindow) { return keyWindow }
+        if let mainAppWindow = NSApp.mainWindow, isMainWin(mainAppWindow) { return mainAppWindow }
+        if let visible = NSApp.windows.first(where: isMainWin) { return visible }
+        return NSApp.windows.first(where: { !($0 is NSPanel) })
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
-        let alwaysOnTop = playerState?.alwaysOnTop ?? true
-        let snapActive  = playerState?.snapEnabled ?? false
-        // Snap panel must float on every Space even if alwaysOnTop is off —
-        // the whole point of the docked widget is that it follows the user everywhere.
-        window.level = (alwaysOnTop || snapActive) ? .statusBar : .normal
-        // .stationary: window doesn't animate with space transitions — stays pinned on all desktops
+        // CGWindowLevelForKey(.screenSaverWindow) = 1000 is required to appear above full-screen
+        // Spaces (Chrome, Safari, etc. that occupy their own dedicated macOS Space) and to remain
+        // visible across all Spaces. System panels (NSOpenPanel, NSSavePanel) use a higher
+        // OS-managed level and will still appear above GONE regardless.
+        // Level is always screenSaverWindow — same as the clone and crossfader windows —
+        // so all three player surfaces reliably float above fullscreen apps.
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
+        // .canJoinAllSpaces + .stationary: window travels with the user across Spaces without
+        // animating during transitions. .fullScreenAuxiliary: explicitly opts in to full-screen Spaces.
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.hidesOnDeactivate = false
     }
@@ -194,13 +207,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func bindAudioEngine() {
-        let engine = AudioEngineNext.shared
+        guard let state = playerState else { return }
+        let engine = state.audioEngine
         engine.onProgress = { [weak self] progress, time in
             self?.playerState?.progress = progress
             self?.playerState?.currentTime = time
+            self?.playerState?.progressFeed.progress = progress
+            self?.playerState?.progressFeed.currentTime = time
+            PlaybackProgressFeed.shared.progress = progress
+            PlaybackProgressFeed.shared.currentTime = time
         }
-        engine.onSpectrum = { data in
-            SpectrumFeed.shared.data = data
+        engine.onSpectrum = { [weak self] data in
+            SpectrumFeed.shared.data = data          // PeekPanelView reads .shared
+            self?.playerState?.spectrumFeed.data = data
         }
         engine.onFinished = { [weak self] in
             guard let state = self?.playerState else { return }
@@ -227,7 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyPlaybackSettings() {
         guard let state = playerState else { return }
 
-        let engine = AudioEngineNext.shared
+        let engine = state.audioEngine
         engine.setVolume(state.volume)
         engine.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
         engine.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
@@ -243,29 +262,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             else { return event }
 
             switch event.keyCode {
+            case 18, 19, 20, 21: // keys 1–4 → hot cues for primary player
+                let index = Int(event.keyCode) - 18   // 18→0, 19→1, 20→2, 21→3
+                handleHotCue(index: index, for: state)
+                return nil
+            case 23: // key 5 → secondary cue 1
+                handleHotCue(index: 0, forSecondary: true)
+                return nil
+            case 22: // key 6 → secondary cue 2
+                handleHotCue(index: 1, forSecondary: true)
+                return nil
+            case 26: // key 7 → secondary cue 3
+                handleHotCue(index: 2, forSecondary: true)
+                return nil
+            case 28: // key 8 → secondary cue 4
+                handleHotCue(index: 3, forSecondary: true)
+                return nil
             case 49: // space
                 state.togglePlayback()
                 return nil
-            case 123: // left arrow
-                state.selectPreviousTrack()
+            case 123: // left arrow → seek −5 s
+                if let track = state.current, track.duration > 0 {
+                    let t = max(0, PlaybackProgressFeed.shared.currentTime - 5.0)
+                    state.audioEngine.seek(ratio: t / track.duration)
+                }
                 return nil
-            case 124: // right arrow
-                state.selectNextTrack()
+            case 124: // right arrow → seek +5 s
+                if let track = state.current, track.duration > 0 {
+                    let t = min(track.duration, PlaybackProgressFeed.shared.currentTime + 5.0)
+                    state.audioEngine.seek(ratio: t / track.duration)
+                }
                 return nil
-            case 126: // up arrow → pitch +step
-                let step = Double(state.pitchRange) / 16.0
-                state.pitch = min(Double(state.pitchRange), ((state.pitch + step) * 10).rounded() / 10)
-                AudioEngineNext.shared.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
+            case 126: // up arrow → browse playlist cursor (playlist open) or pitch +step
+                if state.playlistOpen {
+                    return event  // playlist key monitor handles: move cursor only, no autoplay
+                }
+                let stepUp = Double(state.pitchRange) / 16.0
+                state.pitch = min(Double(state.pitchRange), ((state.pitch + stepUp) * 10).rounded() / 10)
+                state.audioEngine.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
                 return nil
-            case 125: // down arrow → pitch −step
-                let step = Double(state.pitchRange) / 16.0
-                state.pitch = max(-Double(state.pitchRange), ((state.pitch - step) * 10).rounded() / 10)
-                AudioEngineNext.shared.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
+            case 125: // down arrow → browse playlist cursor (playlist open) or pitch −step
+                if state.playlistOpen {
+                    return event  // playlist key monitor handles: move cursor only, no autoplay
+                }
+                let stepDown = Double(state.pitchRange) / 16.0
+                state.pitch = max(-Double(state.pitchRange), ((state.pitch - stepDown) * 10).rounded() / 10)
+                state.audioEngine.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
                 return nil
             default:
                 return event
             }
         }
+    }
+
+    private func handleHotCue(index: Int, for state: PlayerState) {
+        guard state.currentId != nil else { return }
+        if let cue = state.hotCues[index] {
+            state.audioEngine.seek(ratio: cue)
+        } else {
+            state.hotCues[index] = state.progress
+        }
+    }
+
+    private func handleHotCue(index: Int, forSecondary: Bool) {
+        guard forSecondary,
+              SplitModeManager.shared.isActive,
+              let sec = SplitModeManager.shared.secondaryState
+        else { return }
+        handleHotCue(index: index, for: sec)
     }
 
     private func shouldHandleKeyboardEvent(_ event: NSEvent) -> Bool {
@@ -331,7 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _ in self?.updateNowPlayingInfo() }
             .store(in: &nowPlayingCancellables)
-        state.$currentTime
+        PlaybackProgressFeed.shared.$currentTime
             .removeDuplicates()
             .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.updateNowPlayingTiming() }
@@ -346,7 +410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let state = playerState, state.current != nil,
               var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = state.currentTime
-        info[MPNowPlayingInfoPropertyPlaybackRate] = state.isPlaying ? AudioEngineNext.shared.snapshot().rate : 0.0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = state.isPlaying ? state.audioEngine.snapshot().rate : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
@@ -360,7 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MPMediaItemPropertyArtist: track.artist.isEmpty ? "—" : track.artist,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: state.currentTime,
             MPMediaItemPropertyPlaybackDuration: track.duration,
-            MPNowPlayingInfoPropertyPlaybackRate: state.isPlaying ? AudioEngineNext.shared.snapshot().rate : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: state.isPlaying ? state.audioEngine.snapshot().rate : 0.0,
         ]
         if !track.album.isEmpty { info[MPMediaItemPropertyAlbumTitle] = track.album }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
@@ -371,6 +435,110 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
+        }
+        playerState?.persistSettings()
+    }
+
+    private func setupSettingsPersistence() {
+        settingsCancellables.removeAll()
+        guard let state = playerState else { return }
+
+        let debouncedSave = PassthroughSubject<Void, Never>()
+        debouncedSave
+            .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
+            .sink { [weak self] in
+                // Skip save when magnify is temporarily overriding windowScale
+                guard let self, let s = self.playerState, !s.isMagnified else { return }
+                s.persistSettings()
+            }
+            .store(in: &settingsCancellables)
+
+        Publishers.MergeMany(
+            state.$volume.map { _ in () }.eraseToAnyPublisher(),
+            state.$windowScale.map { _ in () }.eraseToAnyPublisher(),
+            state.$gradientMapHue.map { _ in () }.eraseToAnyPublisher(),
+            state.$gradientMapSaturation.map { _ in () }.eraseToAnyPublisher(),
+            state.$autoBPMOnImport.map { _ in () }.eraseToAnyPublisher(),
+            state.$bpmAnalysisFloor.map { _ in () }.eraseToAnyPublisher(),
+            state.$bpmAnalysisCeiling.map { _ in () }.eraseToAnyPublisher(),
+            state.$masterTempo.map { _ in () }.eraseToAnyPublisher(),
+            state.$repeatMode.map { _ in () }.eraseToAnyPublisher(),
+            state.$autoPlayOnImport.map { _ in () }.eraseToAnyPublisher(),
+            state.$autoOpenPlaylistOnImport.map { _ in () }.eraseToAnyPublisher(),
+            state.$confirmBeforeDelete.map { _ in () }.eraseToAnyPublisher(),
+            state.$hideMissingTracks.map { _ in () }.eraseToAnyPublisher(),
+            state.$snapEnabled.map { _ in () }.eraseToAnyPublisher(),
+            state.$alwaysOnTop.map { _ in () }.eraseToAnyPublisher(),
+            state.$magnifyEnabled.map { _ in () }.eraseToAnyPublisher(),
+            state.$magnifyProximity.map { _ in () }.eraseToAnyPublisher(),
+            state.$magnifySpeed.map { _ in () }.eraseToAnyPublisher()
+        )
+        .sink { debouncedSave.send() }
+        .store(in: &settingsCancellables)
+
+        // Magnify toggle: install/remove proximity monitor
+        state.$magnifyEnabled
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                if enabled {
+                    self.installMagnifyMonitor()
+                } else {
+                    self.removeMagnifyMonitor()
+                    self.magnifyBaseFrame = .zero
+                    if let s = self.playerState, s.isMagnified {
+                        s.isMagnified = false
+                        withAnimation(.spring(response: s.magnifySpeed, dampingFraction: 0.8)) {
+                            s.windowScale = s.magnifyBaseScale
+                        }
+                    }
+                }
+            }
+            .store(in: &settingsCancellables)
+    }
+
+    // MARK: — Magnify proximity monitor
+
+    private func installMagnifyMonitor() {
+        removeMagnifyMonitor()
+        let timer = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
+            self?.checkMagnifyProximity()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        magnifyTimer = timer
+    }
+
+    private func removeMagnifyMonitor() {
+        magnifyTimer?.invalidate()
+        magnifyTimer = nil
+    }
+
+    private func checkMagnifyProximity() {
+        guard let state = playerState, state.magnifyEnabled, !state.isSnapping else { return }
+        guard state.snapState == .off || state.snapState == .waiting || state.snapState == .expanded else { return }
+        guard let window = resolvedMainWindow() else { return }
+
+        let mouse = NSEvent.mouseLocation
+        let frame = window.frame
+        let dx = max(0, max(frame.minX - mouse.x, mouse.x - frame.maxX))
+        let dy = max(0, max(frame.minY - mouse.y, mouse.y - frame.maxY))
+        let distance = sqrt(dx * dx + dy * dy)
+
+        if !state.isMagnified && distance < state.magnifyProximity
+            && state.windowScale < 0.99 {
+            // Only magnify when there's actually a scale increase to show
+            state.isMagnified = true
+            state.magnifyBaseScale = state.windowScale
+            withAnimation(.spring(response: state.magnifySpeed, dampingFraction: 0.8)) {
+                state.windowScale = 1.0
+            }
+        } else if state.isMagnified && distance > 15 {
+            // Exit when cursor is >15px outside the current (enlarged) window frame
+            state.isMagnified = false
+            magnifyBaseFrame = .zero
+            withAnimation(.spring(response: state.magnifySpeed, dampingFraction: 0.8)) {
+                state.windowScale = state.magnifyBaseScale
+            }
         }
     }
 }

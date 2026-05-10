@@ -102,4 +102,23 @@ extension View {
             if inside { cursor.push() } else { NSCursor.pop() }
         }
     }
+
+    // ── Gradient map tint ────────────────────────────────────────────────────
+    // Applied to every UI layer. ARCHITECTURAL RULE:
+    // Track cover artwork (real NSImage from file) must NEVER be a descendant
+    // of a view that receives .gradientMap(). It must always be a SIBLING at
+    // the same HStack/ZStack level, because .blendMode(.color) penetrates all
+    // descendants and cannot be overridden from within a child view.
+    // Placeholder artwork (grey music-note icon) IS tinted intentionally.
+    // Every ArtSwatchView with real artwork is marked:
+    //   // GRADIENT MAP: EXEMPT — artwork sibling, not descendant
+    func gradientMap(hue: Double, saturation: Double) -> some View {
+        overlay {
+            if saturation > 0.5 {
+                Color(hue: hue / 360, saturation: saturation / 100, brightness: 0.5)
+                    .blendMode(.color)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
 }

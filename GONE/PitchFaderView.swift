@@ -19,7 +19,7 @@ struct PitchFaderView: View {
                             if let current = state.current { state.applyBPMFilter(to: current) }
                         } else {
                             state.pitch = 0
-                            AudioEngineNext.shared.setPitch(0, masterTempo: state.masterTempo)
+                            state.audioEngine.setPitch(0, masterTempo: state.masterTempo)
                         }
                     }
                 )
@@ -40,9 +40,9 @@ struct PitchFaderView: View {
                         guard !state.tracks.isEmpty else { return }
                         state.pitchBypassed.toggle()
                         if state.pitchBypassed {
-                            AudioEngineNext.shared.setPitch(0, masterTempo: state.masterTempo)
+                            state.audioEngine.setPitch(0, masterTempo: state.masterTempo)
                         } else {
-                            AudioEngineNext.shared.setPitch(state.pitch, masterTempo: state.masterTempo)
+                            state.audioEngine.setPitch(state.pitch, masterTempo: state.masterTempo)
                         }
                     }
                 )
@@ -87,7 +87,7 @@ struct PitchFaderView: View {
                     range: Double(state.pitchRange),
                     onCommit: { v in
                         if !state.pitchBypassed {
-                            AudioEngineNext.shared.setPitch(v, masterTempo: state.masterTempo)
+                            state.audioEngine.setPitch(v, masterTempo: state.masterTempo)
                         }
                     }
                 )
@@ -120,7 +120,7 @@ struct PitchFaderView: View {
                     action: {
                         guard !state.tracks.isEmpty else { return }
                         state.masterTempo.toggle()
-                        AudioEngineNext.shared.setPitch(state.pitch, masterTempo: state.masterTempo)
+                        state.audioEngine.setPitch(state.pitch, masterTempo: state.masterTempo)
                     }
                 )
                 .goneTooltip("Master Tempo — pitch stays locked to original key when you change speed")

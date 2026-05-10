@@ -98,7 +98,9 @@ extension PlayerState {
     }
 
     private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
-        let bpm = await LibraryScanner().analyzeBPM(url: track.url) { progress in
+        let floor   = await MainActor.run { state.bpmAnalysisFloor }
+        let ceiling = await MainActor.run { state.bpmAnalysisCeiling }
+        let bpm = await LibraryScanner().analyzeBPM(url: track.url, floor: floor, ceiling: ceiling) { progress in
             Task { @MainActor [weak state] in
                 state?.analysisProgress[track.id] = progress
             }
@@ -178,11 +180,19 @@ extension PlayerState {
     }
 
     private static func computeWaveformAndCommit(track: Track, state: PlayerState) async {
-        let waveform = await LibraryScanner().computeWaveform(url: track.url, bars: 84)
+        // AVAssetReader doesn't support concurrent reads on the same file.
+        // BPM analysis may be reading the same URL simultaneously — retry with backoff.
+        var waveform: [Float] = []
+        for attempt in 0..<3 {
+            waveform = await LibraryScanner().computeWaveform(url: track.url, bars: 84)
+            if !waveform.isEmpty { break }
+            if attempt < 2 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+        }
+        let committed = waveform.isEmpty ? Array(repeating: Float(0.04), count: 84) : waveform
         await MainActor.run {
             guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }),
                   state.tracks[idx].waveform.isEmpty else { return }
-            state.tracks[idx].waveform = waveform
+            state.tracks[idx].waveform = committed
         }
     }
 }

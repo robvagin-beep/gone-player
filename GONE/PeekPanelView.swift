@@ -6,9 +6,12 @@ struct PeekPanelView: View {
     @Binding var isDropTarget: Bool
     var onFileDrop: ([NSItemProvider]) -> Bool = { _ in false }
     @EnvironmentObject var state: PlayerState
+    @ObservedObject private var progressFeed = PlaybackProgressFeed.shared
     @State private var dragStartWindowOrigin: NSPoint?
     @State private var dragStartMouseY: CGFloat = 0
     @State private var hasDraggedBeyondThreshold = false
+    @State private var prevHovered = false
+    @State private var nextHovered = false
     private let peekingVerticalInset: CGFloat = 6
 
     private var panelWidth: CGFloat {
@@ -60,17 +63,26 @@ struct PeekPanelView: View {
                     MarqueeText(text: peekTitleLine, fontSize: 8.5, colorOpacity: 0.92)
                 }
                 .frame(height: 11)
+                .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
 
                 HStack(spacing: 0) {
                     Button { state.selectPreviousTrack() } label: {
-                        Image(systemName: "backward.fill")
-                            .font(.system(size: 8))
-                            .foregroundStyle(G.textSecondary)
-                            .frame(width: 22, height: 22)
-                            .padding(4)
-                            .contentShape(Rectangle())
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(prevHovered ? 0.09 : 0))
+                                .frame(width: 12, height: 24)
+                                .animation(.easeInOut(duration: 0.12), value: prevHovered)
+                            Image(systemName: "backward.fill")
+                                .font(.system(size: 8))
+                                .foregroundStyle(G.textSecondary)
+                        }
+                        .frame(width: 20, height: 22)
+                        .padding(.horizontal, 2)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(PeekSpringButton(scale: 0.78))
+                    .onHover { prevHovered = $0 }
 
                     Button {
                         guard let t = state.current, !t.isMissing else { return }
@@ -88,22 +100,33 @@ struct PeekPanelView: View {
                     .buttonStyle(PeekSpringButton(scale: 0.88))
 
                     Button { state.selectNextTrack() } label: {
-                        Image(systemName: "forward.fill")
-                            .font(.system(size: 8))
-                            .foregroundStyle(G.textSecondary)
-                            .frame(width: 22, height: 22)
-                            .padding(4)
-                            .contentShape(Rectangle())
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(nextHovered ? 0.09 : 0))
+                                .frame(width: 12, height: 24)
+                                .animation(.easeInOut(duration: 0.12), value: nextHovered)
+                            Image(systemName: "forward.fill")
+                                .font(.system(size: 8))
+                                .foregroundStyle(G.textSecondary)
+                        }
+                        .frame(width: 20, height: 22)
+                        .padding(.horizontal, 2)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(PeekSpringButton(scale: 0.78))
+                    .onHover { nextHovered = $0 }
                 }
+                .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
 
                 if let bpm = currentBPM {
-                    PeekBPMBar(label: bpm, progress: state.progress)
+                    PeekBPMBar(label: bpm, progress: progressFeed.progress)
                         .frame(width: 54, height: 12)
-                        .padding(.top, 5)
+                        .padding(.top, 2)
+                        .padding(.bottom, 4)
                         .contentShape(Rectangle())
                         .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
+                        .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
                 }
             }
             .frame(width: 78)
@@ -173,6 +196,7 @@ struct PeekPanelView: View {
                     .padding(5)
             }
             .frame(width: 40, height: 40)
+            .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
         }
     }
 
@@ -467,9 +491,11 @@ private struct MarqueeText: View {
             )
             .task(id: measured) {
                 offset = 0
-                guard !text.isEmpty else { return }
+                // Guard against the initial measured=0 pass — would animate invisible air
+                guard !text.isEmpty, measured > 4 else { return }
                 let overflow = measured - containerW + 4
                 if overflow > 0 {
+                    // Long text: scroll overflow → instant reset → tiny pause → repeat
                     let duration = Double(overflow) / Double(speed)
                     while !Task.isCancelled {
                         withAnimation(.linear(duration: duration)) { offset = -overflow }
@@ -479,15 +505,17 @@ private struct MarqueeText: View {
                         try? await Task.sleep(nanoseconds: 50_000_000)
                     }
                 } else {
-                    // Short text: pause while visible → scroll fully off + gap → reset → repeat
-                    let gap: CGFloat = 50
-                    let scrollDist = measured + gap
-                    let duration = Double(scrollDist) / Double(speed)
+                    // Short text fits in container: show briefly, scroll off edge (measured + small
+                    // invisible gap), pause while blank, reset, repeat.
+                    let exitDist    = measured + 12   // 12px past left edge — reset is invisible
+                    let exitDuration = Double(exitDist) / Double(speed)
                     while !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        try? await Task.sleep(nanoseconds: 800_000_000)   // 0.8s readable window
                         guard !Task.isCancelled else { break }
-                        withAnimation(.linear(duration: duration)) { offset = -scrollDist }
-                        try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                        withAnimation(.linear(duration: exitDuration)) { offset = -exitDist }
+                        try? await Task.sleep(nanoseconds: UInt64(exitDuration * 1_000_000_000))
+                        guard !Task.isCancelled else { break }
+                        try? await Task.sleep(nanoseconds: 300_000_000)   // 0.3s blank gap
                         guard !Task.isCancelled else { break }
                         withAnimation(.none) { offset = 0 }
                     }

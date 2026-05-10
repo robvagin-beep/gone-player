@@ -23,6 +23,6 @@ extension PlayerState {
     func cycleReverbPreset() {
         let idx = Self.reverbPresets.firstIndex(of: reverbPreset) ?? 0
         reverbPreset = Self.reverbPresets[(idx + 1) % Self.reverbPresets.count]
-        AudioEngineNext.shared.setReverbPreset(reverbPreset)
+        audioEngine.setReverbPreset(reverbPreset)
     }
 }

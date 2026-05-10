@@ -29,21 +29,23 @@ extension PlayerState {
             targetBPM = bpmFilterHigh
         } else {
             pitch = 0
-            AudioEngineNext.shared.setPitch(0, masterTempo: masterTempo)
+            audioEngine.setPitch(0, masterTempo: masterTempo)
             return
         }
         let newPitch = (targetBPM / bpm - 1.0) * 100.0
         pitch = (newPitch * 100).rounded() / 100
-        AudioEngineNext.shared.setPitch(pitch, masterTempo: masterTempo)
+        audioEngine.setPitch(pitch, masterTempo: masterTempo)
     }
 
     // MARK: — Panel toggles
 
     func toggleAccordionPanels() {
         if eqOpen || playlistOpen {
+            // Save exactly what is visible — always. The auto-open flag only controlled
+            // whether import-opened playlist was treated as a preference, but that logic
+            // caused EQ to reopen instead of playlist when both were open during auto-open.
             collapsedSavedEqOpen = eqOpen
-            // Auto-opened playlist (from import) is not treated as a user preference
-            collapsedSavedPlaylistOpen = playlistOpen && !playlistAutoOpened
+            collapsedSavedPlaylistOpen = playlistOpen
             playlistAutoOpened = false
             eqOpen = false
             playlistOpen = false
@@ -61,36 +63,41 @@ extension PlayerState {
         guard let track = tracks.first(where: { $0.id == id }), !track.isMissing else { return }
         currentId = id
         progress = 0; currentTime = 0; isPlaying = false
-        AudioEngineNext.shared.load(track.url)
+        hotCues = [nil, nil, nil, nil]
+        progressFeed.reset()
+        audioEngine.load(track.url)
         applyBPMFilter(to: track)
         scheduleCurrentTrackAnalysis()
     }
 
-    func playTrack(id: UUID, autoplay: Bool = true) {
+    func playTrack(id: UUID, fromTabId: UUID? = nil, autoplay: Bool = true) {
         guard let track = tracks.first(where: { $0.id == id }), !track.isMissing else { return }
         currentId = id
+        if let fromTabId { playingTabOverride = fromTabId }
         progress = 0; currentTime = 0
+        hotCues = [nil, nil, nil, nil]
+        progressFeed.reset()
         isPlaying = autoplay
-        AudioEngineNext.shared.load(track.url)
+        audioEngine.load(track.url)
         applyBPMFilter(to: track)
         scheduleCurrentTrackAnalysis()
-        if autoplay { AudioEngineNext.shared.play() }
+        if autoplay { audioEngine.play() }
     }
 
     func togglePlayback() {
         guard let current, !current.isMissing else {
             isPlaying = false
-            AudioEngineNext.shared.pause()
+            audioEngine.pause()
             return
         }
         isPlaying.toggle()
         if isPlaying {
-            if !AudioEngineNext.shared.snapshot().isLoaded {
-                AudioEngineNext.shared.load(current.url)
+            if !audioEngine.snapshot().isLoaded {
+                audioEngine.load(current.url)
             }
-            AudioEngineNext.shared.play()
+            audioEngine.play()
         } else {
-            AudioEngineNext.shared.pause()
+            audioEngine.pause()
         }
     }
 
@@ -111,13 +118,15 @@ extension PlayerState {
             nextIdx = i
         }
         currentId = list[nextIdx].id
+        progress = 0; currentTime = 0
+        progressFeed.reset()
         guard let current else { return }
         guard !current.isMissing else { isPlaying = false; return }
         isPlaying = autoplay ? wasPlaying : false
-        AudioEngineNext.shared.load(current.url)
+        audioEngine.load(current.url)
         applyBPMFilter(to: current)
         scheduleCurrentTrackAnalysis()
-        if wasPlaying && autoplay { AudioEngineNext.shared.play() }
+        if wasPlaying && autoplay { audioEngine.play() }
     }
 
     func selectNextTrack(autoplay: Bool = true) {
@@ -135,13 +144,15 @@ extension PlayerState {
             nextIdx = i
         }
         currentId = list[nextIdx].id
+        progress = 0; currentTime = 0
+        progressFeed.reset()
         guard let current else { return }
         guard !current.isMissing else { isPlaying = false; return }
         isPlaying = autoplay ? wasPlaying : false
-        AudioEngineNext.shared.load(current.url)
+        audioEngine.load(current.url)
         applyBPMFilter(to: current)
         scheduleCurrentTrackAnalysis()
-        if wasPlaying && autoplay { AudioEngineNext.shared.play() }
+        if wasPlaying && autoplay { audioEngine.play() }
     }
 
     // MARK: — Library mutations
@@ -159,20 +170,22 @@ extension PlayerState {
         let wasCurrent = tracks[idx].id == currentId
         tracks.remove(at: idx)
         guard wasCurrent else { return }
+        progress = 0; currentTime = 0
+        progressFeed.reset()
 
         guard !tracks.isEmpty else {
             currentId = nil; isPlaying = false; progress = 0; currentTime = 0
-            AudioEngineNext.shared.stop()
+            audioEngine.stop()
             return
         }
         let available = sortedTracks(forPlaylistTabId: playingTabId ?? activePlaylistTabId).filter { !$0.isMissing }
         if let next = available.first {
             currentId = next.id; progress = 0; currentTime = 0
-            AudioEngineNext.shared.load(next.url)
-            if isPlaying { AudioEngineNext.shared.play() }
+            audioEngine.load(next.url)
+            if isPlaying { audioEngine.play() }
         } else {
             currentId = nil; isPlaying = false; progress = 0; currentTime = 0
-            AudioEngineNext.shared.stop()
+            audioEngine.stop()
         }
     }
 }

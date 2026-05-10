@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -e
 
-APP_NAME="GONE Player Beta 0.2"
+APP_NAME="GONE Player Beta 0.3"
 SCHEME="GONE"
 ENTITLEMENTS="$(dirname "$0")/GONE/GONE_release.entitlements"
 OUT_DIR="$HOME/Desktop"

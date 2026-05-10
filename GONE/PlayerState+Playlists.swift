@@ -206,9 +206,12 @@ extension PlayerState {
                currentId == nil {
                 currentId = first.id
                 progress = 0; currentTime = 0; isPlaying = false
-                AudioEngineNext.shared.load(first.url)
-                playlistOpen = true
-                playlistAutoOpened = true
+                audioEngine.load(first.url)
+                if autoOpenPlaylistOnImport {
+                    playlistOpen = true
+                    playlistAutoOpened = true
+                }
+                if autoPlayOnImport { isPlaying = true; audioEngine.play() }
                 scheduleCurrentTrackAnalysis()
             }
         }
@@ -255,7 +258,7 @@ extension PlayerState {
         try? await Task.sleep(nanoseconds: 150_000_000)
 
         await MainActor.run {
-            scheduleBPMAnalysis()
+            if autoBPMOnImport { scheduleBPMAnalysis() }
             scheduleWaveformComputation()
         }
     }
@@ -274,16 +277,18 @@ extension PlayerState {
         panel.allowsMultipleSelection = true
         isPresentingImportPanel = true
 
-        let playerWindow = NSApp.keyWindow ?? NSApp.windows.first
-        let previousLevel = playerWindow?.level
-        playerWindow?.level = .normal
+        // Raise the open panel above the player (screenSaverWindow = 1000) so it is
+        // always fully visible. beginSheetModal attaches to the player window and ends
+        // up behind it on same-level z-order; plain begin() + elevated level is reliable.
+        let ssl = Int(CGWindowLevelForKey(.screenSaverWindow))
+        panel.level = NSWindow.Level(rawValue: ssl + 2)
+
         let destinationTabId = tabId ?? activePlaylistTabId
 
         let handleSelection: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self else { return }
             defer {
                 self.isPresentingImportPanel = false
-                if let playerWindow, let previousLevel { playerWindow.level = previousLevel }
                 WindowSnapManager.shared.resumeAfterImport()
             }
             guard response == .OK else { return }
@@ -291,11 +296,7 @@ extension PlayerState {
             Task { @MainActor in await self.importURLs(urls, intoPlaylistTabId: destinationTabId) }
         }
 
-        if let window = NSApp.keyWindow {
-            panel.beginSheetModal(for: window, completionHandler: handleSelection)
-        } else {
-            panel.begin(completionHandler: handleSelection)
-        }
+        panel.begin(completionHandler: handleSelection)
     }
 
     // MARK: — Private helpers
@@ -313,7 +314,7 @@ extension PlayerState {
         guard let first = visibleTracks.first(where: { !$0.isMissing }) else { return }
         currentId = first.id
         progress = 0; currentTime = 0; isPlaying = false
-        AudioEngineNext.shared.load(first.url)
+        audioEngine.load(first.url)
         scheduleCurrentTrackAnalysis()
     }
 }

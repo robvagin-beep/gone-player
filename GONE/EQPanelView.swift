@@ -20,7 +20,7 @@ struct EQPanelView: View {
                                 get: { Double(state.eqPreamp) },
                                 set: { v in
                                     state.eqPreamp = Float(v)
-                                    AudioEngineNext.shared.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
+                                    state.audioEngine.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
                                 }
                             ),
                             label: "PRE", isPreamp: true
@@ -40,7 +40,7 @@ struct EQPanelView: View {
                                     var b = state.eqBands; b[0] = Float(v); b[1] = Float(v); b[2] = Float(v)
                                     state.eqBands = b
                                     if state.eqPreset != "Custom" { state.eqPreset = "Custom" }
-                                    AudioEngineNext.shared.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
+                                    state.audioEngine.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
                                 }
                             ),
                             label: "LO", isPreamp: false
@@ -52,7 +52,7 @@ struct EQPanelView: View {
                                     var b = state.eqBands; b[3] = Float(v); b[4] = Float(v)
                                     state.eqBands = b
                                     if state.eqPreset != "Custom" { state.eqPreset = "Custom" }
-                                    AudioEngineNext.shared.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
+                                    state.audioEngine.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
                                 }
                             ),
                             label: "ML", isPreamp: false
@@ -64,7 +64,7 @@ struct EQPanelView: View {
                                     var b = state.eqBands; b[5] = Float(v); b[6] = Float(v)
                                     state.eqBands = b
                                     if state.eqPreset != "Custom" { state.eqPreset = "Custom" }
-                                    AudioEngineNext.shared.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
+                                    state.audioEngine.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
                                 }
                             ),
                             label: "MH", isPreamp: false
@@ -76,7 +76,7 @@ struct EQPanelView: View {
                                     var b = state.eqBands; b[7] = Float(v); b[8] = Float(v); b[9] = Float(v)
                                     state.eqBands = b
                                     if state.eqPreset != "Custom" { state.eqPreset = "Custom" }
-                                    AudioEngineNext.shared.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
+                                    state.audioEngine.setEQ(preamp: state.eqPreamp, bands: state.eqBands)
                                 }
                             ),
                             label: "HI", isPreamp: false
@@ -284,7 +284,7 @@ struct EQKnobStack: View {
             EQMiniKnob(
                 value: Binding(
                     get: { state.hpfCutoff },
-                    set: { state.hpfCutoff = $0; AudioEngineNext.shared.setHPF(cutoff: $0) }
+                    set: { state.hpfCutoff = $0; state.audioEngine.setHPF(cutoff: $0) }
                 ),
                 label: hpfLabel
             )
@@ -294,7 +294,7 @@ struct EQKnobStack: View {
             EQMiniKnob(
                 value: Binding(
                     get: { state.lpfCutoff },
-                    set: { state.lpfCutoff = $0; AudioEngineNext.shared.setLPF(cutoff: $0) }
+                    set: { state.lpfCutoff = $0; state.audioEngine.setLPF(cutoff: $0) }
                 ),
                 label: lpfLabel
             )
@@ -305,7 +305,7 @@ struct EQKnobStack: View {
                 EQMiniKnob(
                     value: Binding(
                         get: { state.reverbAmount },
-                        set: { state.reverbAmount = $0; AudioEngineNext.shared.setReverb(amount: $0) }
+                        set: { state.reverbAmount = $0; state.audioEngine.setReverb(amount: $0) }
                     ),
                     label: fxLabel
                 )
@@ -768,12 +768,19 @@ private struct XYAxisSelector: View {
 
     var axisLabel: String {
         switch axis {
-        case .filter:   return "FILTER"
-        case .reverb:   return "REVERB"
-        case .reso:     return "RESONANCE"
-        case .filtVerb: return "FILTER + REVERB"
-        case .lfo:      return "LFO"
-        case .bpmChop:  return "BPM CHOP"
+        case .filter:      return "FILTER"
+        case .lowpass:     return "LOW-PASS"
+        case .highpass:    return "HIGH-PASS"
+        case .bandpass:    return "BAND-PASS"
+        case .reso:        return "RESONANCE"
+        case .lfo:         return "LFO"
+        case .bpmChop:     return "BPM CHOP"
+        case .slicer:      return "SLICER"
+        case .reverb:      return "REVERB"
+        case .filtVerb:    return "FILTER + REVERB"
+        case .simpleDelay: return "DELAY"
+        case .dubDelay:    return "DUB DELAY"
+        case .lofi:        return "LO-FI"
         }
     }
 

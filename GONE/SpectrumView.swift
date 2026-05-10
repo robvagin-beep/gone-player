@@ -1,8 +1,13 @@
 import SwiftUI
 
 struct SpectrumView: View {
-    @ObservedObject private var feed = SpectrumFeed.shared
+    @ObservedObject var feed: SpectrumFeed
     let isPlaying: Bool
+
+    init(feed: SpectrumFeed = .shared, isPlaying: Bool) {
+        self.feed = feed
+        self.isPlaying = isPlaying
+    }
 
     @State private var peaks:   [Float] = Array(repeating: 0, count: 24)
     @State private var peakAt:  [Date]  = Array(repeating: .distantPast, count: 24)

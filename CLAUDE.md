@@ -11,19 +11,18 @@ A lightweight macOS pre-listen tool for hobbyist DJs working alongside Finder.
 - Pitch/tempo preview (±8 / ±16 / ±100%)
 - Quick 4-band EQ sculpting for auditioning (not mixing)
 - Snap-to-edge when you need the screen
+- Split Mode: two independent players with visual crossfader (for side-by-side comparison, not live mixing)
 - macOS 13+ support — runs on older MacBooks too (this is a feature, not a limitation)
 
 ## What This App Is NOT
 
 Do not add or suggest:
-- Crossfader, sync, beat-grid editing
-- Hot cues, loops, cue points (beyond simple playhead seek)
+- Beat-grid editing, sync (BPM match between players)
 - MIDI control of any kind
 - Library database / tagging system (no persistent metadata beyond ratings)
-- Real-time performance tools
 - Export or sharing features
 - Social features, playlists export to Spotify/Apple Music/etc
-- Any feature that makes it "more like Rekordbox"
+- Anything that makes it "more like Rekordbox"
 
 If you find yourself thinking "this would be great for DJs" — stop. Ask first.
 
@@ -31,53 +30,139 @@ If you find yourself thinking "this would be great for DJs" — stop. Ask first.
 
 ## Architecture — Critical Rules
 
-### 1. Snap Edge System (`WindowSnapManager.swift`)
-This is the most delicate part. Do NOT modify without reading and understanding the full state machine.
+### 1. Audio Graph (`GONE/AudioEngine.next.swift`)
 
-**The dock sequence:**
-1. (async block) → `isSnapping = true`
-2. `slideOffScreen()` starts immediately
-3. After ~80ms: `prepareForSnap()` → panels collapse (isSnapping blocks updateWindowSize height shift)
-4. In slideOffScreen completion: `snapState = .docked` → `lockFrame()` → `isSnapping = false`
+Chain is **fixed**. Never reorder or remove nodes:
 
-**The expand sequence:**
+```
+playerNode → speedNode → pitchNode → hpfNode → lpfNode → eqNode → distortionNode → delayNode → reverbNode → gateNode → mainMixerNode
+```
+
+- `distortionNode` = Lo-Fi effect (AVAudioUnitDistortion, preset `.multiDecimated2`) — intentionally in graph
+- `delayNode` = Simple/Dub Delay (AVAudioUnitDelay) — intentionally in graph
+- `gateNode` = Slicer/Gate (AVAudioMixerNode) — BPM-sync volume chopping
+- Spectrum values normalize to **0..0.24** ceiling (not 0..1) — all visual components normalize against this value
+- `processSpectrum(samples:sampleRate:)` — sampleRate comes from the tap buffer, NOT hardcoded 44100
+
+### 2. Per-Player Engine Architecture (Dependency Injection)
+
+There are TWO audio engine instances:
+- `AudioEngineNext.shared` — primary player engine
+- `AudioEngineNext.secondary` — clone player engine (created when Split Mode activates)
+
+**PlayerState.swift** stores `let audioEngine: AudioEngineNext` — all audio calls go through `self.audioEngine`, NOT `AudioEngineNext.shared` directly. This is the DI pattern.
+
+**NEVER** call `AudioEngineNext.shared` directly inside PlayerState extensions or View files. Always use `state.audioEngine` or `self.audioEngine`.
+
+### 3. PlaybackProgressFeed — Isolated Observable
+
+`progress` and `currentTime` are NOT `@Published` on `PlayerState`. They live on `PlaybackProgressFeed`:
+
+- Each `PlayerState` has its own `let progressFeed = PlaybackProgressFeed()` (not singleton)
+- `PlaybackProgressFeed.shared` exists only for legacy PeekPanel
+- Views subscribe to `state.progressFeed` via `.onReceive`, not to `PlayerState` directly
+- Reset on navigation: always call `state.progressFeed.reset()` — NOT `PlaybackProgressFeed.shared.reset()` from extension code
+
+This is critical for Split Mode: each player's waveform and time display must read from its own feed.
+
+### 4. SpectrumFeed — Isolated Observable
+
+`@Published var spectrumData` was removed from `PlayerState`. It lives in `SpectrumFeed.shared` (singleton).
+
+- `AppDelegate.bindAudioEngine`: `engine.onSpectrum → SpectrumFeed.shared.data`
+- `SpectrumView` and `PixelSpectrumView` use `@ObservedObject private var feed = SpectrumFeed.shared`
+
+### 5. SplitModeManager (`SplitModeManager.swift`)
+
+Manages the second player window and crossfader panel:
+
+- `SplitModeManager.shared` is `@MainActor ObservableObject`
+- `private(set) var secondaryState: PlayerState?` — access from GONEApp for hot cues
+- On `activate()`: creates `PlayerState(engine: .secondary)`, copies tracks from primary, opens second window
+- On `deactivate()`: `Task.detached { AudioEngineNext.secondary.stop() }` — off main thread (avoids hang)
+- Output device sync: when secondary engine starts, it must match primary's output device:
+  ```swift
+  let primaryDeviceID = AudioEngineNext.shared.currentOutputDeviceID()
+  AudioEngineNext.secondary.setOutputDevice(primaryDeviceID)
+  ```
+- Crossfader gain: equal-power law `cos(t * π/2)` for primary, `cos((1-t) * π/2)` for secondary
+
+### 6. CrossfaderBandPanel (`CrossfaderBandPanel.swift`)
+
+`NSPanel` that floats between two player windows:
+
+- Hit-test only within 60px radius of the A-B line segment (`BandHitTestView.hitTest`)
+- `geometryVersion: Int` on `SplitModeManager` — increment to trigger Canvas redraw (do NOT replace `hc?.rootView` on every resize, that causes unnecessary SwiftUI allocation)
+- Canvas reads `panel.frameA/B` directly for geometry
+
+### 7. Snap Edge System (`WindowSnapManager.swift`)
+
+The most delicate subsystem. Do NOT modify without reading the full state machine.
+
+**Dock sequence:**
+1. `isSnapping = true`
+2. `slideOffScreen()` starts (Timer-based, NOT NSAnimationContext — NSAnimationContext breaks off-screen destinations)
+3. After ~80ms: `prepareForSnap()` → panels collapse (`isSnapping` guards `updateWindowSize` height shift)
+4. In `slideOffScreen` completion: `snapState = .docked` → `lockFrame()` → `isSnapping = false`
+
+**Expand sequence:**
 1. `unlockFrame()`
 2. `snapState = .expanded`, `isSnapping = true`
-3. `restoreFromSnap()` immediately → panels start opening as window slides out
+3. `restoreFromSnap()` immediately → panels open as window slides out
 4. `animateFrameTo(savedFrame)` runs simultaneously
 5. In completion: `isSnapping = false`
 
 **Never:**
-- Replace `slideOffScreen` Timer with `NSAnimationContext` for off-screen destinations
-- Set `snapState = .docked` before the animation completes
+- Use `NSAnimationContext` for off-screen animation (breaks)
+- Set `snapState = .docked` before animation completes
 - Call `lockFrame()` before `slideOffScreen` completion
 - Remove `isSnapping` guard in `updateWindowSize`
 
-### 2. Audio Graph (`AudioEngine.next.swift`)
-Chain is fixed: `playerNode → speedNode → pitchNode → hpfNode → lpfNode → eqNode → reverbNode → mainMixerNode`
+### 8. Window Architecture (`GONEApp.swift`)
 
-- Do not reorder nodes
-- Do not add nodes without updating the full chain
-- Spectrum values are normalized to **0..0.24** ceiling (not 0..1) — all visual components normalize against 0.24
-
-### 3. Window Architecture (`GONEApp.swift`)
-- `windowResizability` must stay `.automatic` — `.contentSize` breaks snap position
-- Window is borderless, clear, no shadow — do not add titlebar
-- `updateWindowSize` is called from `RootView.onChange` — do not move or duplicate it
-
-### 4. AppKit / SwiftUI Bridge
-- Window access: always through `AppDelegate.resolvedMainWindow()` or `WindowSnapManager.shared.currentWindow`
-- Never use `NSApp.windows.first` directly for operations
+- `windowResizability` = `.automatic` — NEVER change (`.contentSize` breaks snap)
+- `isMovableByWindowBackground = false` — NEVER set to true (breaks vertical drag controls)
+- `updateWindowSize` called only from `RootView.onChange` — do NOT duplicate
 - All timers: `RunLoop.main.add(timer, forMode: .common)` — not `.default`
 - Timer callbacks: `MainActor.assumeIsolated` inside
 
-### 5. Xcode Project
+### 9. Hot Cues (`GONEApp.swift` + `PlayerState.swift`)
+
+- Primary player: keys 1–4 (keyCodes 18/19/20/21)
+- Secondary player: keys 5–8 (keyCodes 23/22/26/28) — only when SplitMode active
+- `PlayerState.hotCues: [Double?] = [nil, nil, nil, nil]` — session only, not persisted
+- Reset in both `load()` and `playTrack()`
+
+### 10. Keyboard Navigation (`GONEApp.swift` + `PlaylistView.swift`)
+
+- `GONEApp.installKeyMonitor`: when `state.playlistOpen`, arrow keys return `event` (pass through to SwiftUI), NOT nil (no autoplay)
+- `PlaylistView.PlaylistTracksPane`: handles ↓/↑/Enter locally with `@State focusScrollTarget`
+- ↓/↑ move `selectedIds` + `selectionAnchorId` + `focusScrollTarget` — no playback
+- Enter plays only if `selectedIds.count == 1`
+
+### 11. XY FX System (`EQPanelView.swift` + `PlayerState.swift` + `RootView.swift`)
+
+13 axes total. `applyXYEffect` in `RootView.swift` handles all of them.
+
+Key rules:
+- `applyXYEffect` does NOT write to `@Published` state (prevents SwiftUI re-render loop)
+- On axis change: `stopSlicer()` + `resetFXNodes()` before starting new effect
+- On `xyActive` deactivate: `stopSlicer()` + `resetFXNodes()`
+- Slicer is Timer-based (60fps), driven by `state.bpm`; runs in `startSlicer()`, stopped in `stopSlicer()`
+- LFO writes to `state.lpfCutoff` so EQ curve animates during sweep
+
+### 12. AppKit / SwiftUI Bridge
+
+- Window access: `AppDelegate.resolvedMainWindow()` or `WindowSnapManager.shared.currentWindow`
+- NEVER use `NSApp.windows.first` directly
+- Clone player uses `FullPlayerView()` (not `RootView`) to avoid triggering `updateWindowSize` on primary window
+- TransportView hides settings gear in clone window: `if state.audioEngine !== AudioEngineNext.secondary`
+
+### 13. Xcode Project
+
 - File sync: `PBXFileSystemSynchronizedRootGroup` — Xcode auto-discovers files in folder
-- Do NOT add files to the `.pbxproj` manually
-- SourceKit errors "Cannot find type X in scope" are **false positives** from stale index
-  - The project compiles correctly in Xcode
-  - Fix: Clean Build Folder (Shift+Cmd+K)
-  - Do NOT restructure files to "fix" these errors
+- Do NOT add files to `.pbxproj` manually
+- SourceKit "Cannot find type X in scope" = false positives — fix: Clean Build Folder (Shift+Cmd+K)
 
 ---
 
@@ -91,17 +176,18 @@ Chain is fixed: `playerNode → speedNode → pitchNode → hpfNode → lpfNode 
 - Context menu items in `PlaylistRowView`
 - Padding / layout inside existing SwiftUI views
 - `ArtworkCache` cache policy (expiry, size)
-- BPM range resolution (60–200 range in `LibraryScanner.analyzeBPM`)
+- BPM range resolution in `LibraryScanner.analyzeBPM`
 
 ## What You Must NOT Change
 
 - `WindowSnapManager.swift` state machine sequence
 - `updateWindowSize` logic in `RootView.swift`
-- Audio graph node order or chain in `AudioEngine.next.swift`
-- AppDelegate window configuration (`configureWindow`)
-- `RunLoop.main.add(timer, forMode: .common)` patterns — do not change to `.default`
-- `PlayerState` class itself — do not add new `@StateObject` or split into multiple ObservableObjects
-- `.windowResizability(.automatic)` in `GONEApp.swift`
+- Audio graph node order in `AudioEngine.next.swift`
+- `isMovableByWindowBackground` setting (must stay `false`)
+- `windowResizability(.automatic)` in `GONEApp.swift`
+- `RunLoop.main.add(timer, forMode: .common)` patterns
+- Direct calls to `AudioEngineNext.shared` from inside PlayerState extensions or Views (use `self.audioEngine` / `state.audioEngine`)
+- `PlaybackProgressFeed.shared.reset()` from extension code — use `self.progressFeed.reset()`
 
 ---
 
@@ -110,8 +196,11 @@ Chain is fixed: `playerNode → speedNode → pitchNode → hpfNode → lpfNode 
 ```
 Design tokens    → DesignTokens.swift  (G.* prefix)
 State            → PlayerState + extensions in PlayerState+*.swift
-Audio            → AudioEngineNext.shared (singleton)
+Audio            → state.audioEngine (injected, NOT AudioEngineNext.shared directly)
 Window snap      → WindowSnapManager.shared (singleton)
+Spectrum feed    → SpectrumFeed.shared (singleton)
+Progress feed    → state.progressFeed (per-player instance)
+Split mode       → SplitModeManager.shared (singleton)
 UI               → SwiftUI views, AppKit only where SwiftUI falls short
 ```
 
@@ -129,35 +218,42 @@ UI               → SwiftUI views, AppKit only where SwiftUI falls short
 
 ```
 GONE/GONE/
-  GONEApp.swift              — app entry, AppDelegate, window setup
-  PlayerState.swift          — single source of truth for all state
-  PlayerState+Playback.swift — load/play/prev/next/delete
-  PlayerState+Analysis.swift — BPM + waveform async computation
-  PlayerState+Playlists.swift— tabs, import, sort
-  PlayerState+EQ.swift       — presets, reverb cycling
-  GONE/AudioEngine.next.swift— AVAudioEngine graph (double-folder, legacy)
-  LibraryScanner.swift       — metadata + waveform + BPM decode
-  ArtworkCache.swift         — NSCache + disk cache for artwork
-  Track.swift                — Track struct + BPMAnalysisState enum
-  DesignTokens.swift         — G.* design constants
-  RootView.swift             — shell, drag overlay, drop zone, window sizing
-  FullPlayerView.swift       — player layout, panel accordion
-  TrackHeaderView.swift      — artwork, title, badges, spectrum
-  WaveformView.swift         — waveform canvas + seek
-  SpectrumView.swift         — bars/osc spectrum (tap to switch)
-  TransportView.swift        — transport controls, volume, snap/pin buttons
-  PitchFaderView.swift       — vertical pitch slider + MT button
-  EQPanelView.swift          — 4-band EQ faders, HPF/LPF/FX knobs, curve
-  PlaylistView.swift         — playlist panel, tabs, rows, sort headers
-  PeekPanelView.swift        — snap edge HUD: mini transport + meter
-  WindowSnapManager.swift    — snap state machine
+  GONEApp.swift                — app entry, AppDelegate, key monitor, hot cues, magnify
+  PlayerState.swift            — single source of truth; XY/LFO/Slicer timers; magnify state
+  PlayerState+Playback.swift   — load/play/prev/next/delete; hot cue reset
+  PlayerState+Analysis.swift   — BPM (concurrency=2) + waveform async
+  PlayerState+Playlists.swift  — tabs, import (batch 4), sort, auto-sort on drag
+  PlayerState+EQ.swift         — EQ presets, reverb cycling
+  GONE/AudioEngine.next.swift  — AVAudioEngine graph (double-folder, legacy path)
+  PlaybackProgressFeed.swift   — per-player progress/currentTime ObservableObject
+  SpectrumFeed.swift           — singleton spectrum ObservableObject
+  SplitModeManager.swift       — two-player Split Mode + crossfader coordination
+  CrossfaderBandPanel.swift    — NSPanel crossfader UI + BandHitTestView + Canvas
+  SettingsPanel.swift          — settings overlay (scale, magnify, snap delay)
+  LibraryScanner.swift         — metadata + waveform + BPM decode
+  ArtworkCache.swift           — NSCache(300) + disk 256px JPEG
+  Track.swift                  — Track struct + BPMAnalysisState enum
+  DesignTokens.swift           — G.* design constants
+  RootView.swift               — shell, XY wiring, onChange, top-anchor, drag overlay
+  FullPlayerView.swift         — player layout, panel accordion (used by clone window)
+  TrackHeaderView.swift        — artwork, title, badges, spectrum
+  WaveformView.swift           — waveform Canvas + seek + hot cue ticks
+  SpectrumView.swift           — bars/osc spectrum
+  TransportView.swift          — transport, volume, snap/pin, repeat badge
+  PitchFaderView.swift         — vertical pitch slider + MT button
+  EQPanelView.swift            — EQ faders, HPF/LPF, XY pad (13 axes), FX
+  PlaylistView.swift           — playlist panel, tabs, rows, keyboard nav, cascade
+  PeekPanelView.swift          — snap edge HUD: mini transport + spectrum
+  WindowSnapManager.swift      — snap state machine
 ```
 
 ---
 
-## Current Known Gaps (do NOT touch without instruction)
+## Known Tech Debt (do NOT touch without instruction)
 
-- Playlist tabs UI: state machine is ready, UI tab bar needs wiring — complex, wait for instruction
-- `splitPlaylistView` / `secondaryPlaylistTabId` — orphan state, no UI yet
-- App icon: not added to Assets.xcassets
-- AIFF artwork: some files don't load art (known bug, needs investigation)
+- `Task.detached` for BPM/waveform have no stored cancellation handles — tech debt, not a bug
+- `Task.sleep(nanoseconds:)` deprecated — replace with `Task.sleep(for: .milliseconds(N))` on next pass
+- Dual SnapState enums: `WindowSnapManager.SnapState` and `PlayerState.SnapMode` are functionally identical — consolidate when touching snap system
+- `presentImportPanel` uses `NSApp.keyWindow` — should use `AppDelegate.resolvedMainWindow()` (low risk)
+- `Track.artworkData: Data?` in struct — causes array copy overhead during import batches (significant refactor, coordinate separately)
+- `splitPlaylistView` / `secondaryPlaylistTabId` in PlayerState — orphan state, no UI yet

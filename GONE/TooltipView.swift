@@ -55,7 +55,7 @@ final class TooltipPanel {
             p.isOpaque           = false
             p.backgroundColor    = .clear
             p.hasShadow          = false
-            p.level              = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)) + 1)
+            p.level              = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
             p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
             p.hidesOnDeactivate  = false
             p.ignoresMouseEvents = true
@@ -176,7 +176,7 @@ final class DragValuePanel {
             p.isOpaque           = false
             p.backgroundColor    = .clear
             p.hasShadow          = false
-            p.level              = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)) + 1)
+            p.level              = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
             p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
             p.hidesOnDeactivate  = false
             p.ignoresMouseEvents = true
