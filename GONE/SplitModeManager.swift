@@ -13,6 +13,7 @@ final class SplitModeManager: ObservableObject {
 
     private(set) var secondaryState: PlayerState?
     private var secondWindow: NSWindow?
+    var secondaryWindow: NSWindow? { secondWindow }
     private var gapWindow: CrossfaderGapWindow?
     private weak var primaryState: PlayerState?
 
@@ -32,6 +33,8 @@ final class SplitModeManager: ObservableObject {
         let win = makeSecondWindow(primaryState: primaryState, relativeTo: primaryWindow)
         secondWindow = win
 
+        positionWindows(primary: primaryWindow, secondary: win)
+
         let gap = CrossfaderGapWindow(manager: self, windowA: primaryWindow, windowB: win)
         gapWindow = gap
 
@@ -43,25 +46,51 @@ final class SplitModeManager: ObservableObject {
         primaryWindow.orderFront(nil)
     }
 
+    private func positionWindows(primary: NSWindow, secondary: NSWindow) {
+        let pf  = primary.frame
+        let sf  = secondary.frame
+        let scr = (primary.screen ?? NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+
+        let rightX = pf.maxX + gapWidth
+        if rightX + sf.width <= scr.maxX {
+            // Enough room — clone goes right, primary stays
+            secondary.setFrameOrigin(NSPoint(x: rightX, y: pf.minY))
+        } else {
+            // Not enough room — center both windows together on screen
+            let totalW = pf.width + gapWidth + sf.width
+            let startX = max(scr.minX, min(scr.midX - totalW / 2, scr.maxX - totalW))
+            primary.setFrameOrigin(NSPoint(x: startX, y: pf.minY))
+            secondary.setFrameOrigin(NSPoint(x: startX + pf.width + gapWidth, y: pf.minY))
+        }
+    }
+
     func deactivate() {
         guard isActive else { return }
         isActive = false
         crossfade = 0.5
         primaryState?.audioEngine.crossfadeGain = 1.0
-        // Clear callbacks BEFORE releasing state — prevents ARC priority inversion where
-        // the audio thread spins retaining [weak state] while main thread zeros it during dealloc
+        // Clear callbacks BEFORE any teardown — prevents audio thread retaining [weak state]
+        // while main thread zeros it during dealloc
         AudioEngineNext.secondary.onProgress = nil
         AudioEngineNext.secondary.onFinished = nil
         AudioEngineNext.secondary.onSpectrum = nil
+        // Pause synchronously on main: invalidates progressTimer and silences the engine
+        // before SwiftUI window teardown — prevents timer callbacks firing into a dying view hierarchy
+        AudioEngineNext.secondary.pause()
+        // Stop any XY-effect timers on the secondary state before releasing it
+        secondaryState?.stopLFO()
+        secondaryState?.stopSlicer()
+        secondaryState?.stopBPMChop()
+        secondaryState?.cancelXYSpring()
         gapWindow?.close()
         gapWindow = nil
         secondWindow?.close()
         secondWindow = nil
         secondaryState = nil
-        // stop() calls bufferQueue.sync — run on audioOpQueue so any subsequent
-        // setOutputDevice() from the next activate() is serialized after this completes
+        // Full stop + buffer flush off main thread; serialized with any subsequent
+        // setOutputDevice() from the next activate() via audioOpQueue
         audioOpQueue.async {
-            AudioEngineNext.secondary.stop()
+            AudioEngineNext.secondary.stop(resetProgress: false)
             AudioEngineNext.secondary.crossfadeGain = 1.0
         }
     }
@@ -146,17 +175,6 @@ final class SplitModeManager: ObservableObject {
         win.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         win.hidesOnDeactivate = false
 
-        // Place B to the right of A with gapWidth spacing
-        let pf  = primary.frame
-        let scr = (primary.screen ?? NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-        let newX = pf.maxX + gapWidth
-        if newX + initSize.width <= scr.maxX {
-            win.setFrameOrigin(NSPoint(x: newX, y: pf.minY))
-        } else {
-            // Not enough room on right — place to the left of primary
-            let leftX = pf.minX - gapWidth - initSize.width
-            win.setFrameOrigin(NSPoint(x: max(scr.minX, leftX), y: pf.minY))
-        }
         return win
     }
 }
