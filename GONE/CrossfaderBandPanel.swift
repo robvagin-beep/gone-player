@@ -59,7 +59,8 @@ final class CrossfaderGapWindow: NSPanel {
         ignoresMouseEvents = false
         let ssl            = Int(CGWindowLevelForKey(.screenSaverWindow))
         level              = NSWindow.Level(rawValue: ssl - 1)
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                              .fullScreenDisallowsTiling, .ignoresCycle]
         hidesOnDeactivate  = false
 
         // Root view: BandHitTestView passes through clicks far from the bar

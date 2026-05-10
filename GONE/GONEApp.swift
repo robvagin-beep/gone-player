@@ -72,7 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.windows.forEach {
             $0.alphaValue = 0
             $0.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
-            $0.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+            $0.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                     .fullScreenDisallowsTiling, .ignoresCycle]
             $0.hidesOnDeactivate = false
         }
         DispatchQueue.main.async {
@@ -92,13 +93,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureWindow(_ window: NSWindow) {
         mainWindow = window
-        window.styleMask = [.borderless]
+        window.styleMask = [.borderless, .nonactivatingPanel]
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
         window.isMovableByWindowBackground = false  // DragHandleNSView handles all window movement
         window.acceptsMouseMovedEvents = true
         window.appearance = NSAppearance(named: .darkAqua)
+        window.isReleasedWhenClosed = false
         applyPresencePolicy(to: window)
         window.setContentSize(NSSize(width: G.windowWidth + 8, height: 190))
         window.center()
@@ -159,16 +161,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
-        // CGWindowLevelForKey(.screenSaverWindow) = 1000 is required to appear above full-screen
-        // Spaces (Chrome, Safari, etc. that occupy their own dedicated macOS Space) and to remain
-        // visible across all Spaces. System panels (NSOpenPanel, NSSavePanel) use a higher
-        // OS-managed level and will still appear above GONE regardless.
-        // Level is always screenSaverWindow — same as the clone and crossfader windows —
-        // so all three player surfaces reliably float above fullscreen apps.
+        // screenSaverWindow (1000) floats above all normal content. Level is not the bottleneck
+        // for fullscreen Spaces — Space membership is. System panels (NSOpenPanel etc.) use a
+        // higher OS-managed level and still appear above GONE regardless.
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
-        // .canJoinAllSpaces + .stationary: window travels with the user across Spaces without
-        // animating during transitions. .fullScreenAuxiliary: explicitly opts in to full-screen Spaces.
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        // .canJoinAllSpaces: omnipresent across user Spaces.
+        // .fullScreenAuxiliary: accepted into foreign fullscreen Spaces.
+        // .fullScreenDisallowsTiling: never captured by Split View.
+        // .ignoresCycle: excluded from ⌘` window ring.
+        // NO .stationary — it inhibits live re-parenting to the active fullscreen Space.
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                     .fullScreenDisallowsTiling, .ignoresCycle]
         window.hidesOnDeactivate = false
     }
 

@@ -178,7 +178,8 @@ final class SplitModeManager: ObservableObject {
         win.appearance = NSAppearance(named: .darkAqua)
         // Explicit screenSaverWindow level — both players float above all other apps
         win.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
-        win.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                  .fullScreenDisallowsTiling, .ignoresCycle]
         win.hidesOnDeactivate = false
 
         return win

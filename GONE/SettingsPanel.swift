@@ -91,7 +91,8 @@ final class SettingsPanel {
             p.backgroundColor    = .clear
             p.hasShadow          = true
             p.level              = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
-            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                     .fullScreenDisallowsTiling, .ignoresCycle]
             p.hidesOnDeactivate  = false
             p.ignoresMouseEvents = false
             hc.view.wantsLayer = true
