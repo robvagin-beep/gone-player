@@ -38,7 +38,9 @@ final class CrossfaderGapWindow: NSPanel {
     private var hc: NSHostingController<CrossfaderBridgeView>?
     private weak var hitView: BandHitTestView?
 
-    // Extra space around the centre-to-centre segment
+    // Extra space around the centre-to-centre segment.
+    // Coincidentally matches BandHitTestView.hitRadius (60) but serves a different purpose:
+    // pad expands the bounding-box window; hitRadius defines the click-capture zone.
     private static let pad: CGFloat = 60
 
     init(manager: SplitModeManager, windowA: NSWindow, windowB: NSWindow) {
@@ -161,7 +163,8 @@ private final class ScrollWheelNSView: NSView {
         let delta = abs(dx) >= abs(dy) ? dx : -dy   // right/up = positive (toward B)
         // Trackpad gives continuous pixel-scale deltas (large); mouse wheel gives ~1.0 per detent.
         // Boost mouse detents so a reasonable number of notches (~30) spans the full crossfader range.
-        let adjusted = event.hasPreciseScrollingDeltas ? delta : delta * 10.0
+        let mouseDetentScale: CGFloat = 10.0
+        let adjusted = event.hasPreciseScrollingDeltas ? delta : delta * mouseDetentScale
         onScroll(adjusted)
     }
 }

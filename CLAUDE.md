@@ -265,7 +265,7 @@ GONE/GONE/
 These items have been explicitly fixed or are intentional design decisions. Flagging them wastes review budget.
 
 ### Threading / Timers
-- `playbackToken` / `bumpToken()`: NSLock-protected, atomic `&+=`, no race. `token` is a `UInt64` value-type parameter passed into `schedulePCMChunk` and captured by value in closures — read ONCE at call site, compared (not re-read) against `self.playbackToken` at checkpoints. Pattern is correct token-based cancellation; multiple `guard token == playbackToken` reads are safe because `token` (local) never changes.
+- `playbackToken` / `bumpToken()`: NSLock-protected, atomic `&+=`, no race. `token` is a `UInt64` value-type parameter passed into `schedulePCMChunk` and captured by value in all completion-handler closures. It is NEVER re-read from `self.playbackToken` inside the closure — the captured `token` local is compared against a fresh `self.playbackToken` read (through the lock) at checkpoint guards. This is the correct pattern. Buffer-completion callbacks capture `token` from the outer `schedulePCMChunk` parameter scope, not from `self`.
 - `progressTimer` capture: `let t = progressTimer; progressTimer = nil` before dispatch — intentional deadlock prevention (async, not sync)
 - `stopHoldSeek()` off-main: has identical main-thread dispatch guard as `progressTimer`
 - `holdSeekTimer` in `deinit`: captured and dispatched to main in deinit, same pattern as progressTimer
@@ -274,7 +274,7 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `bumpToken()` discarded in `stop()`: intentional — `stop()` does not schedule buffers, only needs to invalidate in-flight ones
 
 ### Audio Engine
-- `AudioEngineNext.init()` is `private` — enforces 2-instance invariant (`shared` + `secondary`)
+- `AudioEngineNext.init()` is `private` — enforces 2-instance invariant (`shared` + `secondary`). Declared at line 106 of `AudioEngine.next.swift`. Diff truncation may hide it, but the restriction is real and verified.
 - `AudioEngineNext.secondary` eager init: pre-existing architecture — out of scope
 - `currentURL`/`audioFile` thread safety: pre-existing architecture concern — out of scope
 - `stopHoldSeek()` → `applyPitchState()`: correctly restores `pitchNode.bypass`, `speedNode.rate`, and pitch state on hold-seek end
@@ -287,7 +287,7 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `ClonePlayerShell.resizeWindow` vs snap: clone window is never snap-managed — no conflict possible
 - `ClonePlayerShell.resizeWindow` screen bounds: clamps both bottom (`>= vis.minY`) AND top (`<= vis.maxY - height`)
 - `ScrollWheelNSView` momentum: `guard event.momentumPhase == .stationary` blocks trackpad inertia ✓. Regular mouse wheel and Magic Mouse wheel events arrive with `momentumPhase = .stationary` and ARE captured. The guard only drops trackpad inertia (post-lift coasting) — active scroll phases are correctly handled.
-- `ScrollWheelNSView hasPreciseScrollingDeltas` mouse scaling: trackpad gives pixel-scale continuous deltas (large); mouse wheel gives ~1.0 per notch. Non-precise (mouse) events are boosted ×10 so ~30 notches spans full crossfader range. Intentional direction.
+- `ScrollWheelNSView hasPreciseScrollingDeltas` mouse scaling: trackpad gives pixel-scale continuous deltas (large); mouse wheel gives ~1.0 per notch. Non-precise (mouse) events are boosted by `mouseDetentScale = 10.0` so ~30 notches spans full crossfader range. Intentional direction. Named constant ✓
 - `EmptyOverlayView` in clone: gated with `state.audioEngine !== AudioEngineNext.secondary`
 - `BandHitTestView.hitTest` pass-through: root content view returning `nil` causes AppKit to route event to window below ✓
 - `BandHitTestView.hitRadius`: `let`, value 60px — matches spec
@@ -307,10 +307,15 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `ClonePlayerShell.contentSize` logic duplication: intentionally mirrors `RootView.playerContentSize` — clone and primary windows have different resize drivers; a shared helper would couple unrelated subsystems.
 - `EmptyOverlayView.startTypewriter` `Task.sleep(nanoseconds:)`: project-wide tech debt, acknowledged in CLAUDE.md — out of scope for this PR. Timing literals extracted to named constants (`charDelayNs`, `holdDelayNs`, `eraseDelayNs`, `gapDelayNs`) ✓
 - `ArtworkCache.prune` frequency: runs once at launch; 30-day expiry on 256px JPEGs. Growth is negligible — periodic pruning is out of scope.
-- `BandHitTestView.hitRadius` vs plaque dimensions: 60px is intentionally generous for usability; not coupled to visual plaque size by design. `pad = 60` in `CrossfaderGapWindow` serves a different purpose (bounding box expansion) and is coincidentally the same value.
+- `BandHitTestView.hitRadius` vs plaque dimensions: 60px is intentionally generous for usability; not coupled to visual plaque size by design. `pad = 60` in `CrossfaderGapWindow` serves a different purpose (bounding box expansion) and is coincidentally the same value. Code comment added to `CrossfaderGapWindow` explaining the distinction ✓
 - `CrossfaderBridgeView` edge threshold `> 10`: 4 occurrences across Canvas and drag gesture — intentionally co-located, named constant would be premature abstraction for a single-file component.
 - `CrossfaderBridgeView` Canvas magic numbers (`barHW`, `ext`, `tHL`, `tHW`, `cornerR`): geometry constants local to the Canvas closure — no duplication elsewhere, extracting to file-scope adds no real value.
 - `AudioEngineNext.tokenLock` vs `OSAllocatedUnfairLock`: `NSLock` is correct and clear; lock is NOT on the hot render path (it guards scheduling, not buffer decode). Not a performance concern.
+- `CrossfaderGapWindow` observer reference cycle: `windowA`/`windowB` are `weak`; if both go nil before `close()`, observers release naturally when panel deinits. `if !observers.isEmpty` guard in `close()` makes repeated-close idempotent. Correct by design.
+- `ClonePlayerShell.resizeWindow` coalesced animation: SwiftUI coalesces `onChange` deliveries per run loop tick, so multiple panel-state changes in one tick produce one `setFrame(animate:)` call, not multiple. No stacked-animation risk.
+- `EmptyOverlayView` arrow animation: `withAnimation(.repeatForever)` in `onAppear` is managed by SwiftUI's animation system; view leaving hierarchy cancels it automatically. `onDisappear` explicit cancel not required.
+- `ArtworkCache.prune` vs `image(for:)` race: `FileManager` operations are individually thread-safe. Pruning during first image read is benign — worst case a just-pruned file is missed and the original `artworkData` fallback is used.
+- `claude_review.py` diff truncation: now snaps to last newline before limit via `rfind("\n")` ✓
 
 ### CI / Tooling
 - `model="claude-opus-4-7"` in `claude_review.py`: this model ID is valid and the workflow runs successfully — do not flag as invalid

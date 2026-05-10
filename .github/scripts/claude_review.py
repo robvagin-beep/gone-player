@@ -69,8 +69,9 @@ def main() -> None:
     truncated = ""
     original_len = len(diff)
     if original_len > MAX_DIFF:
-        diff = diff[:MAX_DIFF]
-        truncated = f"\n\n> ⚠️ Diff truncated to {MAX_DIFF:,} of {original_len:,} characters."
+        cut = diff.rfind("\n", 0, MAX_DIFF)
+        diff = diff[:cut if cut > 0 else MAX_DIFF]
+        truncated = f"\n\n> ⚠️ Diff truncated to {len(diff):,} of {original_len:,} characters."
 
     if not diff.strip():
         print("Empty diff, skipping review.")
