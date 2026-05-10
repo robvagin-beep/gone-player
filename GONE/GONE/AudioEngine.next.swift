@@ -294,25 +294,25 @@ final class AudioEngineNext {
     private var holdSeekStep: Int = 0  // counts ticks for forward ramp-up
 
     // Called when the user holds a transport arrow.
-    // Forward: Pioneer-style ramp — starts at 1.5×, eases to 4× over ~2s.
+    // Forward: immediately +3% above current rate, escalates to +5% after 3s held. No ramp.
     // Backward: periodic seek-back at ~5× reverse (0.15s tick × 0.75s step).
     func startHoldSeek(forward: Bool) {
         stopHoldSeek()
+        holdSeekStep = 0
         if forward {
-            holdSeekStep = 0
+            let baseRate = currentRate          // user's current pitch/tempo setting
             pitchNode.bypass = true
             pitchNode.rate = 1.0
             pitchNode.pitch = 0
-            speedNode.rate = 0.5   // initial gentle push
-            let t = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
+            speedNode.rate = Float(baseRate * 1.03)   // immediate +3%
+            let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.holdSeekStep += 1
                     if self.holdSeekStep > 250 { self.stopHoldSeek(); return }  // 20s safety cutoff
-                    // Ease from 0.5× to 1.5× over ~25 ticks (~2s)
-                    let progress = min(1.0, Double(self.holdSeekStep) / 25.0)
-                    let eased = 1.0 - pow(1.0 - progress, 2.0)   // ease-out quad
-                    self.speedNode.rate = Float(0.5 + eased * 1.0)
+                    if self.holdSeekStep == 20 {   // ~3s held → escalate to +5%
+                        self.speedNode.rate = Float(baseRate * 1.05)
+                    }
                 }
             }
             RunLoop.main.add(t, forMode: .common)
@@ -320,8 +320,6 @@ final class AudioEngineNext {
         } else {
             let dur = durationSeconds
             guard dur > 0 else { return }
-            // Use Timer() constructor — scheduledTimer adds to .default mode only,
-            // then RunLoop.main.add would double-register it causing erratic firing.
             let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
