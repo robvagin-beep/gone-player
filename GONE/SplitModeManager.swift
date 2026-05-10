@@ -28,6 +28,12 @@ final class SplitModeManager: ObservableObject {
     func activate(primaryWindow: NSWindow, primaryState: PlayerState) {
         guard !isActive else { return }
         self.primaryState = primaryState
+
+        // Snap and Clone Mode are incompatible — disable snap (expands window if docked)
+        if primaryState.snapEnabled {
+            WindowSnapManager.shared.disable(window: primaryWindow)
+        }
+
         isActive = true
 
         let win = makeSecondWindow(primaryState: primaryState, relativeTo: primaryWindow)

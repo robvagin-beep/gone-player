@@ -144,6 +144,7 @@ struct PeekPanelView: View {
         if state.snapState == .docked {
             RoundedRectangle(cornerRadius: 16)
                 .fill(G.bgWindow)
+                .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
                         .stroke(Color.white.opacity(0.12), lineWidth: 1)
@@ -152,6 +153,7 @@ struct PeekPanelView: View {
         } else {
             RoundedRectangle(cornerRadius: G.rWindowInner)
                 .fill(G.bgWindow)
+                .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
                 .overlay(
                     RoundedRectangle(cornerRadius: G.rWindowInner)
                         .stroke(Color.white.opacity(0.04), lineWidth: 1)

@@ -122,6 +122,7 @@ final class AudioEngineNext {
 
     deinit {
         progressTimer?.invalidate()
+        holdSeekTimer?.invalidate()
         engine.mainMixerNode.removeTap(onBus: 0)
         if let obs = configChangeObserver { NotificationCenter.default.removeObserver(obs) }
         if let fftSetup {
@@ -301,15 +302,16 @@ final class AudioEngineNext {
             pitchNode.bypass = true
             pitchNode.rate = 1.0
             pitchNode.pitch = 0
-            speedNode.rate = 1.5   // initial gentle push
+            speedNode.rate = 0.5   // initial gentle push
             let t = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.holdSeekStep += 1
-                    // Ease from 1.5× to 4.0× over ~25 ticks (~2s)
+                    if self.holdSeekStep > 250 { self.stopHoldSeek(); return }  // 20s safety cutoff
+                    // Ease from 0.5× to 1.5× over ~25 ticks (~2s)
                     let progress = min(1.0, Double(self.holdSeekStep) / 25.0)
                     let eased = 1.0 - pow(1.0 - progress, 2.0)   // ease-out quad
-                    self.speedNode.rate = Float(1.5 + eased * 2.5)
+                    self.speedNode.rate = Float(0.5 + eased * 1.0)
                 }
             }
             RunLoop.main.add(t, forMode: .common)
