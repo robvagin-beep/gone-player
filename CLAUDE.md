@@ -2,29 +2,33 @@
 
 ## What This App Is
 
-A lightweight macOS pre-listen tool for hobbyist DJs working alongside Finder.
+**The Swiss Army knife for DJs preparing a set** — a macOS companion that lives next to Finder and replaces nothing, but makes the 30 minutes before a set fast and deliberate.
 
-**Target user:** Someone who has music in folders, working on a MacBook at a side job or at home. Before a set, they open their folders, sort by BPM, audition tracks quickly, adjust tempo, and decide what fits — without opening Rekordbox. The app stays on screen next to Finder, small, always on top, out of the way.
+**Positioning in one sentence:** Not a professional DJ platform, but a focused pre-session tool: drop a folder, sort by BPM, preview tracks with real effects, decide what fits — then open your DAW or controller.
 
-**Core value:**
-- Fast folder drop → instant BPM detection
-- Pitch/tempo preview (±8 / ±16 / ±100%)
-- Quick 4-band EQ sculpting for auditioning (not mixing)
-- Snap-to-edge when you need the screen
-- Split Mode: two independent players with visual crossfader (for side-by-side comparison, not live mixing)
-- macOS 13+ support — runs on older MacBooks too (this is a feature, not a limitation)
+**Target user:** A DJ who has music in folders. Working on a MacBook at home or at a side job. Before a set they open their folders, scan BPMs, audition candidates at the right tempo and EQ, compare two tracks in Split Mode, mark the ones that work. No database. No sync. No beat grid. Just fast, informed decisions — without touching Rekordbox until they're sure.
+
+**Core value — the full toolkit in one window:**
+- Drop a folder → instant BPM detection, sorted list
+- Pitch/tempo preview: ±8% fine, ±16% wide, ±100% full varispeed
+- 4-band EQ + HPF/LPF for honest auditioning (hear how it sounds in the mix)
+- XY pad with 13 effect axes: Lo-Fi, Dub Delay, Gate/Slicer, Reverb, Filter sweeps
+- Hot cues (4 per player) for marking phrases on the fly
+- Split Mode: two independent players + visual crossfader for A/B comparison
+- Snap-to-edge: the window gets out of the way when you don't need it
+- macOS 13+ — runs on older MacBooks (this is a feature, not a limitation)
 
 ## What This App Is NOT
 
 Do not add or suggest:
-- Beat-grid editing, sync (BPM match between players)
+- Beat-grid editing or BPM sync between players
 - MIDI control of any kind
-- Library database / tagging system (no persistent metadata beyond ratings)
-- Export or sharing features
-- Social features, playlists export to Spotify/Apple Music/etc
-- Anything that makes it "more like Rekordbox"
+- Library database / persistent tagging (no metadata beyond session ratings)
+- Export, sharing, or streaming integrations
+- Playlist export to Rekordbox, Spotify, Apple Music, or anything else
+- Anything that positions this as a replacement for a controller setup
 
-If you find yourself thinking "this would be great for DJs" — stop. Ask first.
+**Rule of thumb:** If the feature would make sense inside Rekordbox or Serato, it does not belong here. This tool is for the 30 minutes *before* you open those. Ask before adding.
 
 ---
 
