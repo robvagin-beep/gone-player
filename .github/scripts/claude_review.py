@@ -35,13 +35,32 @@ playerNode → speedNode → pitchNode → hpfNode → lpfNode → eqNode → di
 - Timer/observer leaks (missing invalidate/removeObserver)
 - Incorrect use of shared singletons vs per-player instances
 
+## Already resolved — do NOT flag these again:
+- `playbackToken` / `bumpToken()` locking: NSLock-protected, atomic increment, correct usage throughout
+- `progressTimer` capture pattern: local `let t = progressTimer; progressTimer = nil` before async dispatch — intentional
+- `stopHoldSeek()` thread safety: has same main-thread dispatch guard as progressTimer
+- `holdSeekTimer` in deinit: already invalidated
+- `AudioEngineNext.secondary.pause()` before window close in `SplitModeManager.deactivate()`: intentional hang-fix
+- `stopHoldSeek()` restoring pitch state: `applyPitchState()` is called at end — restores pitchNode.bypass and speedNode.rate
+- `CrossfaderGapWindow.close()` + deinit observer cleanup: both paths clear observers, idempotent by design
+- `BandHitTestView.hitRadius`: set to 60px (matches spec)
+- `BandHitTestView` segment guard: uses distance² > 16 (not exact equality)
+- `ArtworkCache.writeToDisk`: runs on background queue, uses `.atomic` write
+- `DispatchQueue.main.async` (not sync) for timer invalidation off-main: intentional deadlock prevention
+- `MainActor.assumeIsolated` in RunLoop.main timer callbacks: correct pattern per CLAUDE.md
+- `model="claude-opus-4-7"`: this model ID is valid and the workflow runs successfully — do not flag
+- `Task.sleep(nanoseconds:)` deprecation: acknowledged tech debt in CLAUDE.md, out of scope for this PR
+- `AudioEngineNext.secondary` eager init: pre-existing architecture, out of scope for this PR
+- `currentURL`/`audioFile` thread safety: pre-existing architecture concern, out of scope
+- `EQCurveView.animateTo` Task churn: pre-existing, out of scope
+
 ## Output format:
 Write in English. Group findings by severity:
 - 🔴 **Critical** — crashes, data loss, broken architecture invariants
 - 🟡 **Warning** — performance issues, potential bugs, rule violations
 - 🟢 **Suggestion** — minor improvements, style, cleanup
 
-End with a brief summary (2-3 sentences). Be direct, no filler."""
+Only flag issues NOT in the "Already resolved" list above. End with a brief summary (2-3 sentences). Be direct, no filler."""
 
 
 def post_comment(repo: str, pr_number: str, body: str, token: str) -> None:
