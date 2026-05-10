@@ -10,9 +10,10 @@ final class BandHitTestView: NSView {
     var hitRadius: CGFloat = 60
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // Before segments are set both are .zero → distance 0 → always captures.
-        // Guard against that: require the two endpoints to differ.
-        guard segA != segB else { return nil }
+        // Require endpoints to be meaningfully apart (> 4pt) before accepting hits.
+        // Covers both pre-geometry state (both .zero) and coincident windows.
+        let dx = segB.x - segA.x, dy = segB.y - segA.y
+        guard dx*dx + dy*dy > 16 else { return nil }
         return distanceToSegment(point) <= hitRadius ? super.hitTest(point) : nil
     }
 
