@@ -139,7 +139,8 @@ private struct WindowRefCapture: NSViewRepresentable {
         required init?(coder: NSCoder) { fatalError() }
 
         override func viewDidMoveToWindow() {
-            if let w = window { callback(w) }
+            guard let w = window else { return }
+            callback(w)
         }
     }
 }

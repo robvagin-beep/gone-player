@@ -45,8 +45,11 @@ final class AudioEngineNext {
     private let tokenLock = NSLock()
     private var _playbackToken: UInt64 = 0
     private var playbackToken: UInt64 {
-        get { tokenLock.withLock { _playbackToken } }
-        set { tokenLock.withLock { _playbackToken = newValue } }
+        tokenLock.withLock { _playbackToken }
+    }
+    @discardableResult
+    private func bumpToken() -> UInt64 {
+        tokenLock.withLock { _bumpToken(); return _playbackToken }
     }
     private var isScheduled = false
     private var configChangeObserver: NSObjectProtocol?
@@ -137,7 +140,7 @@ final class AudioEngineNext {
             currentURL = url
             scheduledStartFrame = 0
             pausedFrameOffset = 0
-            playbackToken &+= 1
+            bumpToken()
             scheduleFrom(frame: 0, token: playbackToken)
             emitProgress(currentFrame: 0)
 
@@ -167,7 +170,7 @@ final class AudioEngineNext {
         }
 
         if !hasScheduledAudio {
-            playbackToken &+= 1
+            bumpToken()
             scheduleFrom(frame: pausedFrameOffset, token: playbackToken)
         }
 
@@ -191,14 +194,16 @@ final class AudioEngineNext {
         isUserPlaying = false
         // Ensure any stuck hold-seek rate override is cleared before stopping.
         stopHoldSeek()
-        playbackToken &+= 1             // cancels pending scheduling (checked in schedulePCMChunk)
+        bumpToken()             // cancels pending scheduling (checked in schedulePCMChunk)
         playerNode.stop()               // flush queued buffers; completions use .async so no deadlock risk
         // Timer must be invalidated on the thread it was installed on (RunLoop.main).
+        // Use async (not sync) — stop() may be called from Task.detached (Split Mode deactivate)
+        // and sync to main while main awaits the task is a deadlock.
         if Thread.isMainThread {
             progressTimer?.invalidate()
             progressTimer = nil
         } else {
-            DispatchQueue.main.sync {
+            DispatchQueue.main.async {
                 self.progressTimer?.invalidate()
                 self.progressTimer = nil
             }
@@ -229,7 +234,7 @@ final class AudioEngineNext {
         let shouldResume = autoplay ?? playerNode.isPlaying
 
         progressTimer?.invalidate()
-        playbackToken &+= 1             // cancels pending scheduling (checked in schedulePCMChunk)
+        bumpToken()             // cancels pending scheduling (checked in schedulePCMChunk)
         playerNode.stop()               // flush queued buffers
 
         scheduledStartFrame = targetFrame
@@ -472,9 +477,8 @@ final class AudioEngineNext {
         progressTimer?.invalidate()
         progressTimer = nil
         isScheduled = false
-        playbackToken &+= 1              // cancels pending scheduling (checked in schedulePCMChunk)
+        let token = bumpToken()          // cancels pending scheduling (checked in schedulePCMChunk)
         playerNode.stop()                // flush queued buffers
-        let token = playbackToken
 
         ensureEngineRunning()
 
