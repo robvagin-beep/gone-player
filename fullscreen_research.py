@@ -153,10 +153,7 @@ def main() -> None:
     message = client.messages.create(
         model="claude-opus-4-7",
         max_tokens=16000,
-        thinking={
-            "type": "enabled",
-            "budget_tokens": 10000,
-        },
+        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": RESEARCH_PROMPT}],
     )
