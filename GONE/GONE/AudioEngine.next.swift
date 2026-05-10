@@ -49,7 +49,7 @@ final class AudioEngineNext {
     }
     @discardableResult
     private func bumpToken() -> UInt64 {
-        tokenLock.withLock { _bumpToken(); return _playbackToken }
+        tokenLock.withLock { _playbackToken &+= 1; return _playbackToken }
     }
     private var isScheduled = false
     private var configChangeObserver: NSObjectProtocol?
