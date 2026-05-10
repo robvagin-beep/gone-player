@@ -286,7 +286,7 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `CrossfaderGapWindow` double-close observer cleanup: idempotent by design — both `close()` and `deinit` remove observers safely
 - `ClonePlayerShell.resizeWindow` vs snap: clone window is never snap-managed — no conflict possible
 - `ClonePlayerShell.resizeWindow` screen bounds: clamps both bottom (`>= vis.minY`) AND top (`<= vis.maxY - height`)
-- `ScrollWheelNSView` momentum: `guard event.momentumPhase == .stationary` blocks trackpad inertia ✓
+- `ScrollWheelNSView` momentum: `guard event.momentumPhase == .stationary` blocks trackpad inertia ✓. Regular mouse wheel and Magic Mouse wheel events arrive with `momentumPhase = .stationary` and ARE captured. The guard only drops trackpad inertia (post-lift coasting) — active scroll phases are correctly handled.
 - `ScrollWheelNSView hasPreciseScrollingDeltas` mouse scaling: trackpad gives pixel-scale continuous deltas (large); mouse wheel gives ~1.0 per notch. Non-precise (mouse) events are boosted ×10 so ~30 notches spans full crossfader range. Intentional direction.
 - `EmptyOverlayView` in clone: gated with `state.audioEngine !== AudioEngineNext.secondary`
 - `BandHitTestView.hitTest` pass-through: root content view returning `nil` causes AppKit to route event to window below ✓
@@ -300,14 +300,17 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `Task.sleep(nanoseconds:)` deprecation: acknowledged tech debt in CLAUDE.md — out of scope for this PR
 - `ArtworkCache.writeToDisk`: runs on `.utility` background queue, uses `.atomic` write option ✓
 - `ArtworkCache.store` double-write race: two concurrent calls for same UUID may both pass the `fileExists` guard and both dispatch writes. `.atomic` makes the result safe; redundant work is acceptable for a cache.
-- `ArtworkCache.image(for:)` synchronous disk read: caller (`TrackHeaderView`) already dispatches to `DispatchQueue.global(qos: .userInitiated)` before calling. Not called from view body directly — no main-thread hitch.
+- `ArtworkCache.image(for:)` synchronous disk read: caller (`TrackHeaderView`) already dispatches to `DispatchQueue.global(qos: .userInitiated)` before calling. Not called from view body directly — no main-thread hitch. `dispatchPrecondition(condition: .notOnQueue(.main))` added as debug guard ✓
 - `FullPlayerView` `transaction { animation = nil }`: disables animations on the base ZStack intentionally — opacity/height changes on track load must not animate to avoid visual glitches during drop.
-- `AudioEngineNext.deinit` tap/FFT ordering: singletons never deinit; `secondary` only deinits on termination. Theoretical ordering concern, not a practical risk.
+- `AudioEngineNext.deinit` tap/FFT ordering AND thread safety: `AudioEngineNext.shared` and `AudioEngineNext.secondary` are static stored properties with application lifetime — Swift statics are never released before process exit, so `deinit` NEVER runs in practice. All `deinit` code (timer capture, `removeTap`, `vDSP_destroy_fftsetup`) is defensive dead code for compiler completeness. Do NOT flag anything in `AudioEngineNext.deinit`.
 - `ClonePlayerShell.resizeWindow` animation: uses `setFrame(animate: true)` — smooth resize matching primary window feel ✓
-- `EmptyOverlayView.startTypewriter` `Task.sleep(nanoseconds:)`: project-wide tech debt, acknowledged in CLAUDE.md — out of scope for this PR
+- `ClonePlayerShell.contentSize` logic duplication: intentionally mirrors `RootView.playerContentSize` — clone and primary windows have different resize drivers; a shared helper would couple unrelated subsystems.
+- `EmptyOverlayView.startTypewriter` `Task.sleep(nanoseconds:)`: project-wide tech debt, acknowledged in CLAUDE.md — out of scope for this PR. Timing literals extracted to named constants (`charDelayNs`, `holdDelayNs`, `eraseDelayNs`, `gapDelayNs`) ✓
 - `ArtworkCache.prune` frequency: runs once at launch; 30-day expiry on 256px JPEGs. Growth is negligible — periodic pruning is out of scope.
-- `BandHitTestView.hitRadius` vs plaque dimensions: 60px is intentionally generous for usability; not coupled to visual plaque size by design.
-- `CrossfaderBridgeView` edge threshold `> 10`: 4 occurrences across Canvas and drag gesture — shared by design, named constant would be premature abstraction for a single-file component.
+- `BandHitTestView.hitRadius` vs plaque dimensions: 60px is intentionally generous for usability; not coupled to visual plaque size by design. `pad = 60` in `CrossfaderGapWindow` serves a different purpose (bounding box expansion) and is coincidentally the same value.
+- `CrossfaderBridgeView` edge threshold `> 10`: 4 occurrences across Canvas and drag gesture — intentionally co-located, named constant would be premature abstraction for a single-file component.
+- `CrossfaderBridgeView` Canvas magic numbers (`barHW`, `ext`, `tHL`, `tHW`, `cornerR`): geometry constants local to the Canvas closure — no duplication elsewhere, extracting to file-scope adds no real value.
+- `AudioEngineNext.tokenLock` vs `OSAllocatedUnfairLock`: `NSLock` is correct and clear; lock is NOT on the hot render path (it guards scheduling, not buffer decode). Not a performance concern.
 
 ### CI / Tooling
 - `model="claude-opus-4-7"` in `claude_review.py`: this model ID is valid and the workflow runs successfully — do not flag as invalid

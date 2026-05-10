@@ -21,6 +21,7 @@ final class ArtworkCache: @unchecked Sendable {
     }
 
     func image(for id: UUID) -> NSImage? {
+        dispatchPrecondition(condition: .notOnQueue(.main))
         let key = id.uuidString as NSString
         if let img = cache.object(forKey: key) { return img }
         let url = dir.appendingPathComponent(id.uuidString + ".jpg")
