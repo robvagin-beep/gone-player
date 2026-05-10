@@ -154,6 +154,8 @@ final class CrossfaderGapWindow: NSPanel {
 private final class ScrollWheelNSView: NSView {
     var onScroll: (CGFloat) -> Void = { _ in }
     override func scrollWheel(with event: NSEvent) {
+        // Ignore trackpad momentum phase — prevents crossfader drifting after finger lift
+        guard event.momentumPhase == .stationary else { return }
         // Combine both axes — user can scroll in any direction to move the crossfader.
         // Horizontal takes priority; if both are equal use vertical.
         let dx = event.scrollingDeltaX

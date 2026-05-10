@@ -39,8 +39,8 @@ struct FullPlayerView: View {
                     }
                 }
 
-                // Typewriter overlay — floats over ghost player when empty
-                if state.tracks.isEmpty {
+                // Typewriter overlay — primary player only (clone has no import UX)
+                if state.tracks.isEmpty && state.audioEngine !== AudioEngineNext.secondary {
                     EmptyOverlayView()
                 }
             }
