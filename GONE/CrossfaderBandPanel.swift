@@ -159,8 +159,9 @@ private final class ScrollWheelNSView: NSView {
         let dx = event.scrollingDeltaX
         let dy = event.scrollingDeltaY
         let delta = abs(dx) >= abs(dy) ? dx : -dy   // right/up = positive (toward B)
-        // Non-trackpad mice deliver ~10× larger per-tick deltas — scale down to match trackpad feel
-        let adjusted = event.hasPreciseScrollingDeltas ? delta : delta * 0.1
+        // Trackpad gives continuous pixel-scale deltas (large); mouse wheel gives ~1.0 per detent.
+        // Boost mouse detents so a reasonable number of notches (~30) spans the full crossfader range.
+        let adjusted = event.hasPreciseScrollingDeltas ? delta : delta * 10.0
         onScroll(adjusted)
     }
 }

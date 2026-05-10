@@ -265,7 +265,7 @@ GONE/GONE/
 These items have been explicitly fixed or are intentional design decisions. Flagging them wastes review budget.
 
 ### Threading / Timers
-- `playbackToken` / `bumpToken()`: NSLock-protected, atomic `&+=`, correct usage — no race
+- `playbackToken` / `bumpToken()`: NSLock-protected, atomic `&+=`, no race. `token` is a `UInt64` value-type parameter passed into `schedulePCMChunk` and captured by value in closures — read ONCE at call site, compared (not re-read) against `self.playbackToken` at checkpoints. Pattern is correct token-based cancellation; multiple `guard token == playbackToken` reads are safe because `token` (local) never changes.
 - `progressTimer` capture: `let t = progressTimer; progressTimer = nil` before dispatch — intentional deadlock prevention (async, not sync)
 - `stopHoldSeek()` off-main: has identical main-thread dispatch guard as `progressTimer`
 - `holdSeekTimer` in `deinit`: captured and dispatched to main in deinit, same pattern as progressTimer
@@ -287,16 +287,21 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `ClonePlayerShell.resizeWindow` vs snap: clone window is never snap-managed — no conflict possible
 - `ClonePlayerShell.resizeWindow` screen bounds: clamps both bottom (`>= vis.minY`) AND top (`<= vis.maxY - height`)
 - `ScrollWheelNSView` momentum: `guard event.momentumPhase == .stationary` blocks trackpad inertia ✓
+- `ScrollWheelNSView hasPreciseScrollingDeltas` mouse scaling: trackpad gives pixel-scale continuous deltas (large); mouse wheel gives ~1.0 per notch. Non-precise (mouse) events are boosted ×10 so ~30 notches spans full crossfader range. Intentional direction.
 - `EmptyOverlayView` in clone: gated with `state.audioEngine !== AudioEngineNext.secondary`
 - `BandHitTestView.hitTest` pass-through: root content view returning `nil` causes AppKit to route event to window below ✓
 - `BandHitTestView.hitRadius`: `let`, value 60px — matches spec
 - `BandHitTestView` segment guard: uses `distance² > 16` (not exact equality) to handle pre-geometry and coincident-window states
+- `CrossfaderGapWindow` degenerate overlap: when windows are co-located, panel shrinks to 120×120; `CrossfaderBridgeView` Canvas has `guard len > 4 else { return }` → draws nothing, panel is invisible and non-interactive. Not a bug.
 
 ### SwiftUI / Views
 - `EmptyOverlayView.startTypewriter`: `animTask?.cancel()` called at top of method before creating new task ✓
 - `EQCurveView.animateTo` Task churn: pre-existing, acknowledged tech debt — out of scope
 - `Task.sleep(nanoseconds:)` deprecation: acknowledged tech debt in CLAUDE.md — out of scope for this PR
 - `ArtworkCache.writeToDisk`: runs on `.utility` background queue, uses `.atomic` write option ✓
+- `ArtworkCache.store` double-write race: two concurrent calls for same UUID may both pass the `fileExists` guard and both dispatch writes. `.atomic` makes the result safe; redundant work is acceptable for a cache.
+- `FullPlayerView` `transaction { animation = nil }`: disables animations on the base ZStack intentionally — opacity/height changes on track load must not animate to avoid visual glitches during drop.
+- `AudioEngineNext.deinit` tap/FFT ordering: singletons never deinit; `secondary` only deinits on termination. Theoretical ordering concern, not a practical risk.
 
 ### CI / Tooling
 - `model="claude-opus-4-7"` in `claude_review.py`: this model ID is valid and the workflow runs successfully — do not flag as invalid
