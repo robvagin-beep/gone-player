@@ -7,13 +7,15 @@ struct TrackHeaderView: View {
 
     @State private var isBPMHovered = false
     @State private var feedCurrentTime: Double = 0
+    @State private var timeLabelCache: String = "00:00 / 00:00"
+    @State private var trackIndexCache: Int = 0
 
     var body: some View {
         let track = state.current
 
         HStack(alignment: .top, spacing: 10) {
             // Art swatch — deliberately excluded from gradient map
-            ArtSwatchView(index: trackIndex, size: 48, cornerRadius: 7,
+            ArtSwatchView(index: trackIndexCache, size: 48, cornerRadius: 7,
                           artworkData: state.current?.artworkData,
                           trackId: state.current?.id,
                           showsBrandPlaceholder: track == nil)
@@ -98,7 +100,7 @@ struct TrackHeaderView: View {
                     .frame(width: 96, height: 34)
                     .goneTooltip("Frequency energy of the audio as it plays. Display only — not an EQ")
 
-                Text(timeLabel)
+                Text(timeLabelCache)
                     .font(G.mono(8, weight: .semibold))
                     .foregroundStyle(G.textSecondary)
                     .monospacedDigit()
@@ -115,7 +117,19 @@ struct TrackHeaderView: View {
         .padding(.bottom, 0)
         .animation(.easeInOut(duration: 0.2), value: state.pitch)
         .animation(.easeInOut(duration: 0.2), value: state.pitchBypassed)
-        .onReceive(state.progressFeed.$currentTime) { feedCurrentTime = $0 }
+        .onReceive(state.progressFeed.$currentTime) { t in
+            feedCurrentTime = t
+            updateTimeLabel(currentTime: t)
+        }
+        .onChange(of: state.pitch)     { _ in updateTimeLabel(currentTime: feedCurrentTime) }
+        .onChange(of: state.currentId) { _ in
+            trackIndexCache = state.tracks.firstIndex(where: { $0.id == state.currentId }) ?? 0
+            updateTimeLabel(currentTime: feedCurrentTime)
+        }
+        .onAppear {
+            trackIndexCache = state.tracks.firstIndex(where: { $0.id == state.currentId }) ?? 0
+            updateTimeLabel(currentTime: feedCurrentTime)
+        }
     }
 
     private var subtitleText: String {
@@ -130,20 +144,16 @@ struct TrackHeaderView: View {
         }
     }
 
-    private var trackIndex: Int {
-        state.tracks.firstIndex(where: { $0.id == state.currentId }) ?? 0
-    }
-
     private var pitchLabel: String {
         let p = state.pitch
         if p == 0 { return "±0.0%" }
         return String(format: "%+.1f%%", p)
     }
 
-    private var timeLabel: String {
-        guard let t = state.current else { return "00:00 / 00:00" }
+    private func updateTimeLabel(currentTime: Double) {
+        guard let t = state.current else { timeLabelCache = "00:00 / 00:00"; return }
         let speed = 1.0 + state.pitch / 100.0
-        return "\(fmtTime(feedCurrentTime / speed)) / \(fmtTime(t.duration / speed))"
+        timeLabelCache = "\(fmtTime(currentTime / speed)) / \(fmtTime(t.duration / speed))"
     }
 }
 
