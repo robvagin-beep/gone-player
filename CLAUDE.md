@@ -300,8 +300,14 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `Task.sleep(nanoseconds:)` deprecation: acknowledged tech debt in CLAUDE.md — out of scope for this PR
 - `ArtworkCache.writeToDisk`: runs on `.utility` background queue, uses `.atomic` write option ✓
 - `ArtworkCache.store` double-write race: two concurrent calls for same UUID may both pass the `fileExists` guard and both dispatch writes. `.atomic` makes the result safe; redundant work is acceptable for a cache.
+- `ArtworkCache.image(for:)` synchronous disk read: caller (`TrackHeaderView`) already dispatches to `DispatchQueue.global(qos: .userInitiated)` before calling. Not called from view body directly — no main-thread hitch.
 - `FullPlayerView` `transaction { animation = nil }`: disables animations on the base ZStack intentionally — opacity/height changes on track load must not animate to avoid visual glitches during drop.
 - `AudioEngineNext.deinit` tap/FFT ordering: singletons never deinit; `secondary` only deinits on termination. Theoretical ordering concern, not a practical risk.
+- `ClonePlayerShell.resizeWindow` animation: uses `setFrame(animate: true)` — smooth resize matching primary window feel ✓
+- `EmptyOverlayView.startTypewriter` `Task.sleep(nanoseconds:)`: project-wide tech debt, acknowledged in CLAUDE.md — out of scope for this PR
+- `ArtworkCache.prune` frequency: runs once at launch; 30-day expiry on 256px JPEGs. Growth is negligible — periodic pruning is out of scope.
+- `BandHitTestView.hitRadius` vs plaque dimensions: 60px is intentionally generous for usability; not coupled to visual plaque size by design.
+- `CrossfaderBridgeView` edge threshold `> 10`: 4 occurrences across Canvas and drag gesture — shared by design, named constant would be premature abstraction for a single-file component.
 
 ### CI / Tooling
 - `model="claude-opus-4-7"` in `claude_review.py`: this model ID is valid and the workflow runs successfully — do not flag as invalid

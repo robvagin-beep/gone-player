@@ -119,7 +119,7 @@ struct ClonePlayerShell: View {
             let vis = screen.visibleFrame
             f.origin.y = max(vis.minY, min(vis.maxY - f.size.height, f.origin.y))
         }
-        w.setFrame(f, display: true)
+        w.setFrame(f, display: true, animate: true)
     }
 }
 
