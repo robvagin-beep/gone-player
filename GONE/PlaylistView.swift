@@ -277,21 +277,11 @@ struct PlaylistTracksPane: View {
         }
     }
 
-    private var footerLabel: String {
-        let nonMissing = visibleTracks.filter { !$0.isMissing }
-        let totalDuration = nonMissing.reduce(0) { $0 + $1.duration }
-        let missing = visibleTracks.filter(\.isMissing).count
-        let h = Int(totalDuration) / 3600
-        let m = (Int(totalDuration) % 3600) / 60
-        let time = h > 0 ? "\(h)h \(m)m" : "\(m)m"
-        if missing > 0 { return "\(nonMissing.count) tracks · \(time) · \(missing) missing" }
-        return "\(nonMissing.count) tracks · \(time)"
-    }
-
     private var summaryTextAlignment: Alignment {
         summaryAlignment == .trailing ? .trailing : .leading
     }
 
+    @State private var footerLabelCache: String = ""
     @State private var scrollerOffset: CGFloat = 0
     @State private var scrollOffset: CGFloat = 0
     @State private var contentHeight: CGFloat = 0
@@ -646,7 +636,7 @@ struct PlaylistTracksPane: View {
                     .allowsHitTesting(false)
 
                     HStack(alignment: .center, spacing: 0) {
-                        Text(footerLabel)
+                        Text(footerLabelCache)
                             .font(G.mono(10))
                             .foregroundStyle(Color.white.opacity(0.30))
                             .frame(maxWidth: .infinity, alignment: summaryTextAlignment)
@@ -770,6 +760,24 @@ struct PlaylistTracksPane: View {
         .onChange(of: selectionAnchorId) { newId in
             cursor.anchorId = newId
         }
+        .onChange(of: state.tracks)           { _ in updateFooterLabel() }
+        .onChange(of: state.hideMissingTracks) { _ in updateFooterLabel() }
+        .onAppear { updateFooterLabel() }
+    }
+
+    private func updateFooterLabel() {
+        let visible = state.hideMissingTracks
+            ? state.sortedTracks(forPlaylistTabId: tabId).filter { !$0.isMissing }
+            : state.sortedTracks(forPlaylistTabId: tabId)
+        let nonMissing = visible.filter { !$0.isMissing }
+        let totalDuration = nonMissing.reduce(0.0) { $0 + $1.duration }
+        let missing = visible.filter(\.isMissing).count
+        let h = Int(totalDuration) / 3600
+        let m = (Int(totalDuration) % 3600) / 60
+        let time = h > 0 ? "\(h)h \(m)m" : "\(m)m"
+        footerLabelCache = missing > 0
+            ? "\(nonMissing.count) tracks · \(time) · \(missing) missing"
+            : "\(nonMissing.count) tracks · \(time)"
     }
 }
 
