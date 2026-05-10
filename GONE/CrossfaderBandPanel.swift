@@ -150,12 +150,39 @@ final class CrossfaderGapWindow: NSPanel {
     }
 }
 
+// ── Scroll wheel capture — transparent NSView forwarding deltas to a closure ──
+private final class ScrollWheelNSView: NSView {
+    var onScroll: (CGFloat) -> Void = { _ in }
+    override func scrollWheel(with event: NSEvent) {
+        // Combine both axes — user can scroll in any direction to move the crossfader.
+        // Horizontal takes priority; if both are equal use vertical.
+        let dx = event.scrollingDeltaX
+        let dy = event.scrollingDeltaY
+        let delta = abs(dx) >= abs(dy) ? dx : -dy   // right/up = positive (toward B)
+        onScroll(delta)
+    }
+}
+
+private struct ScrollWheelHandler: NSViewRepresentable {
+    let onScroll: (CGFloat) -> Void
+    func makeNSView(context: Context) -> ScrollWheelNSView {
+        let v = ScrollWheelNSView()
+        v.onScroll = onScroll
+        return v
+    }
+    func updateNSView(_ nsView: ScrollWheelNSView, context: Context) {
+        nsView.onScroll = onScroll
+    }
+}
+
 // ── CrossfaderBridgeView — draws tilted flat plaque at any angle ──────────────
 struct CrossfaderBridgeView: View {
     @ObservedObject var manager: SplitModeManager
     weak var panel: CrossfaderGapWindow?
 
     @State private var isDragging = false
+
+    private let scrollSensitivity: Double = 0.003  // crossfade units per scroll delta point
 
     var body: some View {
         GeometryReader { _ in
@@ -256,6 +283,11 @@ struct CrossfaderBridgeView: View {
                          at: CGPoint(x: cB.x + nx*lo, y: cB.y + ny*lo))
             }
             .contentShape(Rectangle())
+            .background(
+                ScrollWheelHandler { delta in
+                    manager.setCrossfade(manager.crossfade + Double(delta) * scrollSensitivity)
+                }
+            )
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { val in
@@ -270,7 +302,6 @@ struct CrossfaderBridgeView: View {
                         let dx = cB.x - cA.x, dy = cB.y - cA.y
                         let len2 = dx*dx + dy*dy
                         guard len2 > 1 else { return }
-                        // Edge-to-edge active zone (same calc as Canvas)
                         let aDX = abs(fB.midX - fA.midX), aDY = abs(fB.midY - fA.midY)
                         let tA: CGFloat
                         let tB: CGFloat

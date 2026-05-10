@@ -294,43 +294,31 @@ final class AudioEngineNext {
     private var holdSeekStep: Int = 0  // counts ticks for forward ramp-up
 
     // Called when the user holds a transport arrow.
-    // Forward: immediately +3% above current rate, escalates to +5% after 3s held. No ramp.
-    // Backward: periodic seek-back at ~5× reverse (0.15s tick × 0.75s step).
+    // Forward: immediate +3% speed, escalates to +5% after 3s held.
+    // Backward: immediate -3% speed (slow-down), escalates to -5% after 3s held.
+    // Both use speed manipulation — no position seeking, no ramp.
     func startHoldSeek(forward: Bool) {
         stopHoldSeek()
         holdSeekStep = 0
-        if forward {
-            let baseRate = currentRate          // user's current pitch/tempo setting
-            pitchNode.bypass = true
-            pitchNode.rate = 1.0
-            pitchNode.pitch = 0
-            speedNode.rate = Float(baseRate * 1.03)   // immediate +3%
-            let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.holdSeekStep += 1
-                    if self.holdSeekStep > 250 { self.stopHoldSeek(); return }  // 20s safety cutoff
-                    if self.holdSeekStep == 20 {   // ~3s held → escalate to +5%
-                        self.speedNode.rate = Float(baseRate * 1.05)
-                    }
+        let baseRate = currentRate          // user's current pitch/tempo setting
+        pitchNode.bypass = true
+        pitchNode.rate = 1.0
+        pitchNode.pitch = 0
+        let initialRate = forward ? baseRate * 1.03 : baseRate * 0.97
+        speedNode.rate = Float(max(0.1, initialRate))
+        let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.holdSeekStep += 1
+                if self.holdSeekStep > 250 { self.stopHoldSeek(); return }  // 20s safety cutoff
+                if self.holdSeekStep == 20 {   // ~3s held → escalate
+                    let escalated = forward ? baseRate * 1.05 : baseRate * 0.95
+                    self.speedNode.rate = Float(max(0.1, escalated))
                 }
             }
-            RunLoop.main.add(t, forMode: .common)
-            holdSeekTimer = t
-        } else {
-            let dur = durationSeconds
-            guard dur > 0 else { return }
-            let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    let snap = self.snapshot()
-                    let newTime = max(0, snap.currentTime - 0.75)
-                    self.seek(ratio: newTime / dur, autoplay: snap.isPlaying)
-                }
-            }
-            RunLoop.main.add(t, forMode: .common)
-            holdSeekTimer = t
         }
+        RunLoop.main.add(t, forMode: .common)
+        holdSeekTimer = t
     }
 
     // Safe to call at any time — also called from stop() which may run off main.
