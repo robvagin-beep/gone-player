@@ -849,29 +849,36 @@ final class LibraryScanner {
         return onset
     }
 
-    // Scans 64 phase candidates in [0, beatDuration) and picks the offset where
+    // Scans 256 phase candidates in [0, beatDuration) and picks the offset where
     // predicted beat positions land on the strongest onset peaks.
-    // Sub-frame refinement via parabolic interpolation, confidence via z-score.
-    // Logic mirrors Pioneer/Traktor: first real beat = bestOffset, not 0.
+    // Sub-frame refinement via parabolic interpolation with circular boundary wrap.
+    // Confidence via z-score: threshold 0.60 (z ≈ 3) to avoid accepting noise.
+    // Logic mirrors Pioneer/Traktor: bestOffset is the phase in [0, beatDur).
     private func estimateBeatGridOffset(bpm: Double, onset: [Float], fps: Double) -> (offset: Double, confidence: Double) {
         guard bpm > 0, onset.count > 0 else { return (0, 0) }
 
-        let beatFrames   = fps * 60.0 / bpm          // frames per beat (fractional)
-        let candidateN   = 64
-        var scores       = [Double](repeating: 0, count: candidateN)
+        let beatFrames = fps * 60.0 / bpm           // frames per beat (fractional)
+        let candidateN = 256
+        var scores     = [Double](repeating: 0, count: candidateN)
 
         // Score each candidate offset by summing onset energy at predicted beat positions.
-        // Use a Hann window (±1 frame) around each predicted beat to tolerate slight jitter.
+        // Hann window ±2 frames to tolerate BPM-rounding drift over long tracks.
+        // Weights: [0.25, 0.5, 1.0, 0.5, 0.25]
         for ci in 0..<candidateN {
-            let offsetFrac = Double(ci) / Double(candidateN)  // fraction of one beat
+            let offsetFrac = Double(ci) / Double(candidateN)
             var score: Double = 0
             var beatPos = offsetFrac * beatFrames
             while beatPos < Double(onset.count) {
                 let center = Int(beatPos.rounded())
-                for delta in -1...1 {
+                for delta in -2...2 {
                     let idx = center + delta
                     guard idx >= 0, idx < onset.count else { continue }
-                    let weight = delta == 0 ? 1.0 : 0.5
+                    let weight: Double
+                    switch abs(delta) {
+                    case 0: weight = 1.00
+                    case 1: weight = 0.50
+                    default: weight = 0.25
+                    }
                     score += Double(onset[idx]) * weight
                 }
                 beatPos += beatFrames
@@ -886,24 +893,30 @@ final class LibraryScanner {
             if scores[i] > bestScore { bestScore = scores[i]; bestCI = i }
         }
 
-        // Parabolic sub-sample interpolation for sub-frame precision
+        // Parabolic sub-sample interpolation — circular wrap at phase boundaries.
+        // Without wrap, bestCI=0 uses scores[255] as prev; fractionalShift can produce
+        // refinedCI < 0, which must wrap back to [0, candidateN) not be clamped to 0.
         let prev = scores[(bestCI - 1 + candidateN) % candidateN]
         let next = scores[(bestCI + 1) % candidateN]
         let denom = 2.0 * (2.0 * bestScore - prev - next)
         let fractionalShift = denom > 0 ? (prev - next) / denom : 0.0
-        let refinedCI = Double(bestCI) + fractionalShift
+        var refinedCI = Double(bestCI) + fractionalShift
+        if refinedCI < 0 { refinedCI += Double(candidateN) }
+        if refinedCI >= Double(candidateN) { refinedCI -= Double(candidateN) }
 
         let bestOffset = refinedCI / Double(candidateN) * (60.0 / bpm)
 
-        // Z-score confidence: how many σ above the mean is the best score?
-        let mean   = scores.reduce(0, +) / Double(candidateN)
+        // Z-score confidence. Threshold of 0.60 corresponds to z ≈ 3σ above the mean —
+        // rejects noise (which produces z ≈ 1.5–2.5 by extreme-value statistics for 256 candidates)
+        // while accepting clean 4/4 kick tracks (z ≈ 6–12).
+        let mean     = scores.reduce(0, +) / Double(candidateN)
         let variance = scores.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(candidateN)
-        let sigma  = variance > 0 ? variance.squareRoot() : 1.0
-        let zScore = sigma > 0 ? (bestScore - mean) / sigma : 0.0
-        // Map z-score to [0, 1]: z=0 → 0.0, z=2 → 0.5, z=4 → ~0.86 (asymptotic)
+        let sigma    = variance > 0 ? variance.squareRoot() : 1.0
+        let zScore   = sigma > 0 ? (bestScore - mean) / sigma : 0.0
+        // Map z to [0, 1): z=3 → 0.60, z=6 → 0.75, z=12 → 0.86
         let confidence = 1.0 - 1.0 / (1.0 + max(0, zScore) * 0.5)
 
-        return (max(0, bestOffset), min(1, confidence))
+        return (bestOffset, confidence)
     }
 
     // Deep BPM re-analysis — called on explicit user request (refresh button).

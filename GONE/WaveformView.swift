@@ -63,7 +63,7 @@ struct ProgressRuler: View {
 
     private static let animDuration: Double = 0.38
     private static let gridTransitionDuration: Double = 0.25
-    private static let confidenceThreshold: Double = 0.30
+    private static let confidenceThreshold: Double = 0.60
 
     private var displayProgress: Double { dragRatio ?? progress }
     private var hasBeatGrid: Bool { bpm > 0 && duration > 0 && meterBeatsPerBar > 0 }

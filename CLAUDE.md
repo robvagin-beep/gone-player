@@ -345,3 +345,10 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `installActivityMonitor` churn during Settings open — `scheduleInactivityDock` early-return is the gate; acceptable.
 - PeekPanel inherits parent window level/Space — not a separate panel.
 - `Track.artworkData: Data?` — field has been REMOVED; only `hasArtwork: Bool` remains. Do NOT flag array-copy concerns.
+
+### Beat Grid / Phase Detection (2026-05-11)
+- `Track.beatGridOffset` is in `[0, beatDuration)` — intentionally the *phase* offset, not an absolute first-beat timestamp. Downbeat anchoring (finding beat #1 across multi-bar intro silence) is a future improvement; not in scope.
+- `AnalysisCache` does not persist `beatGridOffset`/`beatGridConfidence` — intentional design decision (no cache schema bump). On cache hit, fallback grid is shown; phase is re-detected only on full decode pass (first session play). Acceptable for a pre-session tool.
+- `estimateBeatGridOffset` uses energy onset (half-wave rectified differential), not spectral flux. This is adequate for percussive 4/4 material. Sidechained house may produce off-beat phase (onset lands on sidechain release, not kick). Sub-band spectral flux is a future improvement; not in scope v1.
+- `analyzeBPMDeep` does not compute beat-grid offset — deep re-analysis is user-triggered and only updates BPM. Intentional; beat-grid analysis is part of the first-load pipeline only.
+- `barPath` stroked unconditionally even when empty — empty `Path()` stroke is a no-op in SwiftUI Canvas; no visual or performance impact. Do NOT flag.
