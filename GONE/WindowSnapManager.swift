@@ -200,7 +200,7 @@ final class WindowSnapManager {
                 self.lockFrame(window: window, x: snapX)
                 self.playerState?.isSnapping = false
                 window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                                             .fullScreenDisallowsTiling, .transient, .ignoresCycle]
+                                             .fullScreenDisallowsTiling, .transient, .stationary, .ignoresCycle]
             }
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 80_000_000)
@@ -295,7 +295,7 @@ final class WindowSnapManager {
             self.lockFrame(window: window, x: snapX)
             self.playerState?.isSnapping = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                                         .fullScreenDisallowsTiling, .transient, .ignoresCycle]
+                                         .fullScreenDisallowsTiling, .transient, .stationary, .ignoresCycle]
         }
     }
 
