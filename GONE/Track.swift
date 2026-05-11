@@ -24,6 +24,8 @@ struct Track: Identifiable, Equatable {
     var waveform: [Float]         // 84 bars, computed async
     var isMissing: Bool           // file not found at url
     var bpmAnalysisState: BPMAnalysisState
+    var beatGridOffset: Double = 0      // seconds; 0 = fallback (phase not yet detected)
+    var beatGridConfidence: Double = 0  // 0 = no analysis, 1 = high confidence
 
     static func == (lhs: Track, rhs: Track) -> Bool { lhs.id == rhs.id }
 }

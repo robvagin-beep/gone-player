@@ -539,11 +539,11 @@ final class LibraryScanner {
     // Eliminates the second AVAssetReader open that computeWaveform would otherwise require.
     func analyzeBPMWithWaveform(url: URL, floor: Double = 60, ceiling: Double = 200,
                                 waveformBars: Int = 84,
-                                onProgress: ((Double) -> Void)? = nil) async -> (bpm: Double, waveform: [Float]) {
+                                onProgress: ((Double) -> Void)? = nil) async -> (bpm: Double, waveform: [Float], beatGridOffset: Double, gridConfidence: Double) {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         let asset = AVURLAsset(url: url)
-        guard let assetTrack = try? await asset.loadTracks(withMediaType: .audio).first else { return (0, []) }
+        guard let assetTrack = try? await asset.loadTracks(withMediaType: .audio).first else { return (0, [], 0, 0) }
 
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -556,7 +556,7 @@ final class LibraryScanner {
         ]
 
         let totalSec = CMTimeGetSeconds((try? await asset.load(.duration)) ?? .zero)
-        guard let reader = try? AVAssetReader(asset: asset) else { return (0, []) }
+        guard let reader = try? AVAssetReader(asset: asset) else { return (0, [], 0, 0) }
         let output = AVAssetReaderTrackOutput(track: assetTrack, outputSettings: settings)
         output.alwaysCopiesSampleData = false
         reader.add(output)
@@ -590,7 +590,7 @@ final class LibraryScanner {
             }
         }
         reader.cancelReading()
-        guard allSamples.count > 11025 else { return (0, []) }
+        guard allSamples.count > 11025 else { return (0, [], 0, 0) }
 
         let effectiveSec = totalSec > 0 ? totalSec : Double(allSamples.count) / decodedSR
         let waveform = computeWaveformFromSamples(allSamples, totalSec: effectiveSec, bars: waveformBars)
@@ -600,10 +600,18 @@ final class LibraryScanner {
         let startIdx  = Int(startSec * decodedSR)
         let endIdx    = min(allSamples.count, startIdx + Int(windowSec * decodedSR))
         let bpmSlice  = startIdx < endIdx ? Array(allSamples[startIdx..<endIdx]) : allSamples
-        let bpm       = computeBPMFromSamples(bpmSlice, floor: floor, ceiling: ceiling)
+        let bpm = computeBPMFromSamples(bpmSlice, floor: floor, ceiling: ceiling)
+
+        var beatGridOffset: Double = 0
+        var gridConfidence: Double = 0
+        if bpm > 0 {
+            let onset = computeOnset(from: allSamples, hopSize: 128)
+            let fps   = 11025.0 / 128.0
+            (beatGridOffset, gridConfidence) = estimateBeatGridOffset(bpm: bpm, onset: onset, fps: fps)
+        }
 
         onProgress?(1.0)
-        return (bpm, waveform)
+        return (bpm, waveform, beatGridOffset, gridConfidence)
     }
 
     private func computeBPMFromSamples(_ samples: [Float], floor: Double, ceiling: Double) -> Double {
@@ -817,6 +825,85 @@ final class LibraryScanner {
         while bpm > hi { bpm /= 2 }
         onProgress?(1.0)
         return (bpm * 10).rounded() / 10
+    }
+
+    // ── Beat phase detection helpers ──────────────────────────────────────────
+
+    // Half-wave rectified energy differential — same formula used in BPM autocorrelation.
+    // Extracted here so BPM analysis and phase detection share one computation.
+    private func computeOnset(from samples: [Float], hopSize: Int) -> [Float] {
+        let frameCount = samples.count / hopSize
+        var energy = [Float](repeating: 0, count: frameCount)
+        for i in 0..<frameCount {
+            let start = i * hopSize
+            let end   = min(start + hopSize, samples.count)
+            var rms: Float = 0
+            samples.withUnsafeBufferPointer { buf in
+                guard let base = buf.baseAddress else { return }
+                vDSP_svesq(base.advanced(by: start), 1, &rms, vDSP_Length(end - start))
+            }
+            energy[i] = rms / Float(end - start)
+        }
+        var onset = [Float](repeating: 0, count: frameCount)
+        for i in 1..<frameCount { onset[i] = max(0, energy[i] - energy[i-1]) }
+        return onset
+    }
+
+    // Scans 64 phase candidates in [0, beatDuration) and picks the offset where
+    // predicted beat positions land on the strongest onset peaks.
+    // Sub-frame refinement via parabolic interpolation, confidence via z-score.
+    // Logic mirrors Pioneer/Traktor: first real beat = bestOffset, not 0.
+    private func estimateBeatGridOffset(bpm: Double, onset: [Float], fps: Double) -> (offset: Double, confidence: Double) {
+        guard bpm > 0, onset.count > 0 else { return (0, 0) }
+
+        let beatFrames   = fps * 60.0 / bpm          // frames per beat (fractional)
+        let candidateN   = 64
+        var scores       = [Double](repeating: 0, count: candidateN)
+
+        // Score each candidate offset by summing onset energy at predicted beat positions.
+        // Use a Hann window (±1 frame) around each predicted beat to tolerate slight jitter.
+        for ci in 0..<candidateN {
+            let offsetFrac = Double(ci) / Double(candidateN)  // fraction of one beat
+            var score: Double = 0
+            var beatPos = offsetFrac * beatFrames
+            while beatPos < Double(onset.count) {
+                let center = Int(beatPos.rounded())
+                for delta in -1...1 {
+                    let idx = center + delta
+                    guard idx >= 0, idx < onset.count else { continue }
+                    let weight = delta == 0 ? 1.0 : 0.5
+                    score += Double(onset[idx]) * weight
+                }
+                beatPos += beatFrames
+            }
+            scores[ci] = score
+        }
+
+        // Best candidate
+        var bestCI = 0
+        var bestScore = scores[0]
+        for i in 1..<candidateN {
+            if scores[i] > bestScore { bestScore = scores[i]; bestCI = i }
+        }
+
+        // Parabolic sub-sample interpolation for sub-frame precision
+        let prev = scores[(bestCI - 1 + candidateN) % candidateN]
+        let next = scores[(bestCI + 1) % candidateN]
+        let denom = 2.0 * (2.0 * bestScore - prev - next)
+        let fractionalShift = denom > 0 ? (prev - next) / denom : 0.0
+        let refinedCI = Double(bestCI) + fractionalShift
+
+        let bestOffset = refinedCI / Double(candidateN) * (60.0 / bpm)
+
+        // Z-score confidence: how many σ above the mean is the best score?
+        let mean   = scores.reduce(0, +) / Double(candidateN)
+        let variance = scores.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(candidateN)
+        let sigma  = variance > 0 ? variance.squareRoot() : 1.0
+        let zScore = sigma > 0 ? (bestScore - mean) / sigma : 0.0
+        // Map z-score to [0, 1]: z=0 → 0.0, z=2 → 0.5, z=4 → ~0.86 (asymptotic)
+        let confidence = 1.0 - 1.0 / (1.0 + max(0, zScore) * 0.5)
+
+        return (max(0, bestOffset), min(1, confidence))
     }
 
     // Deep BPM re-analysis — called on explicit user request (refresh button).

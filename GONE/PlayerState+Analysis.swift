@@ -146,9 +146,8 @@ extension PlayerState {
 
         let floor   = await MainActor.run { state.bpmAnalysisFloor }
         let ceiling = await MainActor.run { state.bpmAnalysisCeiling }
-        // Single decode: BPM + waveform from one AVAssetReader pass.
-        // Waveform result populates state immediately, skipping the separate waveform pipeline.
-        let (bpm, waveform) = await LibraryScanner().analyzeBPMWithWaveform(
+        // Single decode: BPM + waveform + beat grid offset from one AVAssetReader pass.
+        let (bpm, waveform, beatGridOffset, gridConfidence) = await LibraryScanner().analyzeBPMWithWaveform(
             url: track.url, floor: floor, ceiling: ceiling, waveformBars: 84
         ) { progress in
             Task { @MainActor [weak state] in
@@ -164,6 +163,8 @@ extension PlayerState {
             if bpm > 0 {
                 state.tracks[idx].bpm = bpm
                 state.tracks[idx].bpmAnalysisState = .analyzed
+                state.tracks[idx].beatGridOffset = beatGridOffset
+                state.tracks[idx].beatGridConfidence = gridConfidence
                 if state.tracks[idx].waveform.isEmpty, !waveform.isEmpty {
                     state.tracks[idx].waveform = waveform
                 }

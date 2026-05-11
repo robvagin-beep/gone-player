@@ -10,6 +10,8 @@ struct ProgressRulerRow: View {
             waveform: state.current?.waveform ?? [],
             bpm: state.current?.bpm ?? 0,
             duration: state.current?.duration ?? 0,
+            beatGridOffset: state.current?.beatGridOffset ?? 0,
+            beatGridConfidence: state.current?.beatGridConfidence ?? 0,
             hotCues: state.hotCues,
             isPlaying: state.isPlaying,
             onSeek: { ratio in
@@ -32,12 +34,21 @@ private final class BarTracker {
     var playedAt: [Int: Date] = [:]
 }
 
+// Class-based storage for beat grid lock-in animation.
+// Records when the analyzed grid first arrived so the Canvas can
+// compute transition progress without triggering SwiftUI re-renders.
+private final class GridTransitionState {
+    var lockedInAt: Date?
+    var lastConfidence: Double = 0
+}
+
 struct ProgressRuler: View {
     let progress: Double
     let waveform: [Float]
     var bpm: Double = 0
     var duration: Double = 0
-    var beatGridOffset: Double = 0   // future: first-beat phase offset in seconds
+    var beatGridOffset: Double = 0
+    var beatGridConfidence: Double = 0
     var meterBeatsPerBar: Int = 4
     var hotCues: [Double?] = []
     var isPlaying: Bool = true
@@ -45,11 +56,14 @@ struct ProgressRuler: View {
 
     @State private var dragRatio: Double?
     @State private var tracker = BarTracker()
+    @State private var gridTransition = GridTransitionState()
     @State private var lastKnownProgress: Double = -1
     @State private var waveMinCache: CGFloat = 0
     @State private var waveRangeCache: CGFloat = 1
 
     private static let animDuration: Double = 0.38
+    private static let gridTransitionDuration: Double = 0.25
+    private static let confidenceThreshold: Double = 0.30
 
     private var displayProgress: Double { dragRatio ?? progress }
     private var hasBeatGrid: Bool { bpm > 0 && duration > 0 && meterBeatsPerBar > 0 }
@@ -80,6 +94,18 @@ struct ProgressRuler: View {
         }
         .onAppear { updateWaveCache() }
         .onChange(of: waveform) { _ in updateWaveCache() }
+        .onChange(of: beatGridConfidence) { newConfidence in
+            // Record exact moment the analyzed grid arrives so the Canvas
+            // can animate a smooth lock-in without needing @State mutation.
+            let wasAnalyzed = gridTransition.lastConfidence >= Self.confidenceThreshold
+            let nowAnalyzed = newConfidence >= Self.confidenceThreshold
+            if nowAnalyzed && !wasAnalyzed {
+                gridTransition.lockedInAt = Date()
+            } else if !nowAnalyzed {
+                gridTransition.lockedInAt = nil
+            }
+            gridTransition.lastConfidence = newConfidence
+        }
         .onChange(of: progress) { newProgress in
             let last = lastKnownProgress < 0 ? 0.0 : lastKnownProgress
             defer { lastKnownProgress = newProgress }
@@ -128,7 +154,6 @@ struct ProgressRuler: View {
         let waveRange = waveRangeCache
 
         // Prune entries whose animation has completed (elapsed > animDuration).
-        // Runs on each Canvas tick so the dict stays bounded.
         let expiryCutoff = now.addingTimeInterval(-Self.animDuration)
         tracker.playedAt = tracker.playedAt.filter { $0.value > expiryCutoff }
 
@@ -138,8 +163,6 @@ struct ProgressRuler: View {
             let played  = x <= playheadX
             let isMajor = majorSet.contains(i)
 
-            // animT: 0 = ghost state, 1 = fully played
-            // During drag: instant binary; during playback: ease-out over animDuration
             let animT: CGFloat
             if isDragging {
                 animT = played ? 1 : 0
@@ -148,16 +171,15 @@ struct ProgressRuler: View {
             } else if let playedAt = tracker.playedAt[i] {
                 let elapsed = now.timeIntervalSince(playedAt)
                 let t = min(1.0, elapsed / Self.animDuration)
-                animT = CGFloat(1.0 - pow(1.0 - t, 2.5))  // ease-out
+                animT = CGFloat(1.0 - pow(1.0 - t, 2.5))
             } else {
-                animT = 1  // played long before tracking started
+                animT = 1
             }
 
             let tickH: CGFloat
             let alpha: Double
 
             if isMajor {
-                // Dividers: fixed height, animate opacity 0.18 → 1.0 when played
                 tickH = majorH
                 alpha = played ? (0.18 + 0.82 * Double(animT)) : 0.18
             } else if !waveform.isEmpty {
@@ -186,15 +208,15 @@ struct ProgressRuler: View {
         // Beat grid — drawn after waveform so bars read over the waveform texture,
         // before hot cues so cues remain the topmost visual layer.
         if hasBeatGrid {
-            drawBeatGrid(ctx: ctx, size: size)
+            drawBeatGrid(ctx: ctx, size: size, now: now)
         }
 
         // Hot cue markers — small colored ticks at the top of the ruler
         let cueColors: [Color] = [
-            Color(red: 1.0, green: 0.35, blue: 0.35),   // 1 · red
-            Color(red: 0.35, green: 0.70, blue: 1.0),   // 2 · blue
-            Color(red: 1.0, green: 0.82, blue: 0.25),   // 3 · yellow
-            Color(red: 0.35, green: 0.90, blue: 0.55),  // 4 · green
+            Color(red: 1.0, green: 0.35, blue: 0.35),
+            Color(red: 0.35, green: 0.70, blue: 1.0),
+            Color(red: 1.0, green: 0.82, blue: 0.25),
+            Color(red: 0.35, green: 0.90, blue: 0.55),
         ]
         for (idx, cue) in hotCues.prefix(4).enumerated() {
             guard let ratio = cue else { continue }
@@ -207,61 +229,126 @@ struct ProgressRuler: View {
         }
     }
 
-    // Draws BPM-derived quarter-note ticks onto the ruler.
+    // Draws the adaptive beat/bar grid.
+    //
+    // Two-layer system:
+    //   Layer A (fallback): offset=0, muted alpha — always visible when hasBeatGrid
+    //   Layer B (analyzed): offset=beatGridOffset, full alpha — fades in when confidence ≥ threshold
+    //
+    // Lock-in animation: layer A fades out, layer B grows in over gridTransitionDuration.
     //
     // Visual hierarchy (bottom → top):
-    //   waveform ticks · beat ticks · bar ticks · [hot cues called after this]
+    //   beat ticks · bar ticks · 4-bar ticks
     //
-    // LOD tiers to avoid visual noise on dense tracks:
-    //   pxPerBeat ≥ 3 → draw all beat ticks + bar ticks
-    //   pxPerBeat < 3 → draw bar ticks only
-    //   pxPerBar  < 3 → draw phrase markers only (every 8 bars)
+    // LOD tiers (density guard):
+    //   pxPerBeat ≥ 6 → beats + bars + 4-bar
+    //   pxPerBeat < 6 AND pxPerBar ≥ 8 → bars + 4-bar only
+    //   pxPerBar  < 8 → phrase markers only (every 8 bars)
     //
-    // Performance: two batched Path structs, two ctx.stroke calls — no per-tick
-    // Path allocation at render time regardless of beat count.
-    private func drawBeatGrid(ctx: GraphicsContext, size: CGSize) {
+    // Performance: 3 batched Path structs max, 3 ctx.stroke calls per layer — O(1) draw
+    // calls regardless of beat count.
+    private func drawBeatGrid(ctx: GraphicsContext, size: CGSize, now: Date) {
         let beatDuration = 60.0 / bpm
         guard beatDuration.isFinite, beatDuration > 0 else { return }
 
-        let baseline  = size.height
-        let beatH:  CGFloat = 5
-        let barH:   CGFloat = 14
+        // Tier heights
+        let beatH:    CGFloat = 4
+        let barH:     CGFloat = 12
+        let fourBarH: CGFloat = 20
 
-        // Beat alpha is intentionally low — ticks must not fight the waveform.
-        let beatAlpha: Double = 0.18
-        let barAlpha:  Double = 0.40
-
+        // LOD thresholds
         let pxPerBeat = size.width * CGFloat(beatDuration / duration)
         let pxPerBar  = pxPerBeat * CGFloat(meterBeatsPerBar)
-
-        let drawBeats  = pxPerBeat >= 3.0
-        let drawBars   = pxPerBar  >= 3.0
-        // When even bars are too dense, fall back to phrase markers every 8 bars.
-        let phraseOnly = !drawBars
-        let phraseEvery = 8  // bars per phrase group
+        let drawBeats   = pxPerBeat >= 6.0
+        let drawBars    = pxPerBar  >= 8.0
+        let phraseOnly  = !drawBars
+        let phraseEvery = 8
 
         guard drawBeats || drawBars else { return }
 
-        // Beat range clipped to track boundaries.
-        let firstBeat = max(0, Int(floor(-beatGridOffset / beatDuration)))
-        let lastBeat  = Int(ceil((duration - beatGridOffset) / beatDuration))
+        // Transition progress: 0 = fallback only, 1 = analyzed fully locked in
+        let isAnalyzed = beatGridConfidence >= Self.confidenceThreshold
+        let transitionT: CGFloat
+        if isAnalyzed, let arrivedAt = gridTransition.lockedInAt {
+            let elapsed = now.timeIntervalSince(arrivedAt)
+            transitionT = CGFloat(min(1.0, elapsed / Self.gridTransitionDuration))
+        } else {
+            transitionT = 0
+        }
+
+        // Layer A: fallback grid (offset = 0), fades out as analyzed arrives.
+        // Alpha envelope: 1.0 → 0 over the transition.
+        let layerAMultiplier = 1.0 - Double(transitionT)
+        if layerAMultiplier > 0.01 {
+            drawGridLayer(
+                ctx: ctx, size: size,
+                offset: 0,
+                beatH: beatH, barH: barH, fourBarH: fourBarH,
+                beatAlpha:    0.14 * layerAMultiplier,
+                barAlpha:     0.30 * layerAMultiplier,
+                fourBarAlpha: 0,           // fallback shows no 4-bar emphasis
+                drawBeats: drawBeats, drawBars: drawBars,
+                phraseOnly: phraseOnly, phraseEvery: phraseEvery,
+                showFourBar: false
+            )
+        }
+
+        // Layer B: analyzed grid (offset = beatGridOffset), grows in.
+        // Only rendered when analysis has arrived.
+        if isAnalyzed && transitionT > 0.01 {
+            let layerBMultiplier = Double(transitionT)
+            drawGridLayer(
+                ctx: ctx, size: size,
+                offset: beatGridOffset,
+                beatH: beatH, barH: barH, fourBarH: fourBarH,
+                beatAlpha:    0.22 * layerBMultiplier,
+                barAlpha:     0.50 * layerBMultiplier,
+                fourBarAlpha: 0.70 * layerBMultiplier,
+                drawBeats: drawBeats, drawBars: drawBars,
+                phraseOnly: phraseOnly, phraseEvery: phraseEvery,
+                showFourBar: true
+            )
+        }
+    }
+
+    // Single-layer grid renderer. Caller controls alpha envelope so this stays
+    // allocation-budget neutral: 3 Path structs, 3 ctx.stroke calls regardless of BPM/length.
+    private func drawGridLayer(
+        ctx: GraphicsContext, size: CGSize,
+        offset: Double,
+        beatH: CGFloat, barH: CGFloat, fourBarH: CGFloat,
+        beatAlpha: Double, barAlpha: Double, fourBarAlpha: Double,
+        drawBeats: Bool, drawBars: Bool,
+        phraseOnly: Bool, phraseEvery: Int,
+        showFourBar: Bool
+    ) {
+        let beatDuration = 60.0 / bpm
+        let baseline     = size.height
+
+        let firstBeat = max(0, Int(floor(-offset / beatDuration)))
+        let lastBeat  = Int(ceil((duration - offset) / beatDuration))
         guard lastBeat >= firstBeat else { return }
 
-        // Two paths: one style per stroke call — O(1) draw calls regardless of beat count.
-        var beatPath = Path()
-        var barPath  = Path()
+        var beatPath    = Path()
+        var barPath     = Path()
+        var fourBarPath = Path()
 
         for beatIndex in firstBeat...lastBeat {
-            let beatTime = beatGridOffset + Double(beatIndex) * beatDuration
+            let beatTime = offset + Double(beatIndex) * beatDuration
             guard beatTime >= 0, beatTime <= duration else { continue }
 
             let x     = CGFloat(beatTime / duration) * size.width
             let isBar = beatIndex % meterBeatsPerBar == 0
 
             if isBar {
-                let barIdx   = beatIndex / meterBeatsPerBar
-                let isPhrase = barIdx % phraseEvery == 0
-                if drawBars || (phraseOnly && isPhrase) {
+                let barIdx    = beatIndex / meterBeatsPerBar
+                let isFourBar = barIdx % 4 == 0
+                let isPhrase  = barIdx % phraseEvery == 0
+
+                if showFourBar && isFourBar && drawBars {
+                    fourBarPath.move(to:    CGPoint(x: x, y: baseline))
+                    fourBarPath.addLine(to: CGPoint(x: x, y: baseline - fourBarH))
+                } else if drawBars || (phraseOnly && isPhrase) {
                     barPath.move(to:    CGPoint(x: x, y: baseline))
                     barPath.addLine(to: CGPoint(x: x, y: baseline - barH))
                 }
@@ -271,12 +358,17 @@ struct ProgressRuler: View {
             }
         }
 
-        // Render: beats first (lower layer), bars on top.
-        if drawBeats {
+        if drawBeats && beatAlpha > 0 {
             ctx.stroke(beatPath, with: .color(.white.opacity(beatAlpha)),
                        style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
         }
-        ctx.stroke(barPath, with: .color(.white.opacity(barAlpha)),
-                   style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+        if barAlpha > 0 {
+            ctx.stroke(barPath, with: .color(.white.opacity(barAlpha)),
+                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+        }
+        if showFourBar && fourBarAlpha > 0 {
+            ctx.stroke(fourBarPath, with: .color(.white.opacity(fourBarAlpha)),
+                       style: StrokeStyle(lineWidth: 1.5, lineCap: .butt))
+        }
     }
 }
