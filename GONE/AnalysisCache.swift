@@ -18,7 +18,7 @@ struct AnalysisCacheEntry: Codable {
 
 actor AnalysisCache {
     static let shared = AnalysisCache()
-    private static let version = 1  // bump when BPM / waveform algorithm changes
+    private static let version = 2  // v2: HPF bass reduction + gamma 1.1 in computeWaveformFromSamples
 
     private var map: [String: AnalysisCacheEntry] = [:]
     private let fileURL: URL

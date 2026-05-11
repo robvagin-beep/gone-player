@@ -673,13 +673,24 @@ final class LibraryScanner {
     }
 
     private func computeWaveformFromSamples(_ samples: [Float], totalSec: Double, bars: Int) -> [Float] {
+        // One-pole HPF — de-emphasizes sustained bass so kick/sub doesn't wall the waveform.
+        // alpha = 0.85 → cutoff ≈ 600 Hz at 11 025 Hz. y[n] = α·(y[n−1] + x[n] − x[n−1])
+        var src = samples
+        var hpfY: Float = 0; var prevX: Float = 0
+        for i in 0..<src.count {
+            let x = src[i]
+            hpfY   = 0.85 * (hpfY + x - prevX)
+            src[i] = hpfY
+            prevX  = x
+        }
+
         let expectedFrames = max(1, Int(totalSec * 11025))
         let bucketSize     = max(1, expectedFrames / max(1, bars))
         var envelope       = [Float](repeating: 0, count: bars)
         var bucketIndex = 0, bucketCount = 0
         var bucketPeak: Float = 0, bucketSumSquares: Float = 0
 
-        for sample in samples {
+        for sample in src {
             let value = abs(sample)
             bucketPeak = max(bucketPeak, value)
             bucketSumSquares += value * value
@@ -707,7 +718,9 @@ final class LibraryScanner {
         }
         let normalizedBy = max(0.0001, percentile(relief, q: 0.97))
         let normalized   = movingAverage(relief.map { min(1.85, max(0, $0 / normalizedBy)) }, radius: 1)
-        return normalized.map { v in min(0.90, max(0.04, pow(log1pf(v * 3.3) / log1pf(3.3), 0.74))) }
+        // gamma > 1 → more contrast: quiet bars collapse, transient peaks stay tall.
+        // floor 0.01 (was 0.04) lets genuinely silent sections go near-zero.
+        return normalized.map { v in min(0.90, max(0.01, pow(log1pf(v * 3.3) / log1pf(3.3), 1.1))) }
     }
 
     // ── BPM analysis — native Accelerate, no external libs ───────────────────

@@ -73,11 +73,11 @@ struct ProgressRuler: View {
 
     // 61 ticks → clean 25% breakpoints at indices 0, 15, 30, 45, 60.
     // Half the density of the old 121-tick grid: ~6.5px/tick at 400px width.
-    private static let totalTicks: Int = 61
+    private static let totalTicks: Int = 81
 
     // Fixed visual quarter positions — always visible, part of GONE's visual identity.
-    // Tick indices: 0=0%, 15=25%, 30=50%, 45=75%, 60=100%.
-    private static let fixedDividerTicks: Set<Int> = [0, 15, 30, 45, 60]
+    // Tick indices: 0=0%, 20=25%, 40=50%, 60=75%, 80=100%.
+    private static let fixedDividerTicks: Set<Int> = [0, 20, 40, 60, 80]
 
     private var displayProgress: Double { dragRatio ?? progress }
     private var hasBeatGrid: Bool { bpm > 0 && duration > 0 && meterBeatsPerBar > 0 }
@@ -162,7 +162,7 @@ struct ProgressRuler: View {
         //   Waveform played        : 1-6px — main spectrum texture, below all dividers
         //   Waveform unplayed      : 1-2px — faint contour only
         let quarterH: CGFloat = (h * 0.73).rounded()          // ~16px — max (fixed quarters)
-        let subDivH:  CGFloat = (quarterH * 0.75).rounded()  // ~12px — sub-dividers (+4px)
+        let subDivH:  CGFloat = (quarterH * 0.75).rounded() + 1  // ~13px — sub-dividers
 
         let waveMin   = waveMinCache
         let waveRange = waveRangeCache
@@ -292,9 +292,9 @@ struct ProgressRuler: View {
                 let norm   = max(0, (v - waveMin) / waveRange)
                 // Contrast curve: pow(norm, 1.8) pushes quiet parts near zero,
                 // loud transients spike high — gives the spectral mountain shape.
-                let normC  = pow(norm, 1.8)
-                let ghostH = 1.0 + normC * 3.5   // unplayed: 1-4.5px — mountains visible
-                let fullH  = 1.0 + normC * 7.0   // played:   1-8px   — rich relief
+                let normC  = pow(norm, 2.2)
+                let ghostH = 1.0 + normC * 5.5   // unplayed: 1-6.5px — mountains visible
+                let fullH  = 1.0 + normC * 8.0   // played:   1-9px   — rich relief
                 tickH = ghostH + (fullH - ghostH) * animT
                 alpha = 0.22 + 0.55 * Double(animT)
                 lineW = 1.0
