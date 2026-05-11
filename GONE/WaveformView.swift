@@ -161,8 +161,8 @@ struct ProgressRuler: View {
         //   Musical sub-dividers   : 8px  — exactly half of quarters
         //   Waveform played        : 1-6px — main spectrum texture, below all dividers
         //   Waveform unplayed      : 1-2px — faint contour only
-        let quarterH: CGFloat = (h * 0.73).rounded()  // ~16px
-        let subDivH:  CGFloat = (h * 0.36).rounded()  // ~8px
+        let quarterH: CGFloat = (h * 0.73).rounded()          // ~16px — max (fixed quarters)
+        let subDivH:  CGFloat = (quarterH * 0.75).rounded()  // ~12px — sub-dividers (+4px)
 
         let waveMin   = waveMinCache
         let waveRange = waveRangeCache
@@ -290,10 +290,13 @@ struct ProgressRuler: View {
                 let lerp   = pos - CGFloat(ci0)
                 let v      = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
                 let norm   = max(0, (v - waveMin) / waveRange)
-                let ghostH = 1.0 + norm * 1.5
-                let fullH  = 1.0 + norm * 5.0
+                // Contrast curve: pow(norm, 1.8) pushes quiet parts near zero,
+                // loud transients spike high — gives the spectral mountain shape.
+                let normC  = pow(norm, 1.8)
+                let ghostH = 1.0 + normC * 3.5   // unplayed: 1-4.5px — mountains visible
+                let fullH  = 1.0 + normC * 7.0   // played:   1-8px   — rich relief
                 tickH = ghostH + (fullH - ghostH) * animT
-                alpha = 0.20 + 0.55 * Double(animT)
+                alpha = 0.22 + 0.55 * Double(animT)
                 lineW = 1.0
             } else {
                 tickH = 2 + 2 * animT
