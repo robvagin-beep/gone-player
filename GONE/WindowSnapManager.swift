@@ -1,13 +1,14 @@
 import AppKit
+import Combine
 
 @MainActor
 final class WindowSnapManager {
     static let shared = WindowSnapManager()
     private init() {}
 
-    enum SnapState { case off, waiting, docked, peeking, expanded }
+    typealias SnapState = PlayerState.SnapMode
     private(set) var snapState: SnapState = .off {
-        didSet { playerState?.setSnapState(snapState.playerStateMode) }
+        didSet { playerState?.setSnapState(snapState) }
     }
 
     weak var playerState: PlayerState?
@@ -22,6 +23,8 @@ final class WindowSnapManager {
     private var dockAnimDuration:   Double { 0.24 * animMul }
     private var peekAnimDuration:   Double { 0.18 * animMul }
     private var expandAnimDuration: Double { 0.24 * animMul }
+
+    private var settingsCancellables = Set<AnyCancellable>()
 
     private var inactivityTimer:  Timer?
     private var proximityTimer:   Timer?
@@ -51,6 +54,7 @@ final class WindowSnapManager {
     // MARK: – Infrastructure
 
     private func clearInfrastructure() {
+        settingsCancellables.removeAll()
         inactivityTimer?.invalidate(); inactivityTimer = nil
         proximityTimer?.invalidate();  proximityTimer  = nil
         slideTimer?.invalidate();      slideTimer = nil
@@ -77,6 +81,29 @@ final class WindowSnapManager {
         startProximityTimer()
         // Inactivity countdown starts on first user action (via activity monitor),
         // not immediately — prevents snap firing right after launch or re-enable.
+
+        // Live-bind settings: changes take effect immediately without requiring a disable/re-enable.
+        if let ps = playerState {
+            // Delay changed while countdown is running → reschedule from now.
+            ps.$snapInactivityDelay
+                .dropFirst()
+                .sink { [weak self] _ in
+                    guard let self, self.inactivityTimer != nil,
+                          let win = self.snapWindow ?? self.mainWindow else { return }
+                    self.scheduleInactivityDock(window: win)
+                }
+                .store(in: &settingsCancellables)
+
+            // Tab width changed while docked → reposition window to new edge offset.
+            ps.$snapTabWidth
+                .dropFirst()
+                .sink { [weak self] _ in
+                    guard let self,
+                          self.snapState == .docked || self.snapState == .peeking else { return }
+                    self.constrainCurrentWindow()
+                }
+                .store(in: &settingsCancellables)
+        }
     }
 
     func disable(window: NSWindow) {
@@ -103,7 +130,7 @@ final class WindowSnapManager {
         savedFrame  = nil
         snapWindow  = nil
         Task { @MainActor [weak self, weak window] in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
             guard let self, let window else { return }
             // Set snapState = .off here, after restoreFromSnap() has settled, so that
             // windowMoveAnchorUpdate cannot fire while the window is still at the docked
@@ -283,7 +310,7 @@ final class WindowSnapManager {
                                              .fullScreenDisallowsTiling, .transient, .ignoresCycle]
             }
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 80_000_000)
+                try? await Task.sleep(for: .milliseconds(80))
                 self?.playerState?.prepareForSnap()
             }
         }
@@ -420,7 +447,7 @@ final class WindowSnapManager {
         // Delay panel restore so the window travels away from the edge before content expands.
         // isSnapping blocks updateWindowSize, so the frame is controlled by slideFrameTo only.
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
             self?.playerState?.restoreFromSnap()
         }
 
@@ -580,14 +607,3 @@ final class WindowSnapManager {
     }
 }
 
-private extension WindowSnapManager.SnapState {
-    var playerStateMode: PlayerState.SnapMode {
-        switch self {
-        case .off:      return .off
-        case .waiting:  return .waiting
-        case .docked:   return .docked
-        case .peeking:  return .peeking
-        case .expanded: return .expanded
-        }
-    }
-}

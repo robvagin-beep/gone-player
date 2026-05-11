@@ -223,7 +223,7 @@ private struct GoneTooltipModifier: ViewModifier {
                 if inside {
                     guard NSEvent.pressedMouseButtons == 0 else { return }
                     hoverTask = Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 700_000_000)
+                        try? await Task.sleep(for: .milliseconds(700))
                         guard !Task.isCancelled else { return }
                         TooltipPanel.shared.show(text: text, near: NSEvent.mouseLocation)
                     }

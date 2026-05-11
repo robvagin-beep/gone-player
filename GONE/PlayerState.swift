@@ -11,7 +11,8 @@ struct PlaylistTabModel: Identifiable, Equatable {
     var sortDir: PlayerState.SortDir = .asc
 }
 
-final class PlayerState: ObservableObject {
+@MainActor
+final class PlayerState: ObservableObject, @unchecked Sendable {
     static let initialPlaylistTabId = UUID()
 
     let audioEngine: AudioEngineNext

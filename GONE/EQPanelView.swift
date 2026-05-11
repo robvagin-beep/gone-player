@@ -790,7 +790,7 @@ struct EQCurveView: View {
             let steps = 11
             for i in 1...steps {
                 guard !Task.isCancelled else { return }
-                try? await Task.sleep(nanoseconds: 16_000_000)
+                try? await Task.sleep(for: .milliseconds(16))
                 guard !Task.isCancelled else { return }
                 let t    = Double(i) / Double(steps)
                 let ease = 1.0 - pow(1.0 - t, 3.0)

@@ -83,7 +83,7 @@ extension PlayerState {
         Task.detached(priority: .userInitiated) { [self] in
             // Wait out any active import — competing AVAssetReaders freeze the UI.
             while await MainActor.run(body: { self.isImporting }) {
-                try? await Task.sleep(nanoseconds: 300_000_000)
+                try? await Task.sleep(for: .milliseconds(300))
             }
 
             // Lane 1: current track alone — user sees BPM immediately.
@@ -252,7 +252,7 @@ extension PlayerState {
         for attempt in 0..<3 {
             waveform = await LibraryScanner().computeWaveform(url: track.url, bars: 84)
             if !waveform.isEmpty { break }
-            if attempt < 2 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            if attempt < 2 { try? await Task.sleep(for: .milliseconds(1500)) }
         }
         if !waveform.isEmpty { await AnalysisCache.shared.putWaveform(url: track.url, waveform: waveform) }
         let committed = waveform.isEmpty ? Array(repeating: Float(0.04), count: 84) : waveform

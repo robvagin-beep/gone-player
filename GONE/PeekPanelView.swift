@@ -501,10 +501,10 @@ private struct MarqueeText: View {
                     let duration = Double(overflow) / Double(speed)
                     while !Task.isCancelled {
                         withAnimation(.linear(duration: duration)) { offset = -overflow }
-                        try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                        try? await Task.sleep(for: .seconds(duration))
                         guard !Task.isCancelled else { break }
                         withAnimation(.none) { offset = 0 }
-                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        try? await Task.sleep(for: .milliseconds(50))
                     }
                 } else {
                     // Short text fits in container: show briefly, scroll off edge (measured + small
@@ -512,12 +512,12 @@ private struct MarqueeText: View {
                     let exitDist    = measured + 12   // 12px past left edge — reset is invisible
                     let exitDuration = Double(exitDist) / Double(speed)
                     while !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 800_000_000)   // 0.8s readable window
+                        try? await Task.sleep(for: .milliseconds(800))    // 0.8s readable window
                         guard !Task.isCancelled else { break }
                         withAnimation(.linear(duration: exitDuration)) { offset = -exitDist }
-                        try? await Task.sleep(nanoseconds: UInt64(exitDuration * 1_000_000_000))
+                        try? await Task.sleep(for: .seconds(exitDuration))
                         guard !Task.isCancelled else { break }
-                        try? await Task.sleep(nanoseconds: 300_000_000)   // 0.3s blank gap
+                        try? await Task.sleep(for: .milliseconds(300))    // 0.3s blank gap
                         guard !Task.isCancelled else { break }
                         withAnimation(.none) { offset = 0 }
                     }
