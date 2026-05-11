@@ -159,8 +159,6 @@ struct ProgressRuler: View {
         let fourBarH: CGFloat = h
         let barH:     CGFloat = (h * 0.75).rounded()
         let beatH:    CGFloat = (h * 0.44).rounded()
-        let maxWaveH: CGFloat = (h * 0.44).rounded()
-        let minWaveH: CGFloat = 2
 
         let waveMin   = waveMinCache
         let waveRange = waveRangeCache
@@ -194,13 +192,17 @@ struct ProgressRuler: View {
             let pxPerBeat    = size.width * CGFloat(beatDur / duration)
             let pxPerBar     = pxPerBeat * CGFloat(meterBeatsPerBar)
             let pxPerFourBar = pxPerBar * 4.0
-            let minPx: CGFloat = 4.0
+            // Target: musical markers no closer than 20px — keeps the ruler readable
+            // at any BPM/duration. Beats only shown when unambiguously spaced.
+            let minPx: CGFloat = 20.0
 
             let barStride: Int
-            if      pxPerBar     >= minPx { barStride = 1  }
-            else if pxPerFourBar >= minPx { barStride = 4  }
+            if      pxPerBar         >= minPx { barStride = 1  }
+            else if pxPerFourBar     >= minPx { barStride = 4  }
             else if pxPerFourBar * 2 >= minPx { barStride = 8  }
-            else                          { barStride = 16 }
+            else if pxPerFourBar * 4 >= minPx { barStride = 16 }
+            else if pxPerFourBar * 8 >= minPx { barStride = 32 }
+            else                               { barStride = 64 }
             let showBeats = pxPerBeat >= minPx
 
             // Before analysis: estimated grid (offset=0) at 55% alpha.
@@ -277,16 +279,19 @@ struct ProgressRuler: View {
                 let baseA = 0.22 + 0.55 * Double(animT)
                 alpha = baseA * musAlphaMult
             } else if !waveform.isEmpty {
-                // Amplitude bar — texture between musical anchors.
-                // Height capped at beatH so it never competes visually.
-                let pos  = frac * CGFloat(waveform.count - 1)
-                let ci0  = max(0, min(waveform.count - 1, Int(pos)))
-                let ci1  = min(waveform.count - 1, ci0 + 1)
-                let lerp = pos - CGFloat(ci0)
-                let v    = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
-                let norm = max(0, (v - waveMin) / waveRange)
-                tickH = minWaveH + norm * (maxWaveH - minWaveH)
-                alpha = 0.18 + 0.42 * Double(animT)
+                // Amplitude bar — track relief texture between musical anchors.
+                // Unplayed (ghost): 1-3px — barely there, just enough to read the contour.
+                // Played  (full):  1-7px — grows as progress passes, shows where energy is.
+                let pos    = frac * CGFloat(waveform.count - 1)
+                let ci0    = max(0, min(waveform.count - 1, Int(pos)))
+                let ci1    = min(waveform.count - 1, ci0 + 1)
+                let lerp   = pos - CGFloat(ci0)
+                let v      = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
+                let norm   = max(0, (v - waveMin) / waveRange)
+                let ghostH = 1.0 + norm * 2.0
+                let fullH  = 1.0 + norm * 6.0
+                tickH = ghostH + (fullH - ghostH) * animT
+                alpha = 0.22 + 0.45 * Double(animT)
                 lineW = 1.0
             } else {
                 tickH = 2 + 2 * animT
