@@ -121,7 +121,7 @@ extension PlayerState {
         progress = 0; currentTime = 0
         progressFeed.reset()
         guard let current else { return }
-        guard !current.isMissing else { isPlaying = false; return }
+        guard !current.isMissing else { isPlaying = false; audioEngine.stop(resetProgress: true); return }
         isPlaying = autoplay ? wasPlaying : false
         audioEngine.load(current.url)
         applyBPMFilter(to: current)
@@ -147,7 +147,7 @@ extension PlayerState {
         progress = 0; currentTime = 0
         progressFeed.reset()
         guard let current else { return }
-        guard !current.isMissing else { isPlaying = false; return }
+        guard !current.isMissing else { isPlaying = false; audioEngine.stop(resetProgress: true); return }
         isPlaying = autoplay ? wasPlaying : false
         audioEngine.load(current.url)
         applyBPMFilter(to: current)

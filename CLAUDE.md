@@ -259,7 +259,7 @@ GONE/GONE/
 - `Task.sleep(nanoseconds:)` deprecated — replace with `Task.sleep(for: .milliseconds(N))` on next pass
 - Dual SnapState enums: `WindowSnapManager.SnapState` and `PlayerState.SnapMode` are functionally identical — consolidate when touching snap system
 - `presentImportPanel` uses `NSApp.keyWindow` — should use `AppDelegate.resolvedMainWindow()` (low risk)
-- `Track.artworkData: Data?` in struct — causes array copy overhead during import batches (significant refactor, coordinate separately)
+- `splitPlaylistView` / `secondaryPlaylistTabId` in PlayerState — orphan state, no UI yet (was after artworkData note)
 - `splitPlaylistView` / `secondaryPlaylistTabId` in PlayerState — orphan state, no UI yet
 
 ---
@@ -282,7 +282,7 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 - `AudioEngineNext.secondary` eager init: pre-existing architecture — out of scope
 - `currentURL`/`audioFile` thread safety: pre-existing architecture concern — out of scope
 - `stopHoldSeek()` → `applyPitchState()`: correctly restores `pitchNode.bypass`, `speedNode.rate`, and pitch state on hold-seek end
-- `SplitModeManager.deactivate()` calls `AudioEngineNext.secondary.pause()` on main before `stop()` off-main — hang fix, intentional sequence
+- `SplitModeManager.deactivate()` calls `AudioEngineNext.secondary.markStopped()` (NOT pause()) on main before `stop()` off-main. `pause()` was replaced because it called `playerNode.pause()` which contests Core Audio IO lock with concurrent `setOutputDevice()` on audioOpQueue → deadlock. `markStopped()` only sets `isUserPlaying=false` + invalidates timer without touching the player node.
 - `SplitModeManager.activate()` copies `primaryState.volume` to `secondaryState` on line ~126 ✓
 
 ### Crossfader / Clone
@@ -333,3 +333,15 @@ These items have been explicitly fixed or are intentional design decisions. Flag
 ### CI / Tooling
 - `model="claude-opus-4-7"` in `claude_review.py`: this model ID is valid and the workflow runs successfully — do not flag as invalid
 - `urllib` timeout: `urlopen(req, timeout=30)` added ✓
+
+### Deep Audit — Confirmed False Positives (2026-05-11)
+- `spectrumQueue` serial-queue manages `spectrumSmooth`/`lastSpectrumEmit` — serial queue makes writes safe; cross-thread reset hop is a robustness preference, not a crash path. Do NOT flag as data race.
+- `AudioEngineNext.deinit` observer/timer cleanup — static lifetime; deinit NEVER runs. Do NOT flag.
+- `@MainActor` on `PlayerState` — call-site discipline intentional; full annotation is tech debt, out of scope for non-architectural PRs.
+- `Task.detached` strong self capture in analysis pipeline — singleton-like PlayerState; acknowledged tech debt.
+- `ProgressRulerRow.onSeek` optimistic local progress write — intentional scrubber snappiness.
+- Clone window Space behavior — confirmed correct via `.canJoinAllSpaces` on all three windows; Split Mode disables Snap, making clone Space observer unnecessary.
+- `CrossfaderGapWindow` is `NSPanel` — `resolvedMainWindow`'s `!($0 is NSPanel)` predicate correctly excludes it. Do NOT flag.
+- `installActivityMonitor` churn during Settings open — `scheduleInactivityDock` early-return is the gate; acceptable.
+- PeekPanel inherits parent window level/Space — not a separate panel.
+- `Track.artworkData: Data?` — field has been REMOVED; only `hasArtwork: Bool` remains. Do NOT flag array-copy concerns.

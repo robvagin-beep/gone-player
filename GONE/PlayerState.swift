@@ -216,6 +216,7 @@ final class PlayerState: ObservableObject {
         lfoTimer = nil
         lfoPhase = 0
         lfoUITick = 0
+        audioEngine.setLPF(cutoff: 0)   // reset stuck filter (mirrors stopBPMChop)
     }
 
     func startBPMChop() {

@@ -16,6 +16,7 @@ final class SplitModeManager: ObservableObject {
     var secondaryWindow: NSWindow? { secondWindow }
     private var gapWindow: CrossfaderGapWindow?
     private weak var primaryState: PlayerState?
+    private var snapWasEnabled = false   // snap state before Clone Mode disabled it
 
     // Serial queue for all secondary-engine ops — guarantees stop() from deactivation
     // always completes before setOutputDevice() from the next activation (no Core Audio race)
@@ -29,8 +30,10 @@ final class SplitModeManager: ObservableObject {
         guard !isActive else { return }
         self.primaryState = primaryState
 
-        // Snap and Clone Mode are incompatible — disable snap (expands window if docked)
-        if primaryState.snapEnabled {
+        // Snap and Clone Mode are incompatible — disable snap (expands window if docked).
+        // Remember the state so deactivate() can restore it.
+        snapWasEnabled = primaryState.snapEnabled
+        if snapWasEnabled {
             WindowSnapManager.shared.disable(window: primaryWindow)
         }
 
@@ -96,6 +99,15 @@ final class SplitModeManager: ObservableObject {
         secondWindow?.close()
         secondWindow = nil
         secondaryState = nil
+        // Restore snap if it was active before Clone Mode disabled it
+        if snapWasEnabled,
+           let delegate = NSApp.delegate as? AppDelegate,
+           let win = delegate.resolvedMainWindow() {
+            snapWasEnabled = false
+            WindowSnapManager.shared.enable(window: win)
+        } else {
+            snapWasEnabled = false
+        }
         // Full stop + buffer flush off main thread; serialized with any subsequent
         // setOutputDevice() from the next activate() via audioOpQueue
         audioOpQueue.async {
@@ -199,7 +211,7 @@ final class SplitModeManager: ObservableObject {
         // panel at overlayWindow-1 (101) is hidden under both player windows at their endpoints.
         win.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)) + 1)
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                                  .fullScreenDisallowsTiling, .ignoresCycle]
+                                  .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         win.hidesOnDeactivate = false
 
         return win

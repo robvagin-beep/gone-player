@@ -26,6 +26,7 @@ final class WindowSnapManager {
     private var globalClickMon:   Any?
     private var activityMon:      Any?
     private var spaceChangeObs:   NSObjectProtocol?
+    private var spaceAlphaTimer:  Timer?            // tracks the 80ms alpha-restore timer
     private var savedOrigin:      NSPoint?
     private var savedFrame:       NSRect?
     private var savedDockedY:     CGFloat?
@@ -202,17 +203,25 @@ final class WindowSnapManager {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
             spaceChangeObs = nil
         }
+        spaceAlphaTimer?.invalidate()
+        spaceAlphaTimer = nil
     }
 
     private func handleSpaceChange(window: NSWindow) {
         guard snapState == .docked || snapState == .peeking else { return }
         // Flash invisible to erase any residual body artifact, then re-anchor.
+        // Cancel any in-flight restore timer so rapid Space swipes don't stack.
+        spaceAlphaTimer?.invalidate()
         window.alphaValue = 0
         constrainSnapPosition(window: window)
-        let timer = Timer(timeInterval: 0.08, repeats: false) { [weak window] _ in
-            MainActor.assumeIsolated { window?.alphaValue = 1 }
+        let timer = Timer(timeInterval: 0.08, repeats: false) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                window?.alphaValue = 1
+                self?.spaceAlphaTimer = nil
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
+        spaceAlphaTimer = timer
     }
 
     // MARK: – State Transitions
