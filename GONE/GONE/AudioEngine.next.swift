@@ -99,6 +99,10 @@ final class AudioEngineNext {
     private var fftImag: [Float]
     private var fftMagnitudes: [Float]
     private var fftBars: [Float]
+    // Pre-allocated PCM staging buffer for the tap callback.
+    // The tap runs on the CoreAudio render thread — no heap allocation is allowed there.
+    // The tap memcpy's samples into this buffer; spectrumQueue then copies it off-thread.
+    private var tapSampleBuffer: [Float]
 
     private let spectrumQueue = DispatchQueue(label: "gone.spectrum", qos: .utility)
     private var audioActivity: NSObjectProtocol?
@@ -113,6 +117,7 @@ final class AudioEngineNext {
         fftMagnitudes = Array(repeating: 0, count: fftSize / 2)
         fftBars = Array(repeating: 0, count: spectrumBars)
         fftSetup = vDSP_create_fftsetup(fftLog2n, FFTRadix(FFT_RADIX2))
+        tapSampleBuffer = [Float](repeating: 0, count: 1 << 10)  // must match fftSize
 
         setupGraph()
         setupEQBands()
@@ -220,10 +225,24 @@ final class AudioEngineNext {
                 guard let self else { return }
                 self.spectrumSmooth = Array(repeating: 0, count: self.spectrumBars)
             }
-            emitProgress(currentFrame: 0)
+            // emitProgress → onProgress → @Published writes; must run on main thread.
+            if Thread.isMainThread {
+                emitProgress(currentFrame: 0)
+            } else {
+                DispatchQueue.main.async { [weak self] in self?.emitProgress(currentFrame: 0) }
+            }
         } else {
-            pausedFrameOffset = currentPlaybackFrame()
-            emitProgress(currentFrame: pausedFrameOffset)
+            let frame = currentPlaybackFrame()
+            if Thread.isMainThread {
+                pausedFrameOffset = frame
+                emitProgress(currentFrame: frame)
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.pausedFrameOffset = frame
+                    self.emitProgress(currentFrame: frame)
+                }
+            }
         }
     }
 
@@ -285,7 +304,8 @@ final class AudioEngineNext {
     }
 
     func setPitch(_ percent: Double, masterTempo: Bool) {
-        pitchPercent = percent
+     
+   pitchPercent = percent
         self.masterTempo = masterTempo
         applyPitchState()
     }
@@ -461,14 +481,25 @@ final class AudioEngineNext {
         reverbNode.wetDryMix = 0
 
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(fftSize), format: nil) { [weak self] buffer, _ in
+            // This closure runs on the CoreAudio render thread — minimal work only.
             guard let self, self.isUserPlaying else { return }
             guard let channelData = buffer.floatChannelData?[0] else { return }
             let frameCount = Int(buffer.frameLength)
             guard frameCount >= self.fftSize else { return }
-            let samples = Array(UnsafeBufferPointer(start: channelData, count: self.fftSize))
+            // Memcpy into pre-allocated staging buffer — no Array allocation on render thread.
+            let n = self.fftSize
+            self.tapSampleBuffer.withUnsafeMutableBufferPointer { dst in
+                dst.baseAddress!.initialize(from: channelData, count: n)
+            }
             let sampleRate = Float(buffer.format.sampleRate)
+            // The Array value-copy below happens inside the async closure, which executes
+            // on spectrumQueue — NOT on the render thread. The render thread only pays for
+            // the DispatchQueue.async enqueue (a single lock + pointer write).
             self.spectrumQueue.async { [weak self] in
-                self?.processSpectrum(samples: samples, sampleRate: sampleRate)
+                guard let self else { return }
+                // Copy from staging buffer on spectrumQueue thread (not render thread).
+                let samples = self.tapSampleBuffer
+                self.processSpectrum(samples: samples, sampleRate: sampleRate)
             }
         }
 
