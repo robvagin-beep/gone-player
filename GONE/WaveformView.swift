@@ -156,9 +156,13 @@ struct ProgressRuler: View {
         let h          = size.height
         let baseline   = h
 
-        let fourBarH: CGFloat = h
-        let barH:     CGFloat = (h * 0.75).rounded()
-        let beatH:    CGFloat = (h * 0.44).rounded()
+        // Height hierarchy — tallest → shortest, all within the original tick height cap:
+        //   Fixed quarter dividers : 16px — ruler maximum (matches former barH)
+        //   Musical sub-dividers   : 8px  — exactly half of quarters
+        //   Waveform played        : 1-6px — main spectrum texture, below all dividers
+        //   Waveform unplayed      : 1-2px — faint contour only
+        let quarterH: CGFloat = (h * 0.73).rounded()  // ~16px
+        let subDivH:  CGFloat = (h * 0.36).rounded()  // ~8px
 
         let waveMin   = waveMinCache
         let waveRange = waveRangeCache
@@ -264,34 +268,32 @@ struct ProgressRuler: View {
             let lineW: CGFloat
 
             if isMajor {
-                // Fixed track-section dividers — highest priority, always rendered.
-                tickH = barH
+                // Fixed quarter dividers — tallest element, always visible.
+                tickH = quarterH
                 lineW = 1.0
                 let base = Double(breathe)
                 alpha = played ? min(1.0, base + (1.0 - base) * Double(animT)) : base
-            } else if let musType = musicalTicks[i] {
-                // Musical anchor — height from hierarchy, amplitude irrelevant here.
-                switch musType {
-                case .fourBar: tickH = fourBarH; lineW = 1.5
-                case .bar:     tickH = barH;     lineW = 1.0
-                case .beat:    tickH = beatH;    lineW = 1.0
-                }
-                let baseA = 0.22 + 0.55 * Double(animT)
+            } else if musicalTicks[i] != nil {
+                // Musical sub-dividers — all types at the same level (half of quarters).
+                // They sit clearly above the waveform but never challenge the fixed marks.
+                tickH = subDivH
+                lineW = 1.0
+                let baseA = 0.28 + 0.50 * Double(animT)
                 alpha = baseA * musAlphaMult
             } else if !waveform.isEmpty {
-                // Amplitude bar — track relief texture between musical anchors.
-                // Unplayed (ghost): 1-3px — barely there, just enough to read the contour.
-                // Played  (full):  1-7px — grows as progress passes, shows where energy is.
+                // Waveform texture — the main musical spectrum between anchors.
+                // Unplayed (ghost): 1-3px — faint contour, shows track shape.
+                // Played   (full):  1-9px — rich relief, energy is visible.
                 let pos    = frac * CGFloat(waveform.count - 1)
                 let ci0    = max(0, min(waveform.count - 1, Int(pos)))
                 let ci1    = min(waveform.count - 1, ci0 + 1)
                 let lerp   = pos - CGFloat(ci0)
                 let v      = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
                 let norm   = max(0, (v - waveMin) / waveRange)
-                let ghostH = 1.0 + norm * 2.0
-                let fullH  = 1.0 + norm * 6.0
+                let ghostH = 1.0 + norm * 1.5
+                let fullH  = 1.0 + norm * 5.0
                 tickH = ghostH + (fullH - ghostH) * animT
-                alpha = 0.22 + 0.45 * Double(animT)
+                alpha = 0.20 + 0.55 * Double(animT)
                 lineW = 1.0
             } else {
                 tickH = 2 + 2 * animT
