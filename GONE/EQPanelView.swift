@@ -263,22 +263,22 @@ struct EQKnobStack: View {
     // When XY is active on a filter axis, reflect the live XY-derived cutoff
     // so the knob rotates in sync with the curve point (XY no longer writes
     // @Published state at 60Hz — this view reads xyPad directly instead).
-    private var displayHpfCutoff: Double {
+    private var displayHpfCutoff: Float {
         guard xyPad.active else { return state.hpfCutoff }
         let x = Float(xyPad.point.x)
         switch xyPad.effectAxis {
-        case .filter: return Double(x * 0.55)
+        case .filter: return x * 0.55
         default:      return state.hpfCutoff
         }
     }
 
-    private var displayLpfCutoff: Double {
+    private var displayLpfCutoff: Float {
         guard xyPad.active else { return state.lpfCutoff }
         let x = Float(xyPad.point.x), y = Float(xyPad.point.y)
         switch xyPad.effectAxis {
-        case .filter:   return Double((1 - y) * 0.55)
-        case .reso:     return Double(x * 0.75)
-        case .filtVerb: return Double(x * 0.7)
+        case .filter:   return (1 - y) * 0.55
+        case .reso:     return x * 0.75
+        case .filtVerb: return x * 0.7
         default:        return state.lpfCutoff
         }
     }
@@ -286,14 +286,14 @@ struct EQKnobStack: View {
     private var hpfLabel: String {
         let cut = displayHpfCutoff
         guard cut >= 0.015 else { return "HPF" }
-        let hz = 20.0 * powf(100.0, Float(cut))
+        let hz = 20.0 * powf(100.0, cut)
         return hz >= 1000 ? String(format: "%.1fk", hz / 1000) : String(format: "%.0f", hz)
     }
 
     private var lpfLabel: String {
         let cut = displayLpfCutoff
         guard cut >= 0.015 else { return "LPF" }
-        let hz = 20000.0 * powf(0.01, Float(cut))
+        let hz = 20000.0 * powf(0.01, cut)
         return hz >= 1000 ? String(format: "%.1fk", hz / 1000) : String(format: "%.0f", hz)
     }
 
