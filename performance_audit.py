@@ -89,13 +89,13 @@ def main():
 
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
-        model="claude-opus-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"Audit render/rebuild performance.\n\n{sources}"}],
     )
     body = message.content[0].text
-    comment = f"## ⚡ Claude Performance Audit — Render Churn, @Published, Canvas, Task Waste\n\n{body}{trunc}\n\n---\n*Performance Audit by claude-opus-4-7 (live source)*"
+    comment = f"## ⚡ Claude Performance Audit — Render Churn, @Published, Canvas, Task Waste\n\n{body}{trunc}\n\n---\n*Performance Audit by claude-sonnet-4-6 (live source)*"
     post_comment(repo, pr_number, comment, github_token)
     print("Performance audit posted.")
 

@@ -129,13 +129,13 @@ def main():
 
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
-        model="claude-opus-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"Deep security audit of GONE Player.\n\n{sources}"}],
     )
     body = message.content[0].text
-    comment = f"## 🔐 Claude Security & Vulnerability Audit\n\n{body}{trunc}\n\n---\n*Security Audit by claude-opus-4-7 (full source)*"
+    comment = f"## 🔐 Claude Security & Vulnerability Audit\n\n{body}{trunc}\n\n---\n*Security Audit by claude-sonnet-4-6 (full source)*"
     post_comment(repo, pr_number, comment, github_token)
     print("Security audit posted.")
 

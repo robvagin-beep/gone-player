@@ -175,9 +175,8 @@ def main() -> None:
 
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=16000,
-        thinking={"type": "adaptive"},
+        model="claude-sonnet-4-6",
+        max_tokens=8000,
         system=SYSTEM_PROMPT,
         messages=[{
             "role": "user",
@@ -185,14 +184,12 @@ def main() -> None:
         }],
     )
 
-    body = "\n\n".join(
-        block.text for block in message.content if block.type == "text"
-    )
+    body = message.content[0].text
 
     comment = (
-        "## 🧊 Hang / Freeze Audit — Progressive Blocking Analysis (Opus + Extended Thinking)\n\n"
+        "## 🧊 Hang / Freeze Audit — Progressive Blocking Analysis\n\n"
         f"{body}{trunc}\n\n---\n"
-        f"*Hang Audit by claude-opus-4-7 with extended thinking "
+        f"*Hang Audit by claude-sonnet-4-6 "
         f"({message.usage.input_tokens:,} in / {message.usage.output_tokens:,} out)*"
     )
 

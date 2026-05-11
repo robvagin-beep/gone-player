@@ -1,9 +1,6 @@
-name: Security Audit
+name: XY FX System Audit
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -12,7 +9,7 @@ on:
         default: '1'
 
 jobs:
-  security-audit:
+  xy-audit:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -23,10 +20,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install anthropic
-      - name: Run security audit
+      - name: Run XY FX audit
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
           REPO: ${{ github.repository }}
-        run: python security_audit.py
+        run: python xy_fx_audit.py

@@ -98,6 +98,31 @@ Is there a runtime API to detect this setting (`NSScreen.screensHaveSeparateSpac
 What specific technique do PopClip, Raycast, Lungo, Amphetamine, Bartender use?
 Are any of them open source or have published their approach?
 
+**11. Mission Control (Exposé) visibility**
+When the user activates Mission Control (swipe up with 3 fingers, or F3), all app windows
+appear in a bird's-eye overview. GONE currently disappears entirely in Mission Control.
+
+- What `NSWindowCollectionBehavior` flags control whether a window appears in Mission Control?
+- Does `.stationary` cause the window to be hidden in Mission Control?
+- Is `.managed` the correct flag to make the window appear as a normal tiled window?
+- Can a window participate in Mission Control while ALSO being visible in fullscreen Spaces?
+- What is the expected behavior for a "docked" (snapped off-screen) window — should it
+  appear as a tiny sliver at the edge, or be hidden entirely?
+
+**12. Docked / snapped-to-edge state in Mission Control**
+GONE has a snap system: the window slides off-screen to the left/right edge, leaving just
+a peek strip (PeekPanelView) visible. In this docked state:
+- The window frame is mostly off-screen — only ~18px visible
+- The snap state is `.docked` in WindowSnapManager
+
+When docked and Mission Control activates:
+- Should GONE appear in Mission Control at all (as a small strip)?
+- If not, how do we hide it gracefully? `.canJoinAllSpaces + .stationary` currently hides it
+  completely even when NOT docked — is there a way to have it visible when normal but
+  hidden when docked?
+- Is there a way to animate the window back to its saved position before Mission Control
+  activates, then re-dock after Mission Control exits?
+
 ## Deliverable format
 
 ### 1. Root cause (2-3 paragraphs)
@@ -115,9 +140,14 @@ Does it work? Code snippet if yes, explanation if no.
 ### 5. Recommended approach for GONE
 Specific recommendation given the constraints. What to change in GONEApp.swift.
 
-### 6. Test checklist
+### 6. Mission Control solution
+What `NSWindowCollectionBehavior` flags make the window appear correctly in Mission Control
+(not disappear) while still floating above fullscreen Spaces?
+Specific code for GONEApp.swift. Include handling for the docked state.
+
+### 7. Test checklist
 Bullet list: exactly what to test to confirm the fix works across all cases
-(regular Space, fullscreen Space, multiple displays, Mission Control animation, etc.)
+(regular Space, fullscreen Space, multiple displays, Mission Control, Exposé, docked state)
 """
 
 
@@ -151,22 +181,18 @@ def main() -> None:
 
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=16000,
-        thinking={"type": "adaptive"},
+        model="claude-sonnet-4-6",
+        max_tokens=8000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": RESEARCH_PROMPT}],
     )
 
-    # Extract only the text blocks (skip thinking blocks)
-    body = "\n\n".join(
-        block.text for block in message.content if block.type == "text"
-    )
+    body = message.content[0].text
 
     comment = (
-        "## 🪟 Fullscreen Space Layering — Research Report (Opus + Extended Thinking)\n\n"
+        "## 🪟 Fullscreen Space Layering — Research Report\n\n"
         f"{body}\n\n---\n"
-        f"*Research by claude-opus-4-7 with extended thinking "
+        f"*Research by claude-sonnet-4-6 "
         f"({message.usage.input_tokens:,} in / {message.usage.output_tokens:,} out)*"
     )
 

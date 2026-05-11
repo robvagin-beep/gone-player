@@ -85,13 +85,13 @@ def main():
 
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
-        model="claude-opus-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=2048,
         system=SYSTEM_PROMPT + "\n\n# CLAUDE.md\n" + claude_md,
         messages=[{"role": "user", "content": f"Pre-merge regression check.\n\n```diff\n{diff}\n```"}],
     )
     body = message.content[0].text
-    comment = f"## 🛡️ Claude Pre-merge Regression Check\n\n{body}{trunc}\n\n---\n*Regression check by claude-opus-4-7*"
+    comment = f"## 🛡️ Claude Pre-merge Regression Check\n\n{body}{trunc}\n\n---\n*Regression check by claude-sonnet-4-6*"
     post_comment(repo, pr_number, comment, github_token)
     print("Regression check posted.")
 

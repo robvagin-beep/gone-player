@@ -123,7 +123,7 @@ def main() -> None:
 
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
-        model="claude-opus-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[
@@ -137,7 +137,7 @@ def main() -> None:
     body = message.content[0].text
     comment = (
         "## 🎨 Claude UI Audit — Transparent Zones, Hit-Testing, Rendering, Layout\n\n"
-        f"{body}{trunc_note}\n\n---\n*UI Audit by claude-opus-4-7 (live source, not diff)*"
+        f"{body}{trunc_note}\n\n---\n*UI Audit by claude-sonnet-4-6 (live source, not diff)*"
     )
 
     post_comment(repo, pr_number, comment, github_token)

@@ -80,7 +80,7 @@ def main() -> None:
     client = anthropic.Anthropic(api_key=api_key)
 
     message = client.messages.create(
-        model="claude-opus-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=system_prompt,
         messages=[
@@ -92,7 +92,7 @@ def main() -> None:
     )
 
     review_body = message.content[0].text
-    comment = f"## Claude Code Review\n\n{review_body}{truncated}\n\n---\n*Reviewed by claude-opus-4-7*"
+    comment = f"## Claude Code Review\n\n{review_body}{truncated}\n\n---\n*Reviewed by claude-sonnet-4-6*"
 
     post_comment(repo, pr_number, comment, github_token)
     print("Review posted successfully.")

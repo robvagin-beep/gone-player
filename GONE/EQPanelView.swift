@@ -258,16 +258,42 @@ struct EQVerticalFader: View {
 // ── Stacked knob column: HPF · LPF · FX ──────────────────────────────────────
 struct EQKnobStack: View {
     @EnvironmentObject var state: PlayerState
+    @EnvironmentObject var xyPad: XYPadState
+
+    // When XY is active on a filter axis, reflect the live XY-derived cutoff
+    // so the knob rotates in sync with the curve point (XY no longer writes
+    // @Published state at 60Hz — this view reads xyPad directly instead).
+    private var displayHpfCutoff: Double {
+        guard xyPad.active else { return state.hpfCutoff }
+        let x = Float(xyPad.point.x)
+        switch xyPad.effectAxis {
+        case .filter: return Double(x * 0.55)
+        default:      return state.hpfCutoff
+        }
+    }
+
+    private var displayLpfCutoff: Double {
+        guard xyPad.active else { return state.lpfCutoff }
+        let x = Float(xyPad.point.x), y = Float(xyPad.point.y)
+        switch xyPad.effectAxis {
+        case .filter:   return Double((1 - y) * 0.55)
+        case .reso:     return Double(x * 0.75)
+        case .filtVerb: return Double(x * 0.7)
+        default:        return state.lpfCutoff
+        }
+    }
 
     private var hpfLabel: String {
-        guard state.hpfCutoff >= 0.015 else { return "HPF" }
-        let hz = 20.0 * powf(100.0, state.hpfCutoff)
+        let cut = displayHpfCutoff
+        guard cut >= 0.015 else { return "HPF" }
+        let hz = 20.0 * powf(100.0, Float(cut))
         return hz >= 1000 ? String(format: "%.1fk", hz / 1000) : String(format: "%.0f", hz)
     }
 
     private var lpfLabel: String {
-        guard state.lpfCutoff >= 0.015 else { return "LPF" }
-        let hz = 20000.0 * powf(0.01, state.lpfCutoff)
+        let cut = displayLpfCutoff
+        guard cut >= 0.015 else { return "LPF" }
+        let hz = 20000.0 * powf(0.01, Float(cut))
         return hz >= 1000 ? String(format: "%.1fk", hz / 1000) : String(format: "%.0f", hz)
     }
 
@@ -283,7 +309,7 @@ struct EQKnobStack: View {
 
             EQMiniKnob(
                 value: Binding(
-                    get: { state.hpfCutoff },
+                    get: { displayHpfCutoff },
                     set: { state.hpfCutoff = $0; state.audioEngine.setHPF(cutoff: $0) }
                 ),
                 label: hpfLabel
@@ -293,7 +319,7 @@ struct EQKnobStack: View {
 
             EQMiniKnob(
                 value: Binding(
-                    get: { state.lpfCutoff },
+                    get: { displayLpfCutoff },
                     set: { state.lpfCutoff = $0; state.audioEngine.setLPF(cutoff: $0) }
                 ),
                 label: lpfLabel
