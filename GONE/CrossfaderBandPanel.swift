@@ -63,7 +63,7 @@ final class CrossfaderGapWindow: NSPanel {
         let overlayLevel   = Int(CGWindowLevelForKey(.overlayWindow))
         level              = NSWindow.Level(rawValue: overlayLevel - 1)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                              .fullScreenDisallowsTiling, .ignoresCycle]
+                              .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         hidesOnDeactivate  = false
 
         // Root view: BandHitTestView passes through clicks far from the bar

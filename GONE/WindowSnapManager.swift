@@ -79,10 +79,12 @@ final class WindowSnapManager {
         let needsRestore = snapState == .docked || snapState == .peeking
         // Restore to normal presence level — docked state raises to screenSaverWindow.
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
+        // Cancel any in-flight dockToEdge completion — prevents a pending completion from
+        // overwriting snapState/.docked and re-locking the frame after we've disabled snap.
+        dockToken &+= 1
         clearInfrastructure()
         playerState?.snapEnabled = false
         savedDockedY = nil
-        snapState = .off
         playerState?.snapTimerStart = nil
         if needsRestore { playerState?.restoreFromSnap() }
         let target = savedOrigin ?? centeredOrigin(for: window)
@@ -91,6 +93,11 @@ final class WindowSnapManager {
         Task { @MainActor [weak self, weak window] in
             try? await Task.sleep(nanoseconds: 50_000_000)
             guard let self, let window else { return }
+            // Set snapState = .off here, after restoreFromSnap() has settled, so that
+            // windowMoveAnchorUpdate cannot fire while the window is still at the docked
+            // off-screen X position. Setting it now (just before animateTo) means the
+            // first anchor update fires when the window is already at the target position.
+            self.snapState = .off
             self.animateTo(window: window, origin: target)
         }
     }
@@ -208,7 +215,7 @@ final class WindowSnapManager {
     }
 
     private func handleSpaceChange(window: NSWindow) {
-        guard snapState == .docked || snapState == .peeking else { return }
+        guard snapState == .docked || snapState == .peeking || playerState?.isSnapping == true else { return }
         // Flash invisible to erase any residual body artifact, then re-anchor.
         // Cancel any in-flight restore timer so rapid Space swipes don't stack.
         spaceAlphaTimer?.invalidate()

@@ -79,7 +79,9 @@ extension PlayerState {
 
     func reorderTrack(_ trackId: UUID, before targetTrackId: UUID, inTabId tabId: UUID) {
         guard trackId != targetTrackId,
-              let tabIndex = playlistTabs.firstIndex(where: { $0.id == tabId })
+              let tabIndex = playlistTabs.firstIndex(where: { $0.id == tabId }),
+              playlistTabs[tabIndex].trackIds.contains(trackId),
+              playlistTabs[tabIndex].trackIds.contains(targetTrackId)
         else { return }
         // Bake the current visible (sorted) order into trackIds before switching to
         // manual sort — otherwise drag result operates on storage order, not visible order.

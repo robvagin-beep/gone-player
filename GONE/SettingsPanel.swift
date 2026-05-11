@@ -457,6 +457,9 @@ private struct AudioSettingsTab: View {
                     Button {
                         currentID = device.id
                         AudioEngineNext.shared.setOutputDevice(device.id)
+                        if SplitModeManager.shared.isActive {
+                            AudioEngineNext.secondary.setOutputDevice(device.id)
+                        }
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: isSel ? "checkmark" : "circle")

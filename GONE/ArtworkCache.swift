@@ -29,13 +29,16 @@ final class ArtworkCache: @unchecked Sendable {
         if let img = cache.object(forKey: key) { return img }
         let url = dir.appendingPathComponent(id.uuidString + ".jpg")
         guard let data = try? Data(contentsOf: url), let img = NSImage(data: data) else { return nil }
-        cache.setObject(img, forKey: key)
+        let diskCG = img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        let diskCost = diskCG.map { $0.width * $0.height * 4 } ?? Int(img.size.width * img.size.height * 4)
+        cache.setObject(img, forKey: key, cost: diskCost)
         return img
     }
 
     func store(_ native: NSImage, for id: UUID) {
         let key = id.uuidString as NSString
-        let cost = Int(native.size.width * native.size.height * 4)
+        let nativeCG = native.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        let cost = nativeCG.map { $0.width * $0.height * 4 } ?? Int(native.size.width * native.size.height * 4)
         cache.setObject(native, forKey: key, cost: cost)
         let url = dir.appendingPathComponent(id.uuidString + ".jpg")
         guard !FileManager.default.fileExists(atPath: url.path) else { return }

@@ -161,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let keyWindow = NSApp.keyWindow, isMainWin(keyWindow) { return keyWindow }
         if let mainAppWindow = NSApp.mainWindow, isMainWin(mainAppWindow) { return mainAppWindow }
         if let visible = NSApp.windows.first(where: isMainWin) { return visible }
-        return NSApp.windows.first(where: { !($0 is NSPanel) })
+        return NSApp.windows.first(where: { !($0 is NSPanel) && $0 !== clone })
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
