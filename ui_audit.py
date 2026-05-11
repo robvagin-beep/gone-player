@@ -68,6 +68,19 @@ Report format:
 Be direct. No filler. Flag real issues only."""
 
 
+
+def call_claude_with_retry(client, **kwargs):
+    import time
+    for attempt in range(3):
+        try:
+            return client.messages.create(**kwargs)
+        except Exception as e:
+            if "rate_limit" in str(e).lower() and attempt < 2:
+                print(f"Rate limited, waiting 65s before retry {attempt + 2}/3...")
+                time.sleep(65)
+            else:
+                raise
+
 def load_sources(base: str) -> str:
     parts = []
     for rel in UI_FILES:
@@ -122,7 +135,7 @@ def main() -> None:
         trunc_note = f"\n\n> ℹ️ Full source included ({total_chars:,} characters across {len(UI_FILES)} UI files)."
 
     client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
+    message = call_claude_with_retry(client,
         model="claude-sonnet-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,

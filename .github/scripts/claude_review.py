@@ -79,7 +79,7 @@ def main() -> None:
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    message = client.messages.create(
+    message = call_claude_with_retry(client,
         model="claude-sonnet-4-6",
         max_tokens=4096,
         system=system_prompt,

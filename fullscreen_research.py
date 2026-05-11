@@ -180,7 +180,7 @@ def main() -> None:
     repo         = os.environ.get("REPO", "robvagin-beep/gone-player")
 
     client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
+    message = call_claude_with_retry(client,
         model="claude-sonnet-4-6",
         max_tokens=8000,
         system=SYSTEM_PROMPT,

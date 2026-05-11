@@ -60,6 +60,19 @@ Output format:
 
 Be specific and constructive. No generic design advice — only things grounded in the actual code."""
 
+
+def call_claude_with_retry(client, **kwargs):
+    import time
+    for attempt in range(3):
+        try:
+            return client.messages.create(**kwargs)
+        except Exception as e:
+            if "rate_limit" in str(e).lower() and attempt < 2:
+                print(f"Rate limited, waiting 65s before retry {attempt + 2}/3...")
+                time.sleep(65)
+            else:
+                raise
+
 def load_sources(base):
     parts = []
     for rel in SETTINGS_FILES:
@@ -107,7 +120,7 @@ def main():
         trunc = f"\n\n> ✅ Full source: {original_len:,} chars."
 
     client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
+    message = call_claude_with_retry(client,
         model="claude-sonnet-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
