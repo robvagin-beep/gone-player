@@ -446,7 +446,7 @@ final class WindowSnapManager {
             frameLockX = snapX
             // Enforce tabVisible width — prevents full-width body flash during Space transition.
             // Only corrects width; height stays as-is.
-            if window.frame.width != tabVisible {
+            if abs(window.frame.width - tabVisible) > 0.5 {
                 window.setFrame(
                     NSRect(x: snapX, y: newY, width: tabVisible, height: window.frame.height),
                     display: false

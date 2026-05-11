@@ -334,6 +334,8 @@ final class PlayerState: ObservableObject {
         stopBPMChop()
         stopSlicer()
         cancelXYSpring()
+        xyPad.active = false
+        xyPad.point  = CGPoint(x: 0.5, y: 0.5)
     }
 
     func cycleRepeatMode() {
@@ -405,7 +407,7 @@ final class PlayerState: ObservableObject {
         if !magnifySpeed.isFinite || magnifySpeed <= 0 { magnifySpeed = 0.18 }
         if !snapInactivityDelay.isFinite || snapInactivityDelay < 1 { snapInactivityDelay = 5 }
         if !snapAnimSpeed.isFinite || snapAnimSpeed <= 0 { snapAnimSpeed = 1.0 }
-        if !snapTabWidth.isFinite || snapTabWidth < 8 || snapTabWidth > 48 { snapTabWidth = 19 }
+        if !snapTabWidth.isFinite || snapTabWidth < 8 || snapTabWidth > 36 { snapTabWidth = 19 }
     }
 
     func persistSettings() {

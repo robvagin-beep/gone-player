@@ -83,6 +83,7 @@ final class SplitModeManager: ObservableObject {
         AudioEngineNext.secondary.onProgress = nil
         AudioEngineNext.secondary.onFinished = nil
         AudioEngineNext.secondary.onSpectrum = nil
+        AudioEngineNext.secondary.onError    = nil
         // Mark the engine as stopped on main before SwiftUI window teardown.
         // This prevents handleEngineConfigurationChange (fired by setOutputDevice on audioOpQueue)
         // from restarting playback after windows are closed.
@@ -176,6 +177,13 @@ final class SplitModeManager: ObservableObject {
         }
         eng.onSpectrum = { [weak state] data in
             state?.spectrumFeed.data = data
+        }
+        eng.onError = { [weak state] msg in
+            DispatchQueue.main.async {
+                guard let s = state, s.debugMode else { return }
+                let ts = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+                s.lastError = "[B/\(ts)] \(msg)"
+            }
         }
 
         // Snapshot A's full audio state into B engine.

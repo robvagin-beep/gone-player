@@ -711,7 +711,7 @@ private struct SnapSettingsTab: View {
             HStack(spacing: 4) {
                 ForEach(speedOptions, id: \.0) { label, val in
                     Button { state.snapAnimSpeed = val } label: {
-                        let active = abs(state.snapAnimSpeed - val) < 0.15
+                        let active = speedOptions.min(by: { abs($0.1 - state.snapAnimSpeed) < abs($1.1 - state.snapAnimSpeed) })?.1 == val
                         Text(label)
                             .font(G.mono(10, weight: active ? .semibold : .regular))
                             .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))

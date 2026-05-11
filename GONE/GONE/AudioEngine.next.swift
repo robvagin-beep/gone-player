@@ -78,7 +78,7 @@ final class AudioEngineNext {
     var onProgress: ((Double, Double) -> Void)?
     var onSpectrum: (([Float]) -> Void)?
     var onFinished: (() -> Void)?
-    var onError: ((String) -> Void)?   // fires with human-readable error string; only set when debugMode=true
+    var onError: ((String) -> Void)?   // fires with human-readable error string; always set, debugMode gate is inside the closure
 
     private var baseVolume: Double = 72
     var crossfadeGain: Float = 1.0 {
