@@ -118,16 +118,16 @@ IMPORTANT — DO NOT FLAG:
 Here are the source files:
 
 === WindowSnapManager.swift ===
-{file_contents["GONE/GONE/WindowSnapManager.swift"]}
+{file_contents["GONE/WindowSnapManager.swift"]}
 
 === GONEApp.swift ===
-{file_contents["GONE/GONE/GONEApp.swift"]}
+{file_contents["GONE/GONEApp.swift"]}
 
 === SplitModeManager.swift ===
-{file_contents["GONE/GONE/SplitModeManager.swift"]}
+{file_contents["GONE/SplitModeManager.swift"]}
 
 === CrossfaderBandPanel.swift ===
-{file_contents["GONE/GONE/CrossfaderBandPanel.swift"]}
+{file_contents["GONE/CrossfaderBandPanel.swift"]}
 
 Perform a thorough audit. For each finding, classify as:
 - **CRITICAL**: causes the window to travel with a Space or be invisible when it should be visible
