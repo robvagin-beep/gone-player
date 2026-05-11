@@ -357,15 +357,14 @@ final class WindowSnapManager {
     private func peek(window: NSWindow) {
         guard let screen = screen(for: window) else { return }
         snapState = .peeking  // set before animation so poll can't re-trigger
-        let peekX = screen.frame.maxX - peekVisible
+        // Restore full width instantly before sliding — window is at screen edge so the
+        // resize is off-screen and invisible. Avoids per-frame resize during slide animation
+        // which causes macOS shadow/border compositor artifacts.
         if let fullWidth = savedWindowWidth, window.frame.width < fullWidth {
-            // Docked at tabVisible width — restore full width while sliding to peek position.
-            let y = savedDockedY ?? clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
-            let targetFrame = NSRect(x: peekX, y: y, width: fullWidth, height: window.frame.height)
-            slideFrameTo(window: window, frame: targetFrame, duration: peekAnimDuration)
-        } else {
-            slideTo(window: window, x: peekX)
+            let f = window.frame
+            window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: fullWidth, height: f.height), display: true)
         }
+        slideTo(window: window, x: screen.frame.maxX - peekVisible)
     }
 
     private func dockFromProximity(window: NSWindow) {
@@ -374,10 +373,12 @@ final class WindowSnapManager {
         let y = savedDockedY ?? clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
         snapState = .docked           // set immediately to prevent poll re-triggering
         playerState?.isSnapping = true // guard updateWindowSize during slide
-        // Animate origin + width simultaneously: slides back to edge and shrinks to tabVisible.
-        let targetFrame = NSRect(x: snapX, y: y, width: tabVisible, height: window.frame.height)
-        slideFrameTo(window: window, frame: targetFrame, duration: peekAnimDuration) { [weak self, weak window] in
+        // Animate position only — avoids per-frame resize artifacts.
+        // Shrink to tabVisible in completion when window is already at the screen edge (invisible).
+        slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: peekAnimDuration) { [weak self, weak window] in
             guard let self, let window else { return }
+            let f = window.frame
+            window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
             self.lockFrame(window: window, x: snapX)
             // Keep isSnapping = true — window stays at tabVisible width.
             window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
@@ -396,6 +397,14 @@ final class WindowSnapManager {
             let origin = centeredOrigin(for: window)
             let sz = NSSize(width: savedWindowWidth ?? window.frame.size.width, height: window.frame.size.height)
             targetFrame = NSRect(origin: origin, size: sz)
+        }
+
+        // Restore full width instantly before animating — window is still at screen edge so
+        // the resize is invisible. Ensures slideFrameTo only animates position/height, not width,
+        // which prevents macOS shadow/border compositor artifacts during the slide.
+        if window.frame.width < targetFrame.width {
+            let f = window.frame
+            window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: targetFrame.width, height: f.height), display: false)
         }
 
         snapState = .expanded
