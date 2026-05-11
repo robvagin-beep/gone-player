@@ -2,6 +2,14 @@ import Foundation
 
 extension PlayerState {
 
+    // Concurrency cap for BPM + waveform analysis pipelines.
+    // Decode is moderately I/O bound; running cores-2 leaves headroom for UI thread
+    // and Swift cooperative pool. Floor at 2 so weaker machines still parallelize.
+    nonisolated static let analysisConcurrency: Int = {
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        return max(2, min(8, cores - 2))
+    }()
+
     // MARK: — Public entry points
 
     func reanalyzeBPM(for trackId: UUID) {
@@ -72,7 +80,7 @@ extension PlayerState {
         let pendingIds = Set(pending.map(\.id))
         for i in tracks.indices where pendingIds.contains(tracks[i].id) { tracks[i].bpmAnalysisState = .analyzing }
 
-        Task.detached(priority: .utility) { [self] in
+        Task.detached(priority: .userInitiated) { [self] in
             // Wait out any active import — competing AVAssetReaders freeze the UI.
             while await MainActor.run(body: { self.isImporting }) {
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -82,8 +90,7 @@ extension PlayerState {
             let first = pending[0]
             await Self.analyzeBPMAndCommit(track: first, state: self)
 
-            // Lane 2: background batches — priority-aware.
-            // Between batches, check if currentId changed and reorder queue.
+            // Lane 2: background — priority-aware, no artificial batching wall.
             var queue = Array(pending.dropFirst())
             while !queue.isEmpty {
                 // Priority reorder: move newly selected current track to front.
@@ -95,12 +102,12 @@ extension PlayerState {
                 }
                 await MainActor.run { self.bpmPriorityId = nil }
 
-                let batch = Array(queue.prefix(4))
+                let batch = Array(queue.prefix(Self.analysisConcurrency * 2))
                 queue = Array(queue.dropFirst(batch.count))
 
                 await withTaskGroup(of: Void.self) { group in
                     var q = batch
-                    for _ in 0..<min(2, q.count) {
+                    for _ in 0..<min(Self.analysisConcurrency, q.count) {
                         let track = q.removeFirst()
                         group.addTask { await Self.analyzeBPMAndCommit(track: track, state: self) }
                     }
@@ -109,8 +116,6 @@ extension PlayerState {
                         group.addTask { await Self.analyzeBPMAndCommit(track: track, state: self) }
                     }
                 }
-
-                try? await Task.sleep(nanoseconds: 200_000_000)
             }
 
             await MainActor.run { [weak self] in
@@ -126,18 +131,45 @@ extension PlayerState {
     }
 
     private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
+        // Cache hit: skip decode + analysis entirely. Saves ~300-500 ms per track.
+        if let hit = await AnalysisCache.shared.get(for: track.url), hit.bpm > 0 {
+            await MainActor.run {
+                guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
+                state.tracks[idx].bpm = hit.bpm
+                state.tracks[idx].bpmAnalysisState = .analyzed
+                if state.tracks[idx].waveform.isEmpty, !hit.waveform.isEmpty {
+                    state.tracks[idx].waveform = hit.waveform
+                }
+            }
+            return
+        }
+
         let floor   = await MainActor.run { state.bpmAnalysisFloor }
         let ceiling = await MainActor.run { state.bpmAnalysisCeiling }
-        let bpm = await LibraryScanner().analyzeBPM(url: track.url, floor: floor, ceiling: ceiling) { progress in
+        // Single decode: BPM + waveform from one AVAssetReader pass.
+        // Waveform result populates state immediately, skipping the separate waveform pipeline.
+        let (bpm, waveform) = await LibraryScanner().analyzeBPMWithWaveform(
+            url: track.url, floor: floor, ceiling: ceiling, waveformBars: 84
+        ) { progress in
             Task { @MainActor [weak state] in
                 state?.analysisFeed.progress[track.id] = progress
             }
         }
+        if bpm > 0 {
+            await AnalysisCache.shared.putBPMAndWaveform(url: track.url, bpm: bpm, waveform: waveform)
+        }
         await MainActor.run {
             state.analysisFeed.progress.removeValue(forKey: track.id)
             guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
-            if bpm > 0 { state.tracks[idx].bpm = bpm; state.tracks[idx].bpmAnalysisState = .analyzed }
-            else       { state.tracks[idx].bpmAnalysisState = .failed }
+            if bpm > 0 {
+                state.tracks[idx].bpm = bpm
+                state.tracks[idx].bpmAnalysisState = .analyzed
+                if state.tracks[idx].waveform.isEmpty, !waveform.isEmpty {
+                    state.tracks[idx].waveform = waveform
+                }
+            } else {
+                state.tracks[idx].bpmAnalysisState = .failed
+            }
         }
     }
 
@@ -161,12 +193,12 @@ extension PlayerState {
         isComputingWaveforms = true
         waveformPriorityId = nil
 
-        Task.detached(priority: .utility) { [self] in
+        Task.detached(priority: .userInitiated) { [self] in
             // Lane 1: first track (current or head) — computed immediately.
             let first = pending[0]
             await Self.computeWaveformAndCommit(track: first, state: self)
 
-            // Lane 2: background batches — priority-aware.
+            // Lane 2: background — priority-aware, no artificial batching wall.
             var queue = Array(pending.dropFirst())
             while !queue.isEmpty {
                 let priorityId = await MainActor.run { self.waveformPriorityId ?? self.currentId }
@@ -177,12 +209,12 @@ extension PlayerState {
                 }
                 await MainActor.run { self.waveformPriorityId = nil }
 
-                let batch = Array(queue.prefix(4))
+                let batch = Array(queue.prefix(Self.analysisConcurrency * 2))
                 queue = Array(queue.dropFirst(batch.count))
 
                 await withTaskGroup(of: Void.self) { group in
                     var q = batch
-                    for _ in 0..<min(2, q.count) {
+                    for _ in 0..<min(Self.analysisConcurrency, q.count) {
                         let track = q.removeFirst()
                         group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
                     }
@@ -191,8 +223,6 @@ extension PlayerState {
                         group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
                     }
                 }
-
-                try? await Task.sleep(nanoseconds: 250_000_000)
             }
 
             await MainActor.run { [weak self] in
@@ -206,6 +236,16 @@ extension PlayerState {
     }
 
     private static func computeWaveformAndCommit(track: Track, state: PlayerState) async {
+        // Cache hit: skip full-track decode entirely.
+        if let hit = await AnalysisCache.shared.get(for: track.url), !hit.waveform.isEmpty {
+            await MainActor.run {
+                guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }),
+                      state.tracks[idx].waveform.isEmpty else { return }
+                state.tracks[idx].waveform = hit.waveform
+            }
+            return
+        }
+
         // AVAssetReader doesn't support concurrent reads on the same file.
         // BPM analysis may be reading the same URL simultaneously — retry with backoff.
         var waveform: [Float] = []
@@ -214,6 +254,7 @@ extension PlayerState {
             if !waveform.isEmpty { break }
             if attempt < 2 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
         }
+        if !waveform.isEmpty { await AnalysisCache.shared.putWaveform(url: track.url, waveform: waveform) }
         let committed = waveform.isEmpty ? Array(repeating: Float(0.04), count: 84) : waveform
         await MainActor.run {
             guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }),

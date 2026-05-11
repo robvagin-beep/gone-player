@@ -181,12 +181,12 @@ struct PeekPanelView: View {
     // Artwork — if present show it; otherwise pixel-grid spectrum
     @ViewBuilder
     private var artworkArea: some View {
-        if let data = state.current?.artworkData, !data.isEmpty {
+        if state.current?.hasArtwork == true {
             ArtSwatchView(
                 index: trackIndex,
                 size: 40,
                 cornerRadius: 7,
-                artworkData: data,
+                hasArtwork: true,
                 trackId: state.current?.id,
                 showsBrandPlaceholder: false
             )

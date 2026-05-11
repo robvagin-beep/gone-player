@@ -99,12 +99,12 @@ struct RootView: View {
             // Top offset = shellInsetTop(6) + VStack.padding.top(4) + TrackHeaderView.padding.top(8) = 18
             if state.gradientMapSaturation > 0.5,
                let currentId = state.currentId,
-               let artData = state.current?.artworkData {
+               state.current?.hasArtwork == true {
                 ArtSwatchView(
                     index: state.tracks.firstIndex(where: { $0.id == currentId }) ?? 0,
                     size: 48,
                     cornerRadius: 7,
-                    artworkData: artData,
+                    hasArtwork: true,
                     trackId: currentId
                 )
                 .allowsHitTesting(false)

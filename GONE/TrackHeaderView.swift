@@ -16,7 +16,7 @@ struct TrackHeaderView: View {
         HStack(alignment: .top, spacing: 10) {
             // Art swatch — deliberately excluded from gradient map
             ArtSwatchView(index: trackIndexCache, size: 48, cornerRadius: 7,
-                          artworkData: state.current?.artworkData,
+                          hasArtwork: state.current?.hasArtwork ?? false,
                           trackId: state.current?.id,
                           showsBrandPlaceholder: track == nil)
 
@@ -161,7 +161,7 @@ struct ArtSwatchView: View {
     let index: Int
     let size: CGFloat
     let cornerRadius: CGFloat
-    var artworkData: Data? = nil
+    var hasArtwork: Bool = false
     var trackId: UUID? = nil
     var showsBrandPlaceholder: Bool = false
     var isCurrent: Bool = false
@@ -169,11 +169,7 @@ struct ArtSwatchView: View {
     @State private var image: NSImage?
     @State private var loadGeneration: Int = 0
 
-    // Cheap key: UUID string + artwork presence flag.
-    // Avoids byte-level Data equality on every re-render (can be 256KB+ per track).
-    private var artworkTaskId: String {
-        "\(trackId?.uuidString ?? ""):\(artworkData != nil)"
-    }
+    private var artworkTaskId: String { "\(trackId?.uuidString ?? ""):\(hasArtwork)" }
 
     var body: some View {
         Group {
@@ -205,25 +201,14 @@ struct ArtSwatchView: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .task(id: artworkTaskId) {
-            guard let data = artworkData else { image = nil; return }
+            guard hasArtwork, let id = trackId else { image = nil; return }
             loadGeneration += 1
             let generation = loadGeneration
-            let requestedTrackId = trackId
             DispatchQueue.global(qos: .userInitiated).async {
-                let cache = ArtworkCache.shared
-                let resolvedImage: NSImage?
-                if let id = requestedTrackId, let cached = cache.image(for: id) {
-                    resolvedImage = cached
-                } else if let decoded = NSImage(data: data) {
-                    if let id = requestedTrackId { cache.store(decoded, for: id) }
-                    resolvedImage = decoded
-                } else {
-                    resolvedImage = nil
-                }
-
+                let resolved = ArtworkCache.shared.image(for: id)
                 DispatchQueue.main.async {
                     guard loadGeneration == generation else { return }
-                    image = resolvedImage
+                    image = resolved
                 }
             }
         }

@@ -20,7 +20,7 @@ struct Track: Identifiable, Equatable {
     var bitrate: Int              // kbps; 0 if lossless (use sampleRate instead)
     var sampleRate: Double        // Hz
     var rating: Int               // 0–5
-    var artworkData: Data?        // album art raw bytes, nil if none
+    var hasArtwork: Bool           // true when ArtworkCache has an image for this id
     var waveform: [Float]         // 84 bars, computed async
     var isMissing: Bool           // file not found at url
     var bpmAnalysisState: BPMAnalysisState

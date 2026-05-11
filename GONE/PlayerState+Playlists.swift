@@ -237,7 +237,7 @@ extension PlayerState {
                     guard let idx = t.firstIndex(where: { $0.id == track.id }) else { continue }
                     var updated = track
                     updated.rating = t[idx].rating
-                    updated.artworkData = track.artworkData ?? t[idx].artworkData
+                    updated.hasArtwork = track.hasArtwork || t[idx].hasArtwork
                     updated.waveform = t[idx].waveform
                     if t[idx].bpm > 0 { updated.bpm = t[idx].bpm }
                     if t[idx].bpmAnalysisState != .pending { updated.bpmAnalysisState = t[idx].bpmAnalysisState }

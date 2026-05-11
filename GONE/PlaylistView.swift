@@ -967,7 +967,7 @@ struct PlaylistRowView: View {
                             index: state.tracks.firstIndex(of: track) ?? 0,
                             size: 20,
                             cornerRadius: 3,
-                            artworkData: track.artworkData,
+                            hasArtwork: track.hasArtwork,
                             trackId: track.id,
                             isCurrent: isCurrent
                         )

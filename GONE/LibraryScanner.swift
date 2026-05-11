@@ -44,7 +44,7 @@ final class LibraryScanner {
             bitrate: 0,
             sampleRate: 0,
             rating: 0,
-            artworkData: nil,
+            hasArtwork: false,
             waveform: [],
             isMissing: !FileManager.default.fileExists(atPath: url.path),
             bpmAnalysisState: .pending
@@ -63,7 +63,7 @@ final class LibraryScanner {
                 duration: 0, bpm: 0, key: "—",
                 format: url.pathExtension.uppercased(),
                 bitrate: 0, sampleRate: 0,
-                rating: 0, artworkData: nil, waveform: [],
+                rating: 0, hasArtwork: false, waveform: [],
                 isMissing: true,
                 bpmAnalysisState: .failed
             )
@@ -192,6 +192,14 @@ final class LibraryScanner {
                 album: album
             )
         }
+        // Move artwork bytes into ArtworkCache immediately — eliminates multi-MB Data in Track array.
+        let hasArtwork: Bool
+        if let data = artworkData, let img = NSImage(data: data) {
+            ArtworkCache.shared.store(img, for: trackId)
+            hasArtwork = true
+        } else {
+            hasArtwork = false
+        }
         return Track(
             id: trackId, url: url,
             title: title.isEmpty ? url.deletingPathExtension().lastPathComponent : title,
@@ -202,7 +210,7 @@ final class LibraryScanner {
             bitrate: isLossless(ext: ext) ? 0 : bitrate,
             sampleRate: sampleRate,
             rating: 0,
-            artworkData: artworkData,
+            hasArtwork: hasArtwork,
             waveform: [],
             isMissing: false,
             bpmAnalysisState: bpm > 0 ? .analyzed : .pending
@@ -525,6 +533,175 @@ final class LibraryScanner {
         return bitmap.representation(using: .png, properties: [:])
     }
 
+    // ── Combined decode: BPM + waveform in one AVAssetReader pass ────────────
+
+    // Full-track decode at 11025 Hz mono → waveform from all samples, BPM from 30s window.
+    // Eliminates the second AVAssetReader open that computeWaveform would otherwise require.
+    func analyzeBPMWithWaveform(url: URL, floor: Double = 60, ceiling: Double = 200,
+                                waveformBars: Int = 84,
+                                onProgress: ((Double) -> Void)? = nil) async -> (bpm: Double, waveform: [Float]) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let asset = AVURLAsset(url: url)
+        guard let assetTrack = try? await asset.loadTracks(withMediaType: .audio).first else { return (0, []) }
+
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: 11025.0,
+        ]
+
+        let totalSec = CMTimeGetSeconds((try? await asset.load(.duration)) ?? .zero)
+        guard let reader = try? AVAssetReader(asset: asset) else { return (0, []) }
+        let output = AVAssetReaderTrackOutput(track: assetTrack, outputSettings: settings)
+        output.alwaysCopiesSampleData = false
+        reader.add(output)
+        reader.startReading()
+
+        let decodedSR: Double = 11025
+        let expectedSamples = max(1, Int(totalSec * decodedSR))
+        var allSamples: [Float] = []
+        allSamples.reserveCapacity(min(expectedSamples, Int(decodedSR * 1200)))
+        var lastReportedPct = 0.0
+
+        var scale: Float = 1.0 / 32768.0
+        while let buf = output.copyNextSampleBuffer(),
+              let block = CMSampleBufferGetDataBuffer(buf) {
+            let len   = CMBlockBufferGetDataLength(block)
+            let count = len / 2
+            var raw   = [Int16](repeating: 0, count: count)
+            CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: len, destination: &raw)
+            var converted = [Float](repeating: 0, count: count)
+            raw.withUnsafeBufferPointer { src in
+                converted.withUnsafeMutableBufferPointer { dst in
+                    guard let sp = src.baseAddress, let dp = dst.baseAddress else { return }
+                    vDSP_vflt16(sp, 1, dp, 1, vDSP_Length(count))
+                    vDSP_vsmul(dp, 1, &scale, dp, 1, vDSP_Length(count))
+                }
+            }
+            allSamples.append(contentsOf: converted)
+            if let onProgress {
+                let pct = min(0.88, Double(allSamples.count) / Double(max(1, expectedSamples)))
+                if pct - lastReportedPct >= 0.08 { lastReportedPct = pct; onProgress(pct) }
+            }
+        }
+        reader.cancelReading()
+        guard allSamples.count > 11025 else { return (0, []) }
+
+        let effectiveSec = totalSec > 0 ? totalSec : Double(allSamples.count) / decodedSR
+        let waveform = computeWaveformFromSamples(allSamples, totalSec: effectiveSec, bars: waveformBars)
+
+        let windowSec = min(30.0, effectiveSec)
+        let startSec  = effectiveSec > 50 ? 15.0 : 0.0
+        let startIdx  = Int(startSec * decodedSR)
+        let endIdx    = min(allSamples.count, startIdx + Int(windowSec * decodedSR))
+        let bpmSlice  = startIdx < endIdx ? Array(allSamples[startIdx..<endIdx]) : allSamples
+        let bpm       = computeBPMFromSamples(bpmSlice, floor: floor, ceiling: ceiling)
+
+        onProgress?(1.0)
+        return (bpm, waveform)
+    }
+
+    private func computeBPMFromSamples(_ samples: [Float], floor: Double, ceiling: Double) -> Double {
+        let hopSize = 128
+        let frameCount = samples.count / hopSize
+        var energy = [Float](repeating: 0, count: frameCount)
+        for i in 0..<frameCount {
+            let start = i * hopSize
+            let end   = min(start + hopSize, samples.count)
+            var rms: Float = 0
+            samples.withUnsafeBufferPointer { buf in
+                guard let base = buf.baseAddress else { return }
+                vDSP_svesq(base.advanced(by: start), 1, &rms, vDSP_Length(end - start))
+            }
+            energy[i] = rms / Float(end - start)
+        }
+        var onset = [Float](repeating: 0, count: frameCount)
+        for i in 1..<frameCount { onset[i] = max(0, energy[i] - energy[i-1]) }
+
+        let fps    = 11025.0 / Double(hopSize)
+        let minLag = max(1, Int(fps * 60.0 / max(ceiling, floor + 1)))
+        let maxLag = Int(fps * 60.0 / max(floor, 1))
+        guard minLag < maxLag, maxLag < frameCount else { return 0 }
+
+        let analysisLen   = min(frameCount - maxLag, 4096)
+        let referenceOnset = onset[0..<analysisLen]
+        var corrValues = [Float](repeating: 0, count: maxLag + 1)
+        for lag in minLag...maxLag {
+            var corr: Float = 0
+            referenceOnset.withUnsafeBufferPointer { refBuf in
+                onset.withUnsafeBufferPointer { onsBuf in
+                    guard let rb = refBuf.baseAddress, let ob = onsBuf.baseAddress else { return }
+                    vDSP_dotpr(rb, 1, ob.advanced(by: lag), 1, &corr, vDSP_Length(analysisLen))
+                }
+            }
+            corrValues[lag] = corr / Float(analysisLen)
+        }
+
+        var bestLag = minLag; var bestScore: Float = 0
+        for lag in minLag...maxLag {
+            let c = corrValues[lag]
+            let h2: Float = lag * 2 <= maxLag ? corrValues[lag * 2] * 0.35 : 0
+            let h3: Float = lag * 3 <= maxLag ? corrValues[lag * 3] * 0.15 : 0
+            let score = c + h2 + h3
+            if score > bestScore { bestScore = score; bestLag = lag }
+        }
+        guard bestScore > 0 else { return 0 }
+
+        let halfLag = bestLag / 2
+        if halfLag >= minLag, halfLag <= maxLag, corrValues[halfLag] >= bestScore * 0.60 {
+            bestLag = halfLag
+        }
+
+        var bpm = 60.0 * fps / Double(bestLag)
+        let lo = max(floor, 1); let hi = max(ceiling, lo + 1)
+        while bpm > 0 && bpm < lo { bpm *= 2 }
+        while bpm > hi { bpm /= 2 }
+        return (bpm * 10).rounded() / 10
+    }
+
+    private func computeWaveformFromSamples(_ samples: [Float], totalSec: Double, bars: Int) -> [Float] {
+        let expectedFrames = max(1, Int(totalSec * 11025))
+        let bucketSize     = max(1, expectedFrames / max(1, bars))
+        var envelope       = [Float](repeating: 0, count: bars)
+        var bucketIndex = 0, bucketCount = 0
+        var bucketPeak: Float = 0, bucketSumSquares: Float = 0
+
+        for sample in samples {
+            let value = abs(sample)
+            bucketPeak = max(bucketPeak, value)
+            bucketSumSquares += value * value
+            bucketCount += 1
+            if bucketCount >= bucketSize {
+                if bucketIndex < bars {
+                    let rms = sqrt(bucketSumSquares / Float(bucketCount))
+                    envelope[bucketIndex] = bucketPeak * 0.62 + rms * 0.38
+                }
+                bucketIndex += 1
+                if bucketIndex >= bars { break }
+                bucketCount = 0; bucketPeak = 0; bucketSumSquares = 0
+            }
+        }
+        if bucketIndex < bars, bucketCount > 0 {
+            let rms = sqrt(bucketSumSquares / Float(bucketCount))
+            envelope[bucketIndex] = bucketPeak * 0.62 + rms * 0.38
+        }
+        guard envelope.contains(where: { $0 > 0 }) else { return [] }
+
+        let trend = movingAverage(envelope, radius: 3)
+        var relief = envelope
+        for i in relief.indices {
+            relief[i] = envelope[i] * 0.54 + max(0, envelope[i] - trend[i] * 0.78) * 1.38
+        }
+        let normalizedBy = max(0.0001, percentile(relief, q: 0.97))
+        let normalized   = movingAverage(relief.map { min(1.85, max(0, $0 / normalizedBy)) }, radius: 1)
+        return normalized.map { v in min(0.90, max(0.04, pow(log1pf(v * 3.3) / log1pf(3.3), 0.74))) }
+    }
+
     // ── BPM analysis — native Accelerate, no external libs ───────────────────
     // Algorithm: energy envelope → onset strength → autocorrelation → tempo
 
@@ -627,10 +804,16 @@ final class LibraryScanner {
 
         guard bestScore > 0 else { return 0 }
 
+        // Half-tempo correction: if double-tempo (bestLag/2) scores ≥60% of best, prefer it.
+        // Fixes 62→124 BPM misdetection common in house/electronic tracks.
+        let halfLag = bestLag / 2
+        if halfLag >= minLag, halfLag <= maxLag, corrValues[halfLag] >= bestScore * 0.60 {
+            bestLag = halfLag
+        }
+
         var bpm = 60.0 * fps / Double(bestLag)
-        // Resolve half/double tempo within user-defined range
         let lo = max(floor, 1); let hi = max(ceiling, lo + 1)
-        while bpm > 0 && bpm < lo  { bpm *= 2 }
+        while bpm > 0 && bpm < lo { bpm *= 2 }
         while bpm > hi { bpm /= 2 }
         onProgress?(1.0)
         return (bpm * 10).rounded() / 10
