@@ -8,6 +8,8 @@ struct ProgressRulerRow: View {
         ProgressRuler(
             progress: feedProgress,
             waveform: state.current?.waveform ?? [],
+            bpm: state.current?.bpm ?? 0,
+            duration: state.current?.duration ?? 0,
             hotCues: state.hotCues,
             isPlaying: state.isPlaying,
             onSeek: { ratio in
@@ -33,6 +35,10 @@ private final class BarTracker {
 struct ProgressRuler: View {
     let progress: Double
     let waveform: [Float]
+    var bpm: Double = 0
+    var duration: Double = 0
+    var beatGridOffset: Double = 0   // future: first-beat phase offset in seconds
+    var meterBeatsPerBar: Int = 4
     var hotCues: [Double?] = []
     var isPlaying: Bool = true
     let onSeek: (Double) -> Void
@@ -46,6 +52,7 @@ struct ProgressRuler: View {
     private static let animDuration: Double = 0.38
 
     private var displayProgress: Double { dragRatio ?? progress }
+    private var hasBeatGrid: Bool { bpm > 0 && duration > 0 && meterBeatsPerBar > 0 }
 
     var body: some View {
         GeometryReader { geo in
@@ -113,7 +120,9 @@ struct ProgressRuler: View {
         let minGhostH: CGFloat = 2    // unplayed trough
         let baseline:  CGFloat = size.height
 
-        let majorSet: Set<Int> = [0, 30, 60, 90, 120]
+        // When a real beat grid is available, suppress the arbitrary 0/25/50/75/100
+        // fixed dividers — musical bar markers provide better visual structure.
+        let majorSet: Set<Int> = hasBeatGrid ? [] : [0, 30, 60, 90, 120]
 
         let waveMin   = waveMinCache
         let waveRange = waveRangeCache
@@ -174,6 +183,12 @@ struct ProgressRuler: View {
                        style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
         }
 
+        // Beat grid — drawn after waveform so bars read over the waveform texture,
+        // before hot cues so cues remain the topmost visual layer.
+        if hasBeatGrid {
+            drawBeatGrid(ctx: ctx, size: size)
+        }
+
         // Hot cue markers — small colored ticks at the top of the ruler
         let cueColors: [Color] = [
             Color(red: 1.0, green: 0.35, blue: 0.35),   // 1 · red
@@ -190,5 +205,78 @@ struct ProgressRuler: View {
             ctx.stroke(cuePath, with: .color(cueColors[idx]),
                        style: StrokeStyle(lineWidth: 2.0, lineCap: .butt))
         }
+    }
+
+    // Draws BPM-derived quarter-note ticks onto the ruler.
+    //
+    // Visual hierarchy (bottom → top):
+    //   waveform ticks · beat ticks · bar ticks · [hot cues called after this]
+    //
+    // LOD tiers to avoid visual noise on dense tracks:
+    //   pxPerBeat ≥ 3 → draw all beat ticks + bar ticks
+    //   pxPerBeat < 3 → draw bar ticks only
+    //   pxPerBar  < 3 → draw phrase markers only (every 8 bars)
+    //
+    // Performance: two batched Path structs, two ctx.stroke calls — no per-tick
+    // Path allocation at render time regardless of beat count.
+    private func drawBeatGrid(ctx: GraphicsContext, size: CGSize) {
+        let beatDuration = 60.0 / bpm
+        guard beatDuration.isFinite, beatDuration > 0 else { return }
+
+        let baseline  = size.height
+        let beatH:  CGFloat = 5
+        let barH:   CGFloat = 14
+
+        // Beat alpha is intentionally low — ticks must not fight the waveform.
+        let beatAlpha: Double = 0.18
+        let barAlpha:  Double = 0.40
+
+        let pxPerBeat = size.width * CGFloat(beatDuration / duration)
+        let pxPerBar  = pxPerBeat * CGFloat(meterBeatsPerBar)
+
+        let drawBeats  = pxPerBeat >= 3.0
+        let drawBars   = pxPerBar  >= 3.0
+        // When even bars are too dense, fall back to phrase markers every 8 bars.
+        let phraseOnly = !drawBars
+        let phraseEvery = 8  // bars per phrase group
+
+        guard drawBeats || drawBars else { return }
+
+        // Beat range clipped to track boundaries.
+        let firstBeat = max(0, Int(floor(-beatGridOffset / beatDuration)))
+        let lastBeat  = Int(ceil((duration - beatGridOffset) / beatDuration))
+        guard lastBeat >= firstBeat else { return }
+
+        // Two paths: one style per stroke call — O(1) draw calls regardless of beat count.
+        var beatPath = Path()
+        var barPath  = Path()
+
+        for beatIndex in firstBeat...lastBeat {
+            let beatTime = beatGridOffset + Double(beatIndex) * beatDuration
+            guard beatTime >= 0, beatTime <= duration else { continue }
+
+            let x     = CGFloat(beatTime / duration) * size.width
+            let isBar = beatIndex % meterBeatsPerBar == 0
+
+            if isBar {
+                let barIdx   = beatIndex / meterBeatsPerBar
+                let isPhrase = barIdx % phraseEvery == 0
+                if drawBars || (phraseOnly && isPhrase) {
+                    barPath.move(to:    CGPoint(x: x, y: baseline))
+                    barPath.addLine(to: CGPoint(x: x, y: baseline - barH))
+                }
+            } else if drawBeats {
+                beatPath.move(to:    CGPoint(x: x, y: baseline))
+                beatPath.addLine(to: CGPoint(x: x, y: baseline - beatH))
+            }
+        }
+
+        // Render: beats first (lower layer), bars on top.
+        if drawBeats {
+            ctx.stroke(beatPath, with: .color(.white.opacity(beatAlpha)),
+                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+        }
+        ctx.stroke(barPath, with: .color(.white.opacity(barAlpha)),
+                   style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
     }
 }
