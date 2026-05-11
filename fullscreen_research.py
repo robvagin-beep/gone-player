@@ -151,6 +151,19 @@ Bullet list: exactly what to test to confirm the fix works across all cases
 """
 
 
+def call_claude_with_retry(client, **kwargs):
+    import time
+    for attempt in range(3):
+        try:
+            return client.messages.create(**kwargs)
+        except Exception as e:
+            if "rate_limit" in str(e).lower() and attempt < 2:
+                print(f"Rate limited, waiting 65s before retry {attempt + 2}/3...")
+                time.sleep(65)
+            else:
+                raise
+
+
 def post_comment(repo: str, pr_number: str, body: str, token: str) -> None:
     url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
     data = json.dumps({"body": body}).encode()
