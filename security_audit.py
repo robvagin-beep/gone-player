@@ -140,15 +140,43 @@ def main():
     else:
         trunc = f"\n\n> ✅ Full source included: {original_len:,} chars."
 
+
+    ITERATIVE_PROTOCOL = """
+## Iterative Refinement Protocol — five passes, output Pass 5 only.
+
+PASS 1 — Initial sweep: list every candidate issue, no filtering.
+PASS 2 — Self-critique: discard pattern-matches that aren't real failures;
+  check CLAUDE.md "Already Resolved" / "Known Tech Debt" sections.
+PASS 3 — Industry pattern check: compare to shipping production code
+  (Apple sample apps, WWDC sessions, open-source equivalents like Mixxx).
+  Cite specific techniques where applicable.
+PASS 4 — Adversarial self-critique: steelman opposition to each finding.
+  Could the existing code be intentionally non-standard for a reason?
+PASS 5 — Final synthesis (only output):
+  For each surviving issue:
+  - Title
+  - Location (file:line)
+  - Mechanism (root cause, not symptom)
+  - Real-world impact (concrete user-visible effect)
+  - Fix (drop-in Swift code where possible)
+  - Risk (what could regress)
+  Rank by impact. Cap at 7 most consequential. If a category is clean, say so.
+"""
+
     client = anthropic.Anthropic(api_key=api_key)
     message = call_claude_with_retry(client,
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
+        model="claude-opus-4-7",
+        max_tokens=12000,
+        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"Deep security audit of GONE Player.\n\n{sources}"}],
+        messages=[{"role": "user", "content": ITERATIVE_PROTOCOL + "\n\n## Source\n\n" + sources}],
     )
-    body = message.content[0].text
-    comment = f"## 🔐 Claude Security & Vulnerability Audit\n\n{body}{trunc}\n\n---\n*Security Audit by claude-sonnet-4-6 (full source)*"
+    body = "\n\n".join(b.text for b in message.content if b.type == "text")
+    comment = (
+        f"## 🔐 Security & Vulnerability — Opus 4.7 + Extended Thinking + Iterative Refinement\n\n"
+        f"{body}{trunc}\n\n---\n"
+        f"*Audit by claude-opus-4-7 ({message.usage.input_tokens:,} in / {message.usage.output_tokens:,} out)*"
+    )
     post_comment(repo, pr_number, comment, github_token)
     print("Security audit posted.")
 
