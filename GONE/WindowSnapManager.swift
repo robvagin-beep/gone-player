@@ -72,7 +72,8 @@ final class WindowSnapManager {
         installActivityMonitor(window: window)
         installSpaceChangeObserver(window: window)
         startProximityTimer()
-        scheduleInactivityDock(window: window)
+        // Inactivity countdown starts on first user action (via activity monitor),
+        // not immediately — prevents snap firing right after launch or re-enable.
     }
 
     func disable(window: NSWindow) {
@@ -438,8 +439,18 @@ final class WindowSnapManager {
         let snapX = snapState == .peeking
             ? screen.frame.maxX - peekVisible
             : screen.frame.maxX - tabVisible
-        // Temporarily update lock X if we're dragging while docked.
-        if snapState == .docked { frameLockX = snapX }
+        if snapState == .docked {
+            frameLockX = snapX
+            // Enforce tabVisible width — prevents full-width body flash during Space transition.
+            // Only corrects width; height stays as-is.
+            if window.frame.width != tabVisible {
+                window.setFrame(
+                    NSRect(x: snapX, y: newY, width: tabVisible, height: window.frame.height),
+                    display: false
+                )
+                return
+            }
+        }
         window.setFrameOrigin(NSPoint(x: snapX, y: newY))
     }
 

@@ -89,11 +89,8 @@ final class SplitModeManager: ObservableObject {
         // Must NOT call pause()/playerNode.pause() here — it contests Core Audio's IO lock
         // with the concurrent setOutputDevice on audioOpQueue, causing a deadlock/freeze.
         AudioEngineNext.secondary.markStopped()
-        // Stop any XY-effect timers on the secondary state before releasing it
-        secondaryState?.stopLFO()
-        secondaryState?.stopSlicer()
-        secondaryState?.stopBPMChop()
-        secondaryState?.cancelXYSpring()
+        // Stop any momentary audio modifiers on secondary before releasing it
+        secondaryState?.stopAllMomentaryAudioModifiers()
         gapWindow?.close()
         gapWindow = nil
         secondWindow?.close()
@@ -134,8 +131,9 @@ final class SplitModeManager: ObservableObject {
     private let gapWidth: CGFloat = 60   // gap between the two player windows
 
     private func makeSecondWindow(primaryState: PlayerState, relativeTo primary: NSWindow) -> NSWindow {
-        // Create secondary PlayerState, copy full visual state from primary
+        // Create secondary PlayerState, copy full visual + audio state from primary
         let state = PlayerState(engine: .secondary)
+        // Playlist / navigation
         state.tracks              = primaryState.tracks
         state.playlistTabs        = primaryState.playlistTabs
         state.activePlaylistTabId = primaryState.activePlaylistTabId
@@ -143,7 +141,24 @@ final class SplitModeManager: ObservableObject {
         state.playlistOpen        = primaryState.playlistOpen
         state.eqOpen              = primaryState.eqOpen
         state.playlistPanelHeight = primaryState.playlistPanelHeight
+        // Transport
         state.volume              = primaryState.volume
+        state.repeatMode          = primaryState.repeatMode
+        state.shuffle             = primaryState.shuffle
+        // Pitch / Tempo
+        state.pitch               = primaryState.pitch
+        state.pitchRange          = primaryState.pitchRange
+        state.masterTempo         = primaryState.masterTempo
+        state.pitchBypassed       = primaryState.pitchBypassed
+        // EQ / DSP — mirrors what audioOpQueue sends to the engine
+        state.eqOn                = primaryState.eqOn
+        state.eqBands             = primaryState.eqBands
+        state.eqPreamp            = primaryState.eqPreamp
+        state.eqPreset            = primaryState.eqPreset
+        state.hpfCutoff           = primaryState.hpfCutoff
+        state.lpfCutoff           = primaryState.lpfCutoff
+        state.reverbAmount        = primaryState.reverbAmount
+        state.reverbPreset        = primaryState.reverbPreset
         secondaryState = state
 
         // Wire secondary engine callbacks into secondaryState

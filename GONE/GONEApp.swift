@@ -209,14 +209,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func setSnapEnabled(_ enabled: Bool) {
         guard let playerState else { return }
-        guard playerState.snapEnabled != enabled || playerState.snapState == .off || playerState.snapState == .waiting else { return }
-
         guard let window = resolvedMainWindow() ?? bestAvailableWindow() ?? WindowSnapManager.shared.currentWindow else { return }
         mainWindow = window
 
         if enabled {
+            // Always re-arm — repairs stale runtime even if snapEnabled is already true.
             WindowSnapManager.shared.enable(window: window)
         } else {
+            // Only disable if something is actually running.
+            guard playerState.snapEnabled || playerState.snapState != .off else { return }
             WindowSnapManager.shared.disable(window: window)
         }
         applyPresencePolicy(to: window)

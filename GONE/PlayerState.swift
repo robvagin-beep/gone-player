@@ -318,6 +318,15 @@ final class PlayerState: ObservableObject {
         xySpringTimer = nil
     }
 
+    // Central cleanup — call on pause, stop, track change, clone deactivate, app resign.
+    // Stops all timer-driven audio modifiers and resets affected DSP nodes to neutral.
+    func stopAllMomentaryAudioModifiers() {
+        stopLFO()
+        stopBPMChop()
+        stopSlicer()
+        cancelXYSpring()
+    }
+
     func cycleRepeatMode() {
         switch repeatMode {
         case .off: repeatMode = .all

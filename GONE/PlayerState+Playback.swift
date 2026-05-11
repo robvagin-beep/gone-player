@@ -61,6 +61,7 @@ extension PlayerState {
 
     func load(id: UUID) {
         guard let track = tracks.first(where: { $0.id == id }), !track.isMissing else { return }
+        stopAllMomentaryAudioModifiers()
         currentId = id
         progress = 0; currentTime = 0; isPlaying = false
         hotCues = [nil, nil, nil, nil]
@@ -72,6 +73,7 @@ extension PlayerState {
 
     func playTrack(id: UUID, fromTabId: UUID? = nil, autoplay: Bool = true) {
         guard let track = tracks.first(where: { $0.id == id }), !track.isMissing else { return }
+        stopAllMomentaryAudioModifiers()
         currentId = id
         if let fromTabId { playingTabOverride = fromTabId }
         progress = 0; currentTime = 0
@@ -87,6 +89,7 @@ extension PlayerState {
     func togglePlayback() {
         guard let current, !current.isMissing else {
             isPlaying = false
+            stopAllMomentaryAudioModifiers()
             audioEngine.pause()
             return
         }
@@ -97,6 +100,7 @@ extension PlayerState {
             }
             audioEngine.play()
         } else {
+            stopAllMomentaryAudioModifiers()
             audioEngine.pause()
         }
     }
@@ -104,6 +108,7 @@ extension PlayerState {
     // MARK: — Track navigation
 
     func selectPreviousTrack(autoplay: Bool = true) {
+        stopAllMomentaryAudioModifiers()
         let wasPlaying = isPlaying
         let list = sortedTracks(forPlaylistTabId: playingTabId ?? activePlaylistTabId)
         guard let idx = list.firstIndex(where: { $0.id == currentId }) else { return }
@@ -130,6 +135,7 @@ extension PlayerState {
     }
 
     func selectNextTrack(autoplay: Bool = true) {
+        stopAllMomentaryAudioModifiers()
         let wasPlaying = isPlaying
         let list = sortedTracks(forPlaylistTabId: playingTabId ?? activePlaylistTabId)
         guard let idx = list.firstIndex(where: { $0.id == currentId }) else { return }
