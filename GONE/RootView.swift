@@ -126,6 +126,9 @@ struct RootView: View {
             }
         }
         .frame(width: shellSize.width, height: shellSize.height, alignment: .top)
+        // Clip all content (including blur/shadow spread and drag-handle layers) to the
+        // rounded shell shape so no rectangular corners bleed outside the rounded border.
+        .clipShape(RoundedRectangle(cornerRadius: outerShellRadius))
         // Scale the ENTIRE shell — glass border + content scale together.
         // Math: SwiftUI centers shellSize in scaledShellSize window; scaleEffect
         // from view center equals window center → visual fills window exactly.

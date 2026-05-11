@@ -32,9 +32,9 @@ struct FullPlayerView: View {
                     if state.tracks.isEmpty {
                         RoundedRectangle(cornerRadius: 10)
                             .fill(Color.white.opacity(0.025))
-                            .padding(.horizontal, 12)
-                            .padding(.top, 12)
-                            .padding(.bottom, 10)
+                            .padding(.horizontal, 11)
+                            .padding(.top, 11)
+                            .padding(.bottom, 9)
                             .allowsHitTesting(false)
                     }
                 }
