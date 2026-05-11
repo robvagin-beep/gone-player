@@ -80,9 +80,12 @@ final class SplitModeManager: ObservableObject {
         AudioEngineNext.secondary.onProgress = nil
         AudioEngineNext.secondary.onFinished = nil
         AudioEngineNext.secondary.onSpectrum = nil
-        // Pause synchronously on main: invalidates progressTimer and silences the engine
-        // before SwiftUI window teardown — prevents timer callbacks firing into a dying view hierarchy
-        AudioEngineNext.secondary.pause()
+        // Mark the engine as stopped on main before SwiftUI window teardown.
+        // This prevents handleEngineConfigurationChange (fired by setOutputDevice on audioOpQueue)
+        // from restarting playback after windows are closed.
+        // Must NOT call pause()/playerNode.pause() here — it contests Core Audio's IO lock
+        // with the concurrent setOutputDevice on audioOpQueue, causing a deadlock/freeze.
+        AudioEngineNext.secondary.markStopped()
         // Stop any XY-effect timers on the secondary state before releasing it
         secondaryState?.stopLFO()
         secondaryState?.stopSlicer()

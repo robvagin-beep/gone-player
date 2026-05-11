@@ -198,6 +198,19 @@ final class AudioEngineNext {
         endAudioActivity()
     }
 
+    // Called from SplitModeManager.deactivate() on the main thread.
+    // Sets isUserPlaying=false so handleEngineConfigurationChange (fired by setOutputDevice
+    // on audioOpQueue) won't restart playback after the window is torn down.
+    // Does NOT call playerNode.pause() — that would contest Core Audio's IO lock
+    // with the concurrent setOutputDevice on audioOpQueue, causing a deadlock.
+    func markStopped() {
+        isUserPlaying = false
+        let t = progressTimer
+        progressTimer = nil
+        t?.invalidate()
+        endAudioActivity()
+    }
+
     func stop(resetProgress: Bool = true) {
         isUserPlaying = false
         // Ensure any stuck hold-seek rate override is cleared before stopping.

@@ -321,7 +321,7 @@ Focus: data layer — caches, library scanner, feeds, track model, playlist stat
 - SpectrumFeed.shared: singleton, AppDelegate.bindAudioEngine wires engine.onSpectrum → SpectrumFeed.shared.data
 - Track.artworkData: Data? in struct — causes array copy overhead (known tech debt, do not refactor)
 - PlayerState+Playlists: reorderTrack must bake visible sorted order before switching sortKey
-- PlayerState+Playlists: presentImportPanel uses Task { @MainActor [weak self] in ... }
+- PlayerState+Playlists: presentImportPanel uses Task {{ @MainActor [weak self] in ... }}
 
 ## Your tasks:
 1. **AnalysisCache correctness**: Is the cache key truly stable? Edge cases with symlinks, iCloud Drive paths?
