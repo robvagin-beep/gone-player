@@ -6,6 +6,7 @@ final class ArtworkCache: @unchecked Sendable {
     private let cache: NSCache<NSString, NSImage> = {
         let c = NSCache<NSString, NSImage>()
         c.countLimit = 300
+        c.totalCostLimit = 64 * 1024 * 1024  // 64 MB — 300 × 256px RGBA ≈ 75 MB worst case
         return c
     }()
 
@@ -34,7 +35,8 @@ final class ArtworkCache: @unchecked Sendable {
 
     func store(_ native: NSImage, for id: UUID) {
         let key = id.uuidString as NSString
-        cache.setObject(native, forKey: key)
+        let cost = Int(native.size.width * native.size.height * 4)
+        cache.setObject(native, forKey: key, cost: cost)
         let url = dir.appendingPathComponent(id.uuidString + ".jpg")
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -63,9 +65,9 @@ final class ArtworkCache: @unchecked Sendable {
     private func prune() {
         let cutoff = Date().addingTimeInterval(-30 * 24 * 3600)
         guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.creationDateKey]) else { return }
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         for url in files {
-            guard let date = try? url.resourceValues(forKeys: [.creationDateKey]).creationDate,
+            guard let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                   date < cutoff else { continue }
             try? FileManager.default.removeItem(at: url)
         }

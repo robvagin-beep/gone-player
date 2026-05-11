@@ -25,6 +25,7 @@ final class WindowSnapManager {
     private var slideTimer:       Timer?   // manual 60fps animation (NSAnimationContext unreliable off-screen)
     private var globalClickMon:   Any?
     private var activityMon:      Any?
+    private var spaceChangeObs:   NSObjectProtocol?
     private var savedOrigin:      NSPoint?
     private var savedFrame:       NSRect?
     private var savedDockedY:     CGFloat?
@@ -50,6 +51,7 @@ final class WindowSnapManager {
         slideTimer?.invalidate();      slideTimer = nil
         removeGlobalClickMonitor()
         removeActivityMonitor()
+        removeSpaceChangeObserver()
         unlockFrame()
         playerState?.isSnapping = false
     }
@@ -65,6 +67,7 @@ final class WindowSnapManager {
         savedDockedY = nil
         snapState = .waiting
         installActivityMonitor(window: window)
+        installSpaceChangeObserver(window: window)
         startProximityTimer()
         scheduleInactivityDock(window: window)
     }
@@ -73,6 +76,8 @@ final class WindowSnapManager {
         // In .expanded, restoreFromSnap() already ran inside expand() — calling it again here
         // would overwrite whatever the user changed manually in the expanded state.
         let needsRestore = snapState == .docked || snapState == .peeking
+        // Restore to normal presence level — docked state raises to screenSaverWindow.
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
         clearInfrastructure()
         playerState?.snapEnabled = false
         savedDockedY = nil
@@ -171,6 +176,45 @@ final class WindowSnapManager {
         if let m = activityMon { NSEvent.removeMonitor(m); activityMon = nil }
     }
 
+    // MARK: – Space Change Observer
+    // The docked window extends beyond screen.maxX. The Space-transition compositor
+    // can briefly reveal the off-screen body during swipes. Two defences:
+    // (1) screenSaverWindow level puts the tab above the transition layer.
+    // (2) This observer corrects any frame drift and kills visible artifacts
+    //     the instant the transition completes.
+
+    private func installSpaceChangeObserver(window: NSWindow) {
+        removeSpaceChangeObserver()
+        spaceChangeObs = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let self, let window else { return }
+                self.handleSpaceChange(window: window)
+            }
+        }
+    }
+
+    private func removeSpaceChangeObserver() {
+        if let obs = spaceChangeObs {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+            spaceChangeObs = nil
+        }
+    }
+
+    private func handleSpaceChange(window: NSWindow) {
+        guard snapState == .docked || snapState == .peeking else { return }
+        // Flash invisible to erase any residual body artifact, then re-anchor.
+        window.alphaValue = 0
+        constrainSnapPosition(window: window)
+        let timer = Timer(timeInterval: 0.08, repeats: false) { [weak window] _ in
+            MainActor.assumeIsolated { window?.alphaValue = 1 }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     // MARK: – State Transitions
 
     private func dockToEdge(window: NSWindow) {
@@ -199,8 +243,12 @@ final class WindowSnapManager {
                 self.snapState = .docked
                 self.lockFrame(window: window, x: snapX)
                 self.playerState?.isSnapping = false
+                // screenSaverWindow (1000) puts the tab above the Space transition
+                // animation layer — prevents body from appearing during desktop swipe
+                // and ensures the tab is visible over fullscreen app Spaces.
+                window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
                 window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                                             .fullScreenDisallowsTiling, .transient, .stationary, .ignoresCycle]
+                                             .fullScreenDisallowsTiling, .transient, .ignoresCycle]
             }
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 80_000_000)
@@ -294,8 +342,9 @@ final class WindowSnapManager {
             guard let self, let window else { return }
             self.lockFrame(window: window, x: snapX)
             self.playerState?.isSnapping = false
+            window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                                         .fullScreenDisallowsTiling, .transient, .stationary, .ignoresCycle]
+                                         .fullScreenDisallowsTiling, .transient, .ignoresCycle]
         }
     }
 
@@ -312,6 +361,7 @@ final class WindowSnapManager {
 
         snapState = .expanded
         playerState?.isSnapping = true
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
 

@@ -79,14 +79,18 @@ extension PlayerState {
 
     func reorderTrack(_ trackId: UUID, before targetTrackId: UUID, inTabId tabId: UUID) {
         guard trackId != targetTrackId,
-              let tabIndex = playlistTabs.firstIndex(where: { $0.id == tabId }),
-              let sourceIndex = playlistTabs[tabIndex].trackIds.firstIndex(of: trackId),
-              let targetIndex = playlistTabs[tabIndex].trackIds.firstIndex(of: targetTrackId)
+              let tabIndex = playlistTabs.firstIndex(where: { $0.id == tabId })
         else { return }
+        // Bake the current visible (sorted) order into trackIds before switching to
+        // manual sort — otherwise drag result operates on storage order, not visible order.
         if playlistTabs[tabIndex].sortKey != .number {
+            playlistTabs[tabIndex].trackIds = sortedTracks(forPlaylistTabId: tabId).map(\.id)
             playlistTabs[tabIndex].sortKey = .number
             playlistTabs[tabIndex].sortDir = .asc
         }
+        guard let sourceIndex = playlistTabs[tabIndex].trackIds.firstIndex(of: trackId),
+              let targetIndex = playlistTabs[tabIndex].trackIds.firstIndex(of: targetTrackId)
+        else { return }
         var ids = playlistTabs[tabIndex].trackIds
         ids.remove(at: sourceIndex)
         ids.insert(trackId, at: sourceIndex < targetIndex ? targetIndex - 1 : targetIndex)
@@ -97,6 +101,7 @@ extension PlayerState {
         guard let tabIndex = playlistTabs.firstIndex(where: { $0.id == tabId }),
               playlistTabs[tabIndex].trackIds.contains(trackId) else { return }
         if playlistTabs[tabIndex].sortKey != .number {
+            playlistTabs[tabIndex].trackIds = sortedTracks(forPlaylistTabId: tabId).map(\.id)
             playlistTabs[tabIndex].sortKey = .number
             playlistTabs[tabIndex].sortDir = .asc
         }
@@ -293,7 +298,7 @@ extension PlayerState {
             }
             guard response == .OK else { return }
             let urls = panel.urls
-            Task { @MainActor in await self.importURLs(urls, intoPlaylistTabId: destinationTabId) }
+            Task { @MainActor [weak self] in guard let self else { return }; await self.importURLs(urls, intoPlaylistTabId: destinationTabId) }
         }
 
         panel.begin(completionHandler: handleSelection)

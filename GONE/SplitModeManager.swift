@@ -148,11 +148,27 @@ final class SplitModeManager: ObservableObject {
             state?.spectrumFeed.data = data
         }
 
-        // Mirror primary output device — enqueued on audioOpQueue so any pending stop()
-        // from a previous deactivation always drains first (no concurrent Core Audio access)
+        // Snapshot A's full audio state into B engine.
+        // Enqueued on audioOpQueue so any pending stop() from a prior deactivation drains first.
         let primaryDeviceID = AudioEngineNext.shared.currentOutputDeviceID()
+        let snapVol     = primaryState.volume
+        let snapPitch   = primaryState.pitchBypassed ? 0.0 : primaryState.pitch
+        let snapMT      = primaryState.masterTempo
+        let snapPreamp  = primaryState.eqPreamp
+        let snapBands   = primaryState.eqBands
+        let snapEQOn    = primaryState.eqOn
+        let snapReverb  = primaryState.eqOn ? primaryState.reverbAmount : 0
+        let snapHPF     = primaryState.hpfCutoff
+        let snapLPF     = primaryState.lpfCutoff
         audioOpQueue.async {
             AudioEngineNext.secondary.setOutputDevice(primaryDeviceID)
+            AudioEngineNext.secondary.setVolume(snapVol)
+            AudioEngineNext.secondary.setPitch(snapPitch, masterTempo: snapMT)
+            AudioEngineNext.secondary.setEQ(preamp: snapPreamp, bands: snapBands)
+            AudioEngineNext.secondary.setEQEnabled(snapEQOn)
+            AudioEngineNext.secondary.setHPF(cutoff: snapHPF)
+            AudioEngineNext.secondary.setLPF(cutoff: snapLPF)
+            AudioEngineNext.secondary.setReverb(amount: snapReverb)
         }
 
         // ClonePlayerShell = same glass + drag handles + auto-resize, no primary window side-effects
@@ -176,8 +192,9 @@ final class SplitModeManager: ObservableObject {
         win.isMovableByWindowBackground = false   // ClonePlayerShell has DragHandleNSView zones
         win.acceptsMouseMovedEvents = true
         win.appearance = NSAppearance(named: .darkAqua)
-        // Explicit screenSaverWindow level — both players float above all other apps
-        win.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
+        // Clone player one level above main player (overlayWindow+1=103) so the crossfader
+        // panel at overlayWindow-1 (101) is hidden under both player windows at their endpoints.
+        win.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)) + 1)
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                   .fullScreenDisallowsTiling, .ignoresCycle]
         win.hidesOnDeactivate = false

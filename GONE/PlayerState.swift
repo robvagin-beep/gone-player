@@ -376,6 +376,7 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "magnifyEnabled")      != nil { magnifyEnabled      = ud.bool(forKey: "magnifyEnabled") }
         if ud.object(forKey: "magnifyProximity")    != nil { magnifyProximity    = ud.double(forKey: "magnifyProximity") }
         if ud.object(forKey: "magnifySpeed")        != nil { magnifySpeed        = ud.double(forKey: "magnifySpeed") }
+        if ud.object(forKey: "snapEnabled")         != nil { snapEnabled         = ud.bool(forKey: "snapEnabled") }
         if !windowScale.isFinite || windowScale < 0.5 || windowScale > 2.0 { windowScale = 1.0 }
         if !magnifyProximity.isFinite || magnifyProximity <= 0 { magnifyProximity = 120 }
         if !magnifySpeed.isFinite || magnifySpeed <= 0 { magnifySpeed = 0.18 }

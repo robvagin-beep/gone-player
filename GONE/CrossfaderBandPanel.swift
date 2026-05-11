@@ -57,8 +57,11 @@ final class CrossfaderGapWindow: NSPanel {
         backgroundColor    = .clear
         hasShadow          = false
         ignoresMouseEvents = false
-        let ssl            = Int(CGWindowLevelForKey(.screenSaverWindow))
-        level              = NSWindow.Level(rawValue: ssl - 1)
+        // Player windows sit at overlayWindow (102); crossfader must be strictly below
+        // both so they render on top and hide the line endpoints where the bar enters
+        // each window. Interactive only in the gap where no player window covers it.
+        let overlayLevel   = Int(CGWindowLevelForKey(.overlayWindow))
+        level              = NSWindow.Level(rawValue: overlayLevel - 1)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                               .fullScreenDisallowsTiling, .ignoresCycle]
         hidesOnDeactivate  = false

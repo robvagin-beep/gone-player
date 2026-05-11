@@ -48,6 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupNowPlayingObservation()
             setupSettingsPersistence()
             if playerState?.magnifyEnabled == true { installMagnifyMonitor() }
+            // Two-stage snap restore: preference was loaded above; arm WindowSnapManager
+            // on the next tick once the window is fully configured.
+            if playerState?.snapEnabled == true {
+                DispatchQueue.main.async { [weak self] in self?.setSnapEnabled(true) }
+            }
         }
     }
     private(set) weak var mainWindow: NSWindow?
@@ -67,11 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(systemDidWake),
             name: NSWorkspace.didWakeNotification, object: nil
         )
-        // Apply floating level immediately — before SwiftUI renders — so the window
-        // is already on every Space from the very first frame.
+        // overlayWindow (102) sits above all app windows and fullscreen-app Spaces without
+        // the DRM-surface conflicts that screenSaverWindow (1000) can cause in expanded state.
         NSApp.windows.forEach {
             $0.alphaValue = 0
-            $0.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)))
+            $0.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
             $0.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
             $0.hidesOnDeactivate = false
@@ -141,19 +146,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let mainWindow, mainWindow.isVisible, !mainWindow.isMiniaturized {
             return mainWindow
         }
-        // Fast path failed — search all app windows directly.
-        // At screenSaverWindow level the player may not be keyWindow/mainWindow,
-        // so skip those checks and go straight to NSApp.windows.
-        let found = NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible && !$0.isMiniaturized })
-            ?? NSApp.windows.first(where: { !($0 is NSPanel) })
+        // Fast path failed — search all app windows, excluding clone (NSWindow, not NSPanel).
+        let clone = SplitModeManager.shared.secondaryWindow
+        let found = NSApp.windows.first(where: { !($0 is NSPanel) && $0 !== clone && $0.isVisible && !$0.isMiniaturized })
+            ?? NSApp.windows.first(where: { !($0 is NSPanel) && $0 !== clone })
         if let found { mainWindow = found }
         return found
     }
 
     private func bestAvailableWindow() -> NSWindow? {
-        // Exclude NSPanel subclasses — floating panels (Tooltip, DragValue, Settings) must
-        // never be returned as the main window for snap/settings positioning.
-        let isMainWin: (NSWindow) -> Bool = { !($0 is NSPanel) && $0.isVisible && !$0.isMiniaturized }
+        // Exclude NSPanel subclasses and the clone player window.
+        let clone = SplitModeManager.shared.secondaryWindow
+        let isMainWin: (NSWindow) -> Bool = { !($0 is NSPanel) && $0 !== clone && $0.isVisible && !$0.isMiniaturized }
         if let keyWindow = NSApp.keyWindow, isMainWin(keyWindow) { return keyWindow }
         if let mainAppWindow = NSApp.mainWindow, isMainWin(mainAppWindow) { return mainAppWindow }
         if let visible = NSApp.windows.first(where: isMainWin) { return visible }
@@ -161,10 +165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
-        // statusWindowLevelKey (25) floats above all app windows and the menu bar (24),
-        // below screen savers. Sufficient for omnipresence; screenSaver (1000) is overkill
-        // and can conflict with DRM overlay surfaces in some fullscreen apps.
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)))
+        // overlayWindow (102): above all app windows and fullscreen-app Spaces.
+        // DRM-safe for the expanded state. WindowSnapManager raises to screenSaverWindow
+        // (1000) while docked so the tab clears the Space-transition compositor layer.
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
         // .canJoinAllSpaces: enrolls window in every Space including new fullscreen Spaces.
         // .fullScreenAuxiliary: required alongside canJoinAllSpaces for fullscreen Spaces
         //   on macOS 11+ — both flags together are the load-bearing pair.
@@ -222,33 +226,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let state = playerState else { return }
         let engine = state.audioEngine
         engine.onProgress = { [weak self] progress, time in
-            self?.playerState?.progress = progress
-            self?.playerState?.currentTime = time
-            self?.playerState?.progressFeed.progress = progress
-            self?.playerState?.progressFeed.currentTime = time
-            PlaybackProgressFeed.shared.progress = progress
-            PlaybackProgressFeed.shared.currentTime = time
+            DispatchQueue.main.async { [weak self] in
+                self?.playerState?.progress = progress
+                self?.playerState?.currentTime = time
+                self?.playerState?.progressFeed.progress = progress
+                self?.playerState?.progressFeed.currentTime = time
+                PlaybackProgressFeed.shared.progress = progress
+                PlaybackProgressFeed.shared.currentTime = time
+            }
         }
         engine.onSpectrum = { [weak self] data in
             SpectrumFeed.shared.data = data          // PeekPanelView reads .shared
             self?.playerState?.spectrumFeed.data = data
         }
         engine.onFinished = { [weak self] in
-            guard let state = self?.playerState else { return }
-            switch state.repeatMode {
-            case .one:
-                engine.seek(ratio: 0)
-                engine.play()
-            case .all:
-                state.selectNextTrack()
-            case .off:
-                let list = state.sortedTracks(forPlaylistTabId: state.playingTabId ?? state.activePlaylistTabId)
-                let available = list.indices.filter { !list[$0].isMissing }
-                if let lastAvailable = available.last,
-                   list.firstIndex(where: { $0.id == state.currentId }) == lastAvailable {
-                    state.isPlaying = false
-                } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let state = self?.playerState else { return }
+                switch state.repeatMode {
+                case .one:
+                    engine.seek(ratio: 0)
+                    engine.play()
+                case .all:
                     state.selectNextTrack()
+                case .off:
+                    let list = state.sortedTracks(forPlaylistTabId: state.playingTabId ?? state.activePlaylistTabId)
+                    let available = list.indices.filter { !list[$0].isMissing }
+                    if let lastAvailable = available.last,
+                       list.firstIndex(where: { $0.id == state.currentId }) == lastAvailable {
+                        state.isPlaying = false
+                    } else {
+                        state.selectNextTrack()
+                    }
                 }
             }
         }
@@ -458,6 +466,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(eventMonitor)
         }
         playerState?.persistSettings()
+        // Flush any pending cache writes before process exits.
+        // flushSoon debounces to 1.5s — synchronous flush here captures the last analysis session.
+        let sema = DispatchSemaphore(value: 0)
+        Task { await AnalysisCache.shared.flushNow(); sema.signal() }
+        _ = sema.wait(timeout: .now() + 2.0)
     }
 
     private func setupSettingsPersistence() {

@@ -92,6 +92,17 @@ actor AnalysisCache {
         Task { await flushSoon() }
     }
 
+    func flushNow() {
+        guard dirty else { return }
+        dirty = false
+        flushPending = false
+        let snapshot = map
+        let url = fileURL
+        if let data = try? JSONEncoder().encode(snapshot) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
     private func flushSoon() async {
         guard !flushPending else { return }
         flushPending = true
