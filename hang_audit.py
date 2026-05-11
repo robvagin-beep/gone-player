@@ -186,23 +186,38 @@ def main() -> None:
     else:
         trunc = f"\n\n> ℹ️ Full source: {original_len:,} chars across {len(HANG_FILES)} files."
 
+    ITERATIVE_PROTOCOL = """
+## Iterative Refinement Protocol — five passes, output Pass 5 only.
+
+PASS 1: every progressive-hang candidate (timer pile-up, Task leak,
+  main-thread sync I/O, @MainActor saturation, memory pressure).
+PASS 2: critique — check CLAUDE.md exclusions (statics live forever,
+  Task.detached patterns documented as intentional, etc.).
+PASS 3: industry patterns — Instruments' "Time Profiler" + "Hangs" templates,
+  Apple's "Profiling and Tuning" WWDC sessions, RunLoop modes.
+PASS 4: adversarial — steelman. Could the hang be EXTERNAL (sandbox prompt,
+  privacy panel waiting for user) rather than internal?
+PASS 5: synthesis with concrete file:line, mechanism, fix, risk.
+"""
+
     client = anthropic.Anthropic(api_key=api_key)
     message = call_claude_with_retry(client,
-        model="claude-sonnet-4-6",
-        max_tokens=8000,
+        model="claude-opus-4-7",
+        max_tokens=12000,
+        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
         messages=[{
             "role": "user",
-            "content": f"{RESEARCH_PROMPT}\n\n## Source files\n\n{sources}",
+            "content": f"{ITERATIVE_PROTOCOL}\n\n{RESEARCH_PROMPT}\n\n## Source files\n\n{sources}",
         }],
     )
 
-    body = message.content[0].text
+    body = "\n\n".join(b.text for b in message.content if b.type == "text")
 
     comment = (
-        "## 🧊 Hang / Freeze Audit — Progressive Blocking Analysis\n\n"
+        "## 🧊 Hang / Freeze Audit — Opus 4.7 + Extended Thinking + Iterative Refinement\n\n"
         f"{body}{trunc}\n\n---\n"
-        f"*Hang Audit by claude-sonnet-4-6 "
+        f"*Hang Audit by claude-opus-4-7 "
         f"({message.usage.input_tokens:,} in / {message.usage.output_tokens:,} out)*"
     )
 

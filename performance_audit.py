@@ -100,15 +100,52 @@ def main():
     else:
         trunc = f"\n\n> ℹ️ Full source: {original_len:,} chars across {len(PERF_FILES)} files."
 
+    ITERATIVE_PROTOCOL = """
+## Iterative Refinement Protocol — execute internally, output only the final synthesis
+
+Perform FIVE passes internally. Output only Pass 5.
+
+PASS 1 — Initial sweep: every candidate render churn, @Published over-broadcast,
+  Canvas rebuild waste, Task leak, .onChange chain over-firing.
+
+PASS 2 — Self-critique: check CLAUDE.md "Already Resolved" section. Discard
+  pattern-matches that are documented as intentional.
+
+PASS 3 — Industry pattern check: Apple's SwiftUI WWDC sessions on performance
+  ("Demystify SwiftUI Performance"), TimelineView vs Timer patterns,
+  ObservableObject isolation patterns. Cite specific recommendations.
+
+PASS 4 — Adversarial self-critique: steelman opposition to each finding.
+  Some @Published broadcasts may be load-bearing for view updates user expects.
+
+PASS 5 — Final synthesis (only output):
+
+For each surviving issue:
+- **Title**
+- **Location** (file:line)
+- **Hot-path frequency** (how often it fires: 60Hz, on-tap, etc.)
+- **CPU/GPU cost** (estimate or relative)
+- **Real-world impact** (what user sees on older MacBook)
+- **Fix** (concrete Swift code, drop-in)
+- **Risk** (what could regress)
+
+Rank by impact. Cap at 7 most consequential. Real issues only.
+"""
+
     client = anthropic.Anthropic(api_key=api_key)
     message = call_claude_with_retry(client,
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
+        model="claude-opus-4-7",
+        max_tokens=12000,
+        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"Audit render/rebuild performance.\n\n{sources}"}],
+        messages=[{"role": "user", "content": ITERATIVE_PROTOCOL + "\n\n## Source\n\n" + sources}],
     )
-    body = message.content[0].text
-    comment = f"## ⚡ Claude Performance Audit — Render Churn, @Published, Canvas, Task Waste\n\n{body}{trunc}\n\n---\n*Performance Audit by claude-sonnet-4-6 (live source)*"
+    body = "\n\n".join(b.text for b in message.content if b.type == "text")
+    comment = (
+        f"## ⚡ Performance Audit — Opus 4.7 + Extended Thinking + Iterative Refinement\n\n"
+        f"{body}{trunc}\n\n---\n*Performance Audit by claude-opus-4-7 "
+        f"({message.usage.input_tokens:,} in / {message.usage.output_tokens:,} out)*"
+    )
     post_comment(repo, pr_number, comment, github_token)
     print("Performance audit posted.")
 

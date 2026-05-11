@@ -124,15 +124,34 @@ def main():
     else:
         trunc = f"\n\n> ✅ Full source included: {original_len:,} chars."
 
+    ITERATIVE_PROTOCOL = """
+## Iterative Refinement Protocol — five passes, output Pass 5 only.
+
+PASS 1: every render-thread / threading / PCM chain candidate issue.
+PASS 2: critique — check CLAUDE.md exclusions (token pattern, statics, etc).
+PASS 3: industry patterns — AVAudioEngine WWDC sessions, CoreAudio render
+  thread rules (no allocation, no locks, no Obj-C messaging), AVAudioFile
+  read patterns, Mixxx audio engine architecture.
+PASS 4: adversarial — steelman opposition. The token + main-dispatch patterns
+  are verified safe per CLAUDE.md; question your reasoning if you flag them.
+PASS 5: final synthesis with: title, file:line, mechanism, fix code, risk,
+  expected gain. Rank by severity. Cap at 7.
+"""
+
     client = anthropic.Anthropic(api_key=api_key)
     message = call_claude_with_retry(client,
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
+        model="claude-opus-4-7",
+        max_tokens=12000,
+        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"AudioEngine deep audit.\n\n{sources}"}],
+        messages=[{"role": "user", "content": ITERATIVE_PROTOCOL + "\n\n## Source\n\n" + sources}],
     )
-    body = message.content[0].text
-    comment = f"## 🎛️ AudioEngine Deep Audit — Render Thread, PCM Chain, Threading\n\n{body}{trunc}\n\n---\n*AudioEngine Audit by claude-sonnet-4-6 (full source)*"
+    body = "\n\n".join(b.text for b in message.content if b.type == "text")
+    comment = (
+        f"## 🎛️ AudioEngine Deep Audit — Opus 4.7 + Extended Thinking + Iterative Refinement\n\n"
+        f"{body}{trunc}\n\n---\n*AudioEngine Audit by claude-opus-4-7 "
+        f"({message.usage.input_tokens:,} in / {message.usage.output_tokens:,} out)*"
+    )
     post_comment(repo, pr_number, comment, github_token)
     print("AudioEngine audit posted.")
 
