@@ -304,8 +304,7 @@ final class AudioEngineNext {
     }
 
     func setPitch(_ percent: Double, masterTempo: Bool) {
-     
-   pitchPercent = percent
+        pitchPercent = percent
         self.masterTempo = masterTempo
         applyPitchState()
     }
