@@ -40,6 +40,13 @@ private final class GridTransitionState {
     var lastConfidence: Double = 0
 }
 
+// Musical position within the ruler hierarchy.
+private enum MusicalTickType: Int {
+    case beat    = 1  // individual beat (~10px)
+    case bar     = 2  // bar downbeat (~16px)
+    case fourBar = 3  // 4-bar landmark (22px, full ruler height)
+}
+
 struct ProgressRuler: View {
     let progress: Double
     let waveform: [Float]
@@ -64,10 +71,13 @@ struct ProgressRuler: View {
     private static let gridTransitionDuration: Double = 0.25
     private static let confidenceThreshold: Double = 0.60
 
-    // Fixed visual quarter positions (25% / 50% / 75%) in the 121-tick grid.
-    // These are track-section dividers — always visible, part of GONE's visual identity.
-    // Tick indices: 0=0%, 30=25%, 60=50%, 90=75%, 120=100%.
-    private static let fixedDividerTicks: Set<Int> = [0, 30, 60, 90, 120]
+    // 61 ticks → clean 25% breakpoints at indices 0, 15, 30, 45, 60.
+    // Half the density of the old 121-tick grid: ~6.5px/tick at 400px width.
+    private static let totalTicks: Int = 61
+
+    // Fixed visual quarter positions — always visible, part of GONE's visual identity.
+    // Tick indices: 0=0%, 15=25%, 30=50%, 45=75%, 60=100%.
+    private static let fixedDividerTicks: Set<Int> = [0, 15, 30, 45, 60]
 
     private var displayProgress: Double { dragRatio ?? progress }
     private var hasBeatGrid: Bool { bpm > 0 && duration > 0 && meterBeatsPerBar > 0 }
@@ -110,10 +120,11 @@ struct ProgressRuler: View {
             defer { lastKnownProgress = newProgress }
             if abs(newProgress - last) > 0.05 { tracker.playedAt.removeAll(); return }
             let now = Date()
-            for i in 0..<121 {
-                let barFrac = Double(i) / 120.0
-                if barFrac <= newProgress && barFrac > last     { tracker.playedAt[i] = now }
-                else if barFrac > newProgress && barFrac <= last { tracker.playedAt.removeValue(forKey: i) }
+            let n = Self.totalTicks
+            for i in 0..<n {
+                let barFrac = Double(i) / Double(n - 1)
+                if barFrac <= newProgress && barFrac > last      { tracker.playedAt[i] = now }
+                else if barFrac > newProgress && barFrac <= last  { tracker.playedAt.removeValue(forKey: i) }
             }
         }
     }
@@ -126,40 +137,112 @@ struct ProgressRuler: View {
         waveRangeCache = max(hi - lo, 0.02)
     }
 
+    // Single unified ruler pass — NO separate overlay.
+    //
+    // Height cascade (tallest → shortest):
+    //   4-bar landmark : 100% ruler height (22px) — navigation anchor, lineWidth 1.5
+    //   bar / quarter  : 75% ruler height (~16px) — bar downbeats + fixed quarter dividers
+    //   beat hint      : 44% ruler height (~10px) — individual beats when readable
+    //   waveform bar   : amplitude-driven, max 44% — texture between anchors
+    //
+    // Musical positions are pre-computed from beat grid (or estimated at offset=0
+    // while analysis is pending) and mapped to the nearest tick index. Each tick
+    // inherits the highest-priority musical role that maps to it. Waveform amplitude
+    // fills the gaps — it never exceeds beatH so the hierarchy stays intact.
     private func drawRuler(ctx: GraphicsContext, size: CGSize, now: Date) {
-        let totalTicks = 121
+        let totalTicks = Self.totalTicks
         let playheadX  = size.width * CGFloat(displayProgress)
         let isDragging = dragRatio != nil
+        let h          = size.height
+        let baseline   = h
 
-        // Heights (ruler is 22px, baseline = bottom).
-        // Fixed dividers: 16px — always visible above waveform.
-        // Waveform bars: up to 11px played, 8px unplayed.
-        let majorH:    CGFloat = 16
-        let maxWaveH:  CGFloat = 11
-        let minWaveH:  CGFloat = 3
-        let maxGhostH: CGFloat = 8
-        let minGhostH: CGFloat = 2
-        let baseline:  CGFloat = size.height
+        let fourBarH: CGFloat = h
+        let barH:     CGFloat = (h * 0.75).rounded()
+        let beatH:    CGFloat = (h * 0.44).rounded()
+        let maxWaveH: CGFloat = (h * 0.44).rounded()
+        let minWaveH: CGFloat = 2
 
         let waveMin   = waveMinCache
         let waveRange = waveRangeCache
 
-        // Fixed quarter divider base alpha.
-        // While BPM analysis runs: subtle breathing to signal "working".
-        // After analysis: stable at 0.45.
-        let breathe   = isAnalyzingBeatGrid
+        // Fixed-quarter dividers breathe while BPM analysis is running.
+        let breathe = isAnalyzingBeatGrid
             ? 0.50 + 0.18 * CGFloat(sin(now.timeIntervalSinceReferenceDate * 2.0))
             : 0.45
 
-        // Prune expired bar-play animations.
+        // Prune expired play animations.
         let expiryCutoff = now.addingTimeInterval(-Self.animDuration)
         tracker.playedAt = tracker.playedAt.filter { $0.value > expiryCutoff }
 
+        // Lock-in transition: fade musical grid from estimated (dim) → analyzed (full).
+        let isAnalyzed = beatGridConfidence >= Self.confidenceThreshold
+        let lockT: CGFloat
+        if isAnalyzed, let arrivedAt = gridTransition.lockedInAt {
+            lockT = CGFloat(min(1.0, now.timeIntervalSince(arrivedAt) / Self.gridTransitionDuration))
+        } else {
+            lockT = 0
+        }
+
+        // Pre-compute which tick indices carry musical significance.
+        // Estimated grid (offset=0) shown at 55% alpha until analysis locks in.
+        // Analyzed grid grows to 100% as lockT → 1.
+        var musicalTicks: [Int: MusicalTickType] = [:]
+        var musAlphaMult: Double = 0.0
+
+        if hasBeatGrid {
+            let beatDur      = 60.0 / bpm
+            let pxPerBeat    = size.width * CGFloat(beatDur / duration)
+            let pxPerBar     = pxPerBeat * CGFloat(meterBeatsPerBar)
+            let pxPerFourBar = pxPerBar * 4.0
+            let minPx: CGFloat = 4.0
+
+            let barStride: Int
+            if      pxPerBar     >= minPx { barStride = 1  }
+            else if pxPerFourBar >= minPx { barStride = 4  }
+            else if pxPerFourBar * 2 >= minPx { barStride = 8  }
+            else                          { barStride = 16 }
+            let showBeats = pxPerBeat >= minPx
+
+            // Before analysis: estimated grid (offset=0) at 55% alpha.
+            // After analysis: use detected offset, fade to 100% via lockT.
+            let gridOffset = isAnalyzed ? beatGridOffset : 0
+            musAlphaMult   = isAnalyzed ? (0.55 + 0.45 * Double(lockT)) : 0.55
+
+            var beatI = 0
+            var t     = gridOffset
+            if t < 0 {
+                let skip = Int(ceil(-t / beatDur))
+                t     += Double(skip) * beatDur
+                beatI += skip
+            }
+
+            while t <= duration + beatDur * 0.5 {
+                defer { t += beatDur; beatI += 1 }
+                guard t >= 0, t <= duration else { continue }
+
+                let barI      = beatI / meterBeatsPerBar
+                let beatInBar = beatI % meterBeatsPerBar
+                let mapped    = Int((t / duration * Double(totalTicks - 1)).rounded())
+                guard mapped >= 0, mapped < totalTicks else { continue }
+
+                if beatInBar == 0 && barI % barStride == 0 {
+                    let type: MusicalTickType = (barI % 4 == 0) ? .fourBar : .bar
+                    if let existing = musicalTicks[mapped] {
+                        if type.rawValue > existing.rawValue { musicalTicks[mapped] = type }
+                    } else {
+                        musicalTicks[mapped] = type
+                    }
+                } else if beatInBar != 0 && showBeats {
+                    if musicalTicks[mapped] == nil { musicalTicks[mapped] = .beat }
+                }
+            }
+        }
+
+        // Single tick render loop — waveform and beat grid unified.
         for i in 0..<totalTicks {
             let frac    = CGFloat(i) / CGFloat(totalTicks - 1)
             let x       = frac * size.width
             let played  = x <= playheadX
-            // Fixed visual quarter dividers — ALWAYS in the set, never removed.
             let isMajor = Self.fixedDividerTicks.contains(i)
 
             let animT: CGFloat
@@ -176,38 +259,47 @@ struct ProgressRuler: View {
 
             let tickH: CGFloat
             let alpha: Double
+            let lineW: CGFloat
 
             if isMajor {
-                // Fixed track-section dividers. Played region → bright; unplayed → base.
-                tickH = majorH
+                // Fixed track-section dividers — highest priority, always rendered.
+                tickH = barH
+                lineW = 1.0
                 let base = Double(breathe)
                 alpha = played ? min(1.0, base + (1.0 - base) * Double(animT)) : base
+            } else if let musType = musicalTicks[i] {
+                // Musical anchor — height from hierarchy, amplitude irrelevant here.
+                switch musType {
+                case .fourBar: tickH = fourBarH; lineW = 1.5
+                case .bar:     tickH = barH;     lineW = 1.0
+                case .beat:    tickH = beatH;    lineW = 1.0
+                }
+                let baseA = 0.22 + 0.55 * Double(animT)
+                alpha = baseA * musAlphaMult
             } else if !waveform.isEmpty {
+                // Amplitude bar — texture between musical anchors.
+                // Height capped at beatH so it never competes visually.
                 let pos  = frac * CGFloat(waveform.count - 1)
                 let ci0  = max(0, min(waveform.count - 1, Int(pos)))
                 let ci1  = min(waveform.count - 1, ci0 + 1)
-                let t    = pos - CGFloat(ci0)
-                let v    = CGFloat(waveform[ci0]) * (1 - t) + CGFloat(waveform[ci1]) * t
+                let lerp = pos - CGFloat(ci0)
+                let v    = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
                 let norm = max(0, (v - waveMin) / waveRange)
-                let ghostH = minGhostH + norm * (maxGhostH - minGhostH)
-                let fullH  = minWaveH  + norm * (maxWaveH  - minWaveH)
-                tickH = ghostH + (fullH - ghostH) * animT
-                alpha = 0.22 + 0.63 * Double(animT)
+                tickH = minWaveH + norm * (maxWaveH - minWaveH)
+                alpha = 0.18 + 0.42 * Double(animT)
+                lineW = 1.0
             } else {
                 tickH = 2 + 2 * animT
-                alpha = 0.18 + 0.37 * Double(animT)
+                alpha = 0.15 + 0.28 * Double(animT)
+                lineW = 1.0
             }
 
             var path = Path()
             path.move(to:    CGPoint(x: x, y: baseline))
             path.addLine(to: CGPoint(x: x, y: baseline - tickH))
             ctx.stroke(path, with: .color(.white.opacity(alpha)),
-                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+                       style: StrokeStyle(lineWidth: lineW, lineCap: .butt))
         }
-
-        // Musical beatgrid — drawn after waveform ticks, before hot cues.
-        // Requires BPM + duration. Fixed quarter dividers remain visible underneath.
-        if hasBeatGrid { drawBeatGrid(ctx: ctx, size: size, now: now) }
 
         // Hot cue markers — topmost layer.
         let cueColors: [Color] = [
@@ -224,134 +316,6 @@ struct ProgressRuler: View {
             cuePath.addLine(to: CGPoint(x: cx, y: 5))
             ctx.stroke(cuePath, with: .color(cueColors[idx]),
                        style: StrokeStyle(lineWidth: 2.0, lineCap: .butt))
-        }
-    }
-
-    // Musical beatgrid overlay.
-    //
-    // Two layers:
-    //   Estimated  (offset=0, source=estimated/analyzing): subtle, always when BPM known.
-    //   Analyzed   (offset=detected, source=analyzed):     brighter, 4-bar landmarks,
-    //                                                       fades in over 250ms.
-    //
-    // Adaptive barStride ensures something readable always shows (Rekordbox overview model):
-    //   pxPerBar ≥ 4  → stride 1  (every bar)
-    //   pxPer4Bar ≥ 4 → stride 4  (every 4 bars)
-    //   pxPer8Bar ≥ 4 → stride 8
-    //   else          → stride 16
-    //
-    // Heights exceed waveform (maxWaveH=11px) to form a ruler-like structure:
-    //   bar ticks  → 75% ruler (~16px)
-    //   4-bar mark → 100% ruler (22px, full height)
-    //
-    // Performance: 3 batched Paths, 3 ctx.stroke calls per layer. O(1) draw calls.
-    private func drawBeatGrid(ctx: GraphicsContext, size: CGSize, now: Date) {
-        let beatDuration = 60.0 / bpm
-        guard beatDuration.isFinite, beatDuration > 0 else { return }
-
-        let h         = size.height
-        let beatH:    CGFloat = (h * 0.38).rounded()  // ~8px: inner beat hints
-        let barH:     CGFloat = (h * 0.75).rounded()  // ~16px: above waveform
-        let fourBarH: CGFloat = h                      // 22px: full ruler height
-
-        let pxPerBeat    = size.width * CGFloat(beatDuration / duration)
-        let pxPerBar     = pxPerBeat * CGFloat(meterBeatsPerBar)
-        let pxPerFourBar = pxPerBar * 4.0
-        let minPx: CGFloat = 4.0
-
-        let barStride: Int
-        if      pxPerBar     >= minPx { barStride = 1  }
-        else if pxPerFourBar >= minPx { barStride = 4  }
-        else if pxPerFourBar * 2 >= minPx { barStride = 8  }
-        else                          { barStride = 16 }
-
-        let showBeats = pxPerBeat >= minPx
-
-        // Lock-in transition progress.
-        let isAnalyzed = beatGridConfidence >= Self.confidenceThreshold
-        let lockT: CGFloat
-        if isAnalyzed, let arrivedAt = gridTransition.lockedInAt {
-            lockT = CGFloat(min(1.0, now.timeIntervalSince(arrivedAt) / Self.gridTransitionDuration))
-        } else {
-            lockT = 0
-        }
-
-        // Layer A — estimated (offset=0).
-        // Always visible when BPM is known; fades as analyzed grid arrives.
-        let layerAMult = 1.0 - Double(lockT)
-        if layerAMult > 0.01 {
-            drawGridLayer(ctx: ctx, size: size, offset: 0,
-                beatH: beatH, barH: barH, fourBarH: fourBarH,
-                beatAlpha: 0.20 * layerAMult, barAlpha: 0.40 * layerAMult, fourBarAlpha: 0,
-                showBeats: showBeats, barStride: barStride, showFourBar: false)
-        }
-
-        // Layer B — analyzed (offset=detected). Grows in after confidence arrives.
-        if isAnalyzed && lockT > 0.01 {
-            let layerBMult = Double(lockT)
-            drawGridLayer(ctx: ctx, size: size, offset: beatGridOffset,
-                beatH: beatH, barH: barH, fourBarH: fourBarH,
-                beatAlpha: 0.28 * layerBMult, barAlpha: 0.55 * layerBMult, fourBarAlpha: 0.80 * layerBMult,
-                showBeats: showBeats, barStride: barStride, showFourBar: true)
-        }
-    }
-
-    // Single-layer grid renderer — 3 batched Path structs regardless of beat count.
-    private func drawGridLayer(
-        ctx: GraphicsContext, size: CGSize, offset: Double,
-        beatH: CGFloat, barH: CGFloat, fourBarH: CGFloat,
-        beatAlpha: Double, barAlpha: Double, fourBarAlpha: Double,
-        showBeats: Bool, barStride: Int, showFourBar: Bool
-    ) {
-        let beatDuration = 60.0 / bpm
-        let baseline     = size.height
-
-        let firstBeat = max(0, Int(floor(-offset / beatDuration)))
-        let lastBeat  = Int(ceil((duration - offset) / beatDuration))
-        guard lastBeat >= firstBeat else { return }
-
-        var beatPath    = Path()
-        var barPath     = Path()
-        var fourBarPath = Path()
-
-        for beatIndex in firstBeat...lastBeat {
-            let beatTime = offset + Double(beatIndex) * beatDuration
-            guard beatTime >= 0, beatTime <= duration else { continue }
-
-            let x     = CGFloat(beatTime / duration) * size.width
-            let isBar = beatIndex % meterBeatsPerBar == 0
-
-            if isBar {
-                let barIdx = beatIndex / meterBeatsPerBar
-                guard barIdx % barStride == 0 else { continue }
-
-                // In 1-bar stride: 4-bar landmarks get full-height treatment.
-                // In wider stride: every shown marker is already a landmark.
-                let isFourBarLandmark = barIdx % 4 == 0
-                if isFourBarLandmark && showFourBar {
-                    fourBarPath.move(to:    CGPoint(x: x, y: baseline))
-                    fourBarPath.addLine(to: CGPoint(x: x, y: baseline - fourBarH))
-                } else {
-                    barPath.move(to:    CGPoint(x: x, y: baseline))
-                    barPath.addLine(to: CGPoint(x: x, y: baseline - barH))
-                }
-            } else if showBeats {
-                beatPath.move(to:    CGPoint(x: x, y: baseline))
-                beatPath.addLine(to: CGPoint(x: x, y: baseline - beatH))
-            }
-        }
-
-        if showBeats && beatAlpha > 0 {
-            ctx.stroke(beatPath, with: .color(.white.opacity(beatAlpha)),
-                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
-        }
-        if barAlpha > 0 {
-            ctx.stroke(barPath, with: .color(.white.opacity(barAlpha)),
-                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
-        }
-        if showFourBar && fourBarAlpha > 0 {
-            ctx.stroke(fourBarPath, with: .color(.white.opacity(fourBarAlpha)),
-                       style: StrokeStyle(lineWidth: 1.5, lineCap: .butt))
         }
     }
 }
