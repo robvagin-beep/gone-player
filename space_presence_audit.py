@@ -16,10 +16,10 @@ PR_NUMBER         = os.environ["PR_NUMBER"]
 REPO              = os.environ["REPO"]
 
 FILES_TO_READ = [
-    "GONE/GONE/WindowSnapManager.swift",
-    "GONE/GONE/GONEApp.swift",
-    "GONE/GONE/SplitModeManager.swift",
-    "GONE/GONE/CrossfaderBandPanel.swift",
+    "GONE/WindowSnapManager.swift",
+    "GONE/GONEApp.swift",
+    "GONE/SplitModeManager.swift",
+    "GONE/CrossfaderBandPanel.swift",
 ]
 
 def read_file(path):

@@ -13,18 +13,18 @@ PR_NUMBER         = os.environ["PR_NUMBER"]
 REPO              = os.environ["REPO"]
 
 FILES = {
-    "GONEApp.swift":            "GONE/GONE/GONEApp.swift",
-    "WindowSnapManager.swift":  "GONE/GONE/WindowSnapManager.swift",
-    "PlayerState.swift":        "GONE/GONE/PlayerState.swift",
-    "PlayerState+Analysis.swift": "GONE/GONE/PlayerState+Analysis.swift",
-    "SplitModeManager.swift":   "GONE/GONE/SplitModeManager.swift",
-    "AudioEngine.next.swift":   "GONE/GONE/GONE/AudioEngine.next.swift",
-    "AnalysisCache.swift":      "GONE/GONE/AnalysisCache.swift",
-    "ArtworkCache.swift":       "GONE/GONE/ArtworkCache.swift",
-    "PlaylistView.swift":       "GONE/GONE/PlaylistView.swift",
-    "EQPanelView.swift":        "GONE/GONE/EQPanelView.swift",
-    "RootView.swift":           "GONE/GONE/RootView.swift",
-    "SettingsPanel.swift":      "GONE/GONE/SettingsPanel.swift",
+    "GONEApp.swift":              "GONE/GONEApp.swift",
+    "WindowSnapManager.swift":    "GONE/WindowSnapManager.swift",
+    "PlayerState.swift":          "GONE/PlayerState.swift",
+    "PlayerState+Analysis.swift": "GONE/PlayerState+Analysis.swift",
+    "SplitModeManager.swift":     "GONE/SplitModeManager.swift",
+    "AudioEngine.next.swift":     "GONE/GONE/AudioEngine.next.swift",
+    "AnalysisCache.swift":        "GONE/AnalysisCache.swift",
+    "ArtworkCache.swift":         "GONE/ArtworkCache.swift",
+    "PlaylistView.swift":         "GONE/PlaylistView.swift",
+    "EQPanelView.swift":          "GONE/EQPanelView.swift",
+    "RootView.swift":             "GONE/RootView.swift",
+    "SettingsPanel.swift":        "GONE/SettingsPanel.swift",
 }
 
 def read_file(path):
