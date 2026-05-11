@@ -199,6 +199,8 @@ final class WindowSnapManager {
                 self.snapState = .docked
                 self.lockFrame(window: window, x: snapX)
                 self.playerState?.isSnapping = false
+                window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                             .fullScreenDisallowsTiling, .transient, .ignoresCycle]
             }
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 80_000_000)
@@ -292,6 +294,8 @@ final class WindowSnapManager {
             guard let self, let window else { return }
             self.lockFrame(window: window, x: snapX)
             self.playerState?.isSnapping = false
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                         .fullScreenDisallowsTiling, .transient, .ignoresCycle]
         }
     }
 
@@ -308,6 +312,8 @@ final class WindowSnapManager {
 
         snapState = .expanded
         playerState?.isSnapping = true
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                     .fullScreenDisallowsTiling, .managed, .ignoresCycle]
 
         // Delay panel restore so the window travels away from the edge before content expands.
         // isSnapping blocks updateWindowSize, so the frame is controlled by slideFrameTo only.

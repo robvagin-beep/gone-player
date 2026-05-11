@@ -71,9 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // is already on every Space from the very first frame.
         NSApp.windows.forEach {
             $0.alphaValue = 0
-            $0.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
+            $0.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)))
             $0.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                                     .fullScreenDisallowsTiling, .ignoresCycle]
+                                     .fullScreenDisallowsTiling, .managed, .ignoresCycle]
             $0.hidesOnDeactivate = false
         }
         DispatchQueue.main.async {
@@ -161,17 +161,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
-        // screenSaverWindow (1000) floats above all normal content. Level is not the bottleneck
-        // for fullscreen Spaces — Space membership is. System panels (NSOpenPanel etc.) use a
-        // higher OS-managed level and still appear above GONE regardless.
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
-        // .canJoinAllSpaces: omnipresent across user Spaces.
-        // .fullScreenAuxiliary: accepted into foreign fullscreen Spaces.
+        // statusWindowLevelKey (25) floats above all app windows and the menu bar (24),
+        // below screen savers. Sufficient for omnipresence; screenSaver (1000) is overkill
+        // and can conflict with DRM overlay surfaces in some fullscreen apps.
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)))
+        // .canJoinAllSpaces: enrolls window in every Space including new fullscreen Spaces.
+        // .fullScreenAuxiliary: required alongside canJoinAllSpaces for fullscreen Spaces
+        //   on macOS 11+ — both flags together are the load-bearing pair.
+        // .managed: window appears as a proper tile in Mission Control (not invisible).
+        //   Toggled to .transient by WindowSnapManager when window is docked off-screen.
         // .fullScreenDisallowsTiling: never captured by Split View.
         // .ignoresCycle: excluded from ⌘` window ring.
-        // NO .stationary — it inhibits live re-parenting to the active fullscreen Space.
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
-                                     .fullScreenDisallowsTiling, .ignoresCycle]
+                                     .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         window.hidesOnDeactivate = false
     }
 
