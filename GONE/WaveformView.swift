@@ -27,16 +27,10 @@ struct ProgressRulerRow: View {
     }
 }
 
-// Class-based storage for bar animation timestamps.
-// Mutations don't trigger SwiftUI invalidation — the TimelineView Canvas
-// already re-runs at 30fps and reads the latest values on each tick.
 private final class BarTracker {
     var playedAt: [Int: Date] = [:]
 }
 
-// Class-based storage for beat grid lock-in animation.
-// Records when the analyzed grid first arrived so the Canvas can
-// compute transition progress without triggering SwiftUI re-renders.
 private final class GridTransitionState {
     var lockedInAt: Date?
     var lastConfidence: Double = 0
@@ -95,8 +89,6 @@ struct ProgressRuler: View {
         .onAppear { updateWaveCache() }
         .onChange(of: waveform) { _ in updateWaveCache() }
         .onChange(of: beatGridConfidence) { newConfidence in
-            // Record exact moment the analyzed grid arrives so the Canvas
-            // can animate a smooth lock-in without needing @State mutation.
             let wasAnalyzed = gridTransition.lastConfidence >= Self.confidenceThreshold
             let nowAnalyzed = newConfidence >= Self.confidenceThreshold
             if nowAnalyzed && !wasAnalyzed {
@@ -134,26 +126,23 @@ struct ProgressRuler: View {
     }
 
     private func drawRuler(ctx: GraphicsContext, size: CGSize, now: Date) {
-        // 121 = 4×30+1 → quarters land exactly at indices 0,30,60,90,120
         let totalTicks = 121
         let playheadX  = size.width * CGFloat(displayProgress)
         let isDragging = dragRatio != nil
 
-        let majorH:    CGFloat = 16   // quarter-mark dividers — stand above played bars
-        let maxWaveH:  CGFloat = 11   // played peak (below majorH so dividers are visible)
-        let minWaveH:  CGFloat = 3    // played trough
-        let maxGhostH: CGFloat = 8    // unplayed peak
-        let minGhostH: CGFloat = 2    // unplayed trough
+        let majorH:    CGFloat = 16
+        let maxWaveH:  CGFloat = 11
+        let minWaveH:  CGFloat = 3
+        let maxGhostH: CGFloat = 8
+        let minGhostH: CGFloat = 2
         let baseline:  CGFloat = size.height
 
-        // When a real beat grid is available, suppress the arbitrary 0/25/50/75/100
-        // fixed dividers — musical bar markers provide better visual structure.
+        // Suppress arbitrary fixed dividers when beat grid provides real structure.
         let majorSet: Set<Int> = hasBeatGrid ? [] : [0, 30, 60, 90, 120]
 
         let waveMin   = waveMinCache
         let waveRange = waveRangeCache
 
-        // Prune entries whose animation has completed (elapsed > animDuration).
         let expiryCutoff = now.addingTimeInterval(-Self.animDuration)
         tracker.playedAt = tracker.playedAt.filter { $0.value > expiryCutoff }
 
@@ -183,11 +172,11 @@ struct ProgressRuler: View {
                 tickH = majorH
                 alpha = played ? (0.18 + 0.82 * Double(animT)) : 0.18
             } else if !waveform.isEmpty {
-                let pos = frac * CGFloat(waveform.count - 1)
-                let ci0 = max(0, min(waveform.count - 1, Int(pos)))
-                let ci1 = min(waveform.count - 1, ci0 + 1)
-                let t   = pos - CGFloat(ci0)
-                let v   = CGFloat(waveform[ci0]) * (1 - t) + CGFloat(waveform[ci1]) * t
+                let pos  = frac * CGFloat(waveform.count - 1)
+                let ci0  = max(0, min(waveform.count - 1, Int(pos)))
+                let ci1  = min(waveform.count - 1, ci0 + 1)
+                let t    = pos - CGFloat(ci0)
+                let v    = CGFloat(waveform[ci0]) * (1 - t) + CGFloat(waveform[ci1]) * t
                 let norm = max(0, (v - waveMin) / waveRange)
                 let ghostH = minGhostH + norm * (maxGhostH - minGhostH)
                 let fullH  = minWaveH  + norm * (maxWaveH  - minWaveH)
@@ -205,13 +194,10 @@ struct ProgressRuler: View {
                        style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
         }
 
-        // Beat grid — drawn after waveform so bars read over the waveform texture,
-        // before hot cues so cues remain the topmost visual layer.
-        if hasBeatGrid {
-            drawBeatGrid(ctx: ctx, size: size, now: now)
-        }
+        // Beat grid: drawn after waveform (on top), before hot cues.
+        if hasBeatGrid { drawBeatGrid(ctx: ctx, size: size, now: now) }
 
-        // Hot cue markers — small colored ticks at the top of the ruler
+        // Hot cues — topmost layer.
         let cueColors: [Color] = [
             Color(red: 1.0, green: 0.35, blue: 0.35),
             Color(red: 0.35, green: 0.70, blue: 1.0),
@@ -229,44 +215,49 @@ struct ProgressRuler: View {
         }
     }
 
-    // Draws the adaptive beat/bar grid.
+    // Draws musical bar markers that form a ruler-like structure over the waveform.
     //
-    // Two-layer system:
-    //   Layer A (fallback): offset=0, muted alpha — always visible when hasBeatGrid
-    //   Layer B (analyzed): offset=beatGridOffset, full alpha — fades in when confidence ≥ threshold
+    // Heights are scaled to the ruler (22px typ.) and EXCEED the waveform bars so
+    // musical structure is always readable above the audio texture:
+    //   beat ticks  → 38% ruler height (~8px): subtle quarter-note hints
+    //   bar markers → 75% ruler height (~16px): clearly above waveform
+    //   4-bar marks → 100% ruler height (22px): full-height landmarks
     //
-    // Lock-in animation: layer A fades out, layer B grows in over gridTransitionDuration.
+    // Adaptive stride (Rekordbox overview behavior):
+    //   always show SOMETHING when BPM is known — find the bar subdivision
+    //   that keeps markers ≥ 4px apart and show that level.
+    //   pxPerBar ≥ 4 → every bar    (1-bar stride)
+    //   pxPer4Bar ≥ 4 → every 4 bars (4-bar stride)
+    //   pxPer8Bar ≥ 4 → every 8 bars (8-bar stride)
+    //   else → every 16 bars
     //
-    // Visual hierarchy (bottom → top):
-    //   beat ticks · bar ticks · 4-bar ticks
-    //
-    // LOD tiers (density guard):
-    //   pxPerBeat ≥ 6 → beats + bars + 4-bar
-    //   pxPerBeat < 6 AND pxPerBar ≥ 8 → bars + 4-bar only
-    //   pxPerBar  < 8 → phrase markers only (every 8 bars)
-    //
-    // Performance: 3 batched Path structs max, 3 ctx.stroke calls per layer — O(1) draw
-    // calls regardless of beat count.
+    // Two-layer animation: fallback (offset=0) fades, analyzed (offset=detected) grows.
+    // Performance: 3 batched Path structs × 2 layers = 6 ctx.stroke calls max.
     private func drawBeatGrid(ctx: GraphicsContext, size: CGSize, now: Date) {
         let beatDuration = 60.0 / bpm
         guard beatDuration.isFinite, beatDuration > 0 else { return }
 
-        // Tier heights
-        let beatH:    CGFloat = 4
-        let barH:     CGFloat = 12
-        let fourBarH: CGFloat = 20
+        let h = size.height
+        let beatH:    CGFloat = (h * 0.38).rounded()   // ~8px
+        let barH:     CGFloat = (h * 0.75).rounded()   // ~16px, exceeds waveform
+        let fourBarH: CGFloat = h                       // full height — ruler landmark
 
-        // LOD thresholds
-        let pxPerBeat = size.width * CGFloat(beatDuration / duration)
-        let pxPerBar  = pxPerBeat * CGFloat(meterBeatsPerBar)
-        let drawBeats   = pxPerBeat >= 6.0
-        let drawBars    = pxPerBar  >= 8.0
-        let phraseOnly  = !drawBars
-        let phraseEvery = 8
+        let pxPerBeat    = size.width * CGFloat(beatDuration / duration)
+        let pxPerBar     = pxPerBeat * CGFloat(meterBeatsPerBar)
+        let pxPerFourBar = pxPerBar * 4.0
+        let minPx: CGFloat = 4.0
 
-        guard drawBeats || drawBars else { return }
+        // Adaptive stride: always draw at least the tier that stays readable.
+        let barStride: Int
+        if      pxPerBar     >= minPx { barStride = 1  }
+        else if pxPerFourBar >= minPx { barStride = 4  }
+        else if pxPerFourBar * 2 >= minPx { barStride = 8  }
+        else                          { barStride = 16 }
 
-        // Transition progress: 0 = fallback only, 1 = analyzed fully locked in
+        // Individual beats only when they're actually readable.
+        let showBeats = pxPerBeat >= minPx
+
+        // Transition progress: 0 = fallback, 1 = analyzed fully locked in.
         let isAnalyzed = beatGridConfidence >= Self.confidenceThreshold
         let transitionT: CGFloat
         if isAnalyzed, let arrivedAt = gridTransition.lockedInAt {
@@ -276,51 +267,37 @@ struct ProgressRuler: View {
             transitionT = 0
         }
 
-        // Layer A: fallback grid (offset = 0), fades out as analyzed arrives.
-        // Alpha envelope: 1.0 → 0 over the transition.
-        let layerAMultiplier = 1.0 - Double(transitionT)
-        if layerAMultiplier > 0.01 {
-            drawGridLayer(
-                ctx: ctx, size: size,
-                offset: 0,
+        // Layer A: fallback (offset=0) — provisional, more muted, fades as analysis arrives.
+        let layerAMult = 1.0 - Double(transitionT)
+        if layerAMult > 0.01 {
+            drawGridLayer(ctx: ctx, size: size, offset: 0,
                 beatH: beatH, barH: barH, fourBarH: fourBarH,
-                beatAlpha:    0.14 * layerAMultiplier,
-                barAlpha:     0.30 * layerAMultiplier,
-                fourBarAlpha: 0,           // fallback shows no 4-bar emphasis
-                drawBeats: drawBeats, drawBars: drawBars,
-                phraseOnly: phraseOnly, phraseEvery: phraseEvery,
-                showFourBar: false
-            )
+                beatAlpha:    0.20 * layerAMult,
+                barAlpha:     0.42 * layerAMult,
+                fourBarAlpha: 0,              // fallback shows no 4-bar emphasis
+                showBeats: showBeats, barStride: barStride, showFourBar: false)
         }
 
-        // Layer B: analyzed grid (offset = beatGridOffset), grows in.
-        // Only rendered when analysis has arrived.
+        // Layer B: analyzed (offset=beatGridOffset) — grows in with full visual hierarchy.
         if isAnalyzed && transitionT > 0.01 {
-            let layerBMultiplier = Double(transitionT)
-            drawGridLayer(
-                ctx: ctx, size: size,
-                offset: beatGridOffset,
+            let layerBMult = Double(transitionT)
+            drawGridLayer(ctx: ctx, size: size, offset: beatGridOffset,
                 beatH: beatH, barH: barH, fourBarH: fourBarH,
-                beatAlpha:    0.22 * layerBMultiplier,
-                barAlpha:     0.50 * layerBMultiplier,
-                fourBarAlpha: 0.70 * layerBMultiplier,
-                drawBeats: drawBeats, drawBars: drawBars,
-                phraseOnly: phraseOnly, phraseEvery: phraseEvery,
-                showFourBar: true
-            )
+                beatAlpha:    0.28 * layerBMult,
+                barAlpha:     0.55 * layerBMult,
+                fourBarAlpha: 0.80 * layerBMult,
+                showBeats: showBeats, barStride: barStride, showFourBar: true)
         }
     }
 
-    // Single-layer grid renderer. Caller controls alpha envelope so this stays
-    // allocation-budget neutral: 3 Path structs, 3 ctx.stroke calls regardless of BPM/length.
+    // Renders one grid layer. Caller controls alpha envelope.
+    // barStride controls which bars are drawn; showFourBar enables the full-height tier.
+    // 3 batched Path structs: O(1) draw calls regardless of beat count.
     private func drawGridLayer(
-        ctx: GraphicsContext, size: CGSize,
-        offset: Double,
+        ctx: GraphicsContext, size: CGSize, offset: Double,
         beatH: CGFloat, barH: CGFloat, fourBarH: CGFloat,
         beatAlpha: Double, barAlpha: Double, fourBarAlpha: Double,
-        drawBeats: Bool, drawBars: Bool,
-        phraseOnly: Bool, phraseEvery: Int,
-        showFourBar: Bool
+        showBeats: Bool, barStride: Int, showFourBar: Bool
     ) {
         let beatDuration = 60.0 / bpm
         let baseline     = size.height
@@ -341,24 +318,26 @@ struct ProgressRuler: View {
             let isBar = beatIndex % meterBeatsPerBar == 0
 
             if isBar {
-                let barIdx    = beatIndex / meterBeatsPerBar
-                let isFourBar = barIdx % 4 == 0
-                let isPhrase  = barIdx % phraseEvery == 0
+                let barIdx = beatIndex / meterBeatsPerBar
+                guard barIdx % barStride == 0 else { continue }
 
-                if showFourBar && isFourBar && drawBars {
+                // 4-bar landmarks only get special treatment in 1-bar stride mode
+                // (when stride > 1, every shown marker IS already a sparse landmark).
+                let isFourBarLandmark = barIdx % 4 == 0
+                if isFourBarLandmark && showFourBar {
                     fourBarPath.move(to:    CGPoint(x: x, y: baseline))
                     fourBarPath.addLine(to: CGPoint(x: x, y: baseline - fourBarH))
-                } else if drawBars || (phraseOnly && isPhrase) {
+                } else {
                     barPath.move(to:    CGPoint(x: x, y: baseline))
                     barPath.addLine(to: CGPoint(x: x, y: baseline - barH))
                 }
-            } else if drawBeats {
+            } else if showBeats {
                 beatPath.move(to:    CGPoint(x: x, y: baseline))
                 beatPath.addLine(to: CGPoint(x: x, y: baseline - beatH))
             }
         }
 
-        if drawBeats && beatAlpha > 0 {
+        if showBeats && beatAlpha > 0 {
             ctx.stroke(beatPath, with: .color(.white.opacity(beatAlpha)),
                        style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
         }

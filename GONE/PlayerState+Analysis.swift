@@ -86,14 +86,24 @@ extension PlayerState {
                 try? await Task.sleep(for: .milliseconds(300))
             }
 
-            // Lane 1: current track alone — user sees BPM immediately.
+            // Lane 1: current track alone, high priority — user sees BPM + beat grid first.
+            // No other analysis competes during this phase.
             let first = pending[0]
             await Self.analyzeBPMAndCommit(track: first, state: self)
 
-            // Lane 2: background — priority-aware, no artificial batching wall.
+            // Brief pause: let playback settle before batch analysis competes for disk I/O.
+            // At 2 concurrent AVAssetReaders, seek + playback stutter is measurable.
+            // This 1.5s gap costs nothing perceptible but keeps the first beat lag-free.
+            if pending.count > 1 {
+                try? await Task.sleep(for: .milliseconds(1500))
+            }
+
+            // Lane 2: background batch — capped at 2 concurrent to avoid I/O contention
+            // with ongoing playback. Priority lowered to .utility so the OS scheduler
+            // deprioritizes analysis reads vs audio engine writes.
+            let batchConcurrency = min(2, Self.analysisConcurrency)
             var queue = Array(pending.dropFirst())
             while !queue.isEmpty {
-                // Priority reorder: move newly selected current track to front.
                 let priorityId = await MainActor.run { self.bpmPriorityId ?? self.currentId }
                 if let pid = priorityId,
                    let idx = queue.firstIndex(where: { $0.id == pid }) {
@@ -102,18 +112,22 @@ extension PlayerState {
                 }
                 await MainActor.run { self.bpmPriorityId = nil }
 
-                let batch = Array(queue.prefix(Self.analysisConcurrency * 2))
+                let batch = Array(queue.prefix(batchConcurrency * 2))
                 queue = Array(queue.dropFirst(batch.count))
 
                 await withTaskGroup(of: Void.self) { group in
                     var q = batch
-                    for _ in 0..<min(Self.analysisConcurrency, q.count) {
+                    for _ in 0..<min(batchConcurrency, q.count) {
                         let track = q.removeFirst()
-                        group.addTask { await Self.analyzeBPMAndCommit(track: track, state: self) }
+                        group.addTask(priority: .utility) {
+                            await Self.analyzeBPMAndCommit(track: track, state: self)
+                        }
                     }
                     while await group.next() != nil, !q.isEmpty {
                         let track = q.removeFirst()
-                        group.addTask { await Self.analyzeBPMAndCommit(track: track, state: self) }
+                        group.addTask(priority: .utility) {
+                            await Self.analyzeBPMAndCommit(track: track, state: self)
+                        }
                     }
                 }
             }
