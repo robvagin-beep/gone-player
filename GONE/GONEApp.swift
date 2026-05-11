@@ -236,6 +236,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 PlaybackProgressFeed.shared.currentTime = time
             }
         }
+        engine.onError = { [weak self] msg in
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self?.playerState, s.debugMode else { return }
+                let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+                s.lastError = "[\(timestamp)] \(msg)"
+            }
+        }
         engine.onSpectrum = { [weak self] data in
             SpectrumFeed.shared.data = data          // PeekPanelView reads .shared
             self?.playerState?.spectrumFeed.data = data
@@ -488,7 +495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &settingsCancellables)
 
-        Publishers.MergeMany(
+        let settingsA: [AnyPublisher<Void, Never>] = [
             state.$volume.map { _ in () }.eraseToAnyPublisher(),
             state.$windowScale.map { _ in () }.eraseToAnyPublisher(),
             state.$gradientMapHue.map { _ in () }.eraseToAnyPublisher(),
@@ -500,16 +507,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.$repeatMode.map { _ in () }.eraseToAnyPublisher(),
             state.$autoPlayOnImport.map { _ in () }.eraseToAnyPublisher(),
             state.$autoOpenPlaylistOnImport.map { _ in () }.eraseToAnyPublisher(),
+        ]
+        let settingsB: [AnyPublisher<Void, Never>] = [
             state.$confirmBeforeDelete.map { _ in () }.eraseToAnyPublisher(),
             state.$hideMissingTracks.map { _ in () }.eraseToAnyPublisher(),
             state.$snapEnabled.map { _ in () }.eraseToAnyPublisher(),
+            state.$snapInactivityDelay.map { _ in () }.eraseToAnyPublisher(),
+            state.$snapAnimSpeed.map { _ in () }.eraseToAnyPublisher(),
+            state.$snapTabWidth.map { _ in () }.eraseToAnyPublisher(),
+            state.$debugMode.map { _ in () }.eraseToAnyPublisher(),
             state.$alwaysOnTop.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifyEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifyProximity.map { _ in () }.eraseToAnyPublisher(),
-            state.$magnifySpeed.map { _ in () }.eraseToAnyPublisher()
-        )
-        .sink { debouncedSave.send() }
-        .store(in: &settingsCancellables)
+            state.$magnifySpeed.map { _ in () }.eraseToAnyPublisher(),
+        ]
+        Publishers.MergeMany(settingsA + settingsB)
+            .sink { debouncedSave.send() }
+            .store(in: &settingsCancellables)
 
         // Magnify toggle: install/remove proximity monitor
         state.$magnifyEnabled

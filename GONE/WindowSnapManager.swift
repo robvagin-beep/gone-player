@@ -12,13 +12,16 @@ final class WindowSnapManager {
 
     weak var playerState: PlayerState?
 
-    private let tabVisible:      CGFloat = 19
+    // tabVisible, inactivityDelay, and anim durations are driven by PlayerState settings.
+    // Fallbacks are the original hardcoded defaults.
+    var tabVisible:      CGFloat { CGFloat(playerState?.snapTabWidth ?? 19) }
     private let peekVisible:     CGFloat = 90
     private let proximityZone:   CGFloat = 140
-    let inactivityDelay: Double  = 5.0
-    private let dockAnimDuration: Double = 0.24
-    private let peekAnimDuration: Double = 0.18
-    private let expandAnimDuration: Double = 0.24
+    var inactivityDelay: Double  { playerState?.snapInactivityDelay ?? 5.0 }
+    private var animMul: Double  { playerState?.snapAnimSpeed ?? 1.0 }
+    private var dockAnimDuration:   Double { 0.24 * animMul }
+    private var peekAnimDuration:   Double { 0.18 * animMul }
+    private var expandAnimDuration: Double { 0.24 * animMul }
 
     private var inactivityTimer:  Timer?
     private var proximityTimer:   Timer?

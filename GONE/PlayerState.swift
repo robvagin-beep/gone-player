@@ -102,6 +102,15 @@ final class PlayerState: ObservableObject {
     @Published var snapTimerStart: Date? = nil
     var isSnapping = false  // blocks updateWindowSize during snap animation
 
+    // MARK: — Snap tuning (exposed to Settings)
+    @Published var snapInactivityDelay: Double = 5.0   // seconds idle before auto-dock (3/5/10/20)
+    @Published var snapAnimSpeed: Double = 1.0          // multiplier: <1 faster, >1 slower
+    @Published var snapTabWidth: Double = 19            // px of player visible when docked (8–36)
+
+    // MARK: — Debug
+    @Published var debugMode: Bool = false
+    @Published var lastError: String = ""               // last engine/system error; shown when debugMode=true
+
     // MARK: — Magnify
     @Published var magnifyEnabled: Bool = false
     @Published var magnifyProximity: Double = 60.0   // px from window edge to trigger
@@ -387,9 +396,16 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "magnifyProximity")    != nil { magnifyProximity    = ud.double(forKey: "magnifyProximity") }
         if ud.object(forKey: "magnifySpeed")        != nil { magnifySpeed        = ud.double(forKey: "magnifySpeed") }
         if ud.object(forKey: "snapEnabled")         != nil { snapEnabled         = ud.bool(forKey: "snapEnabled") }
+        if ud.object(forKey: "snapInactivityDelay") != nil { snapInactivityDelay = ud.double(forKey: "snapInactivityDelay") }
+        if ud.object(forKey: "snapAnimSpeed")       != nil { snapAnimSpeed       = ud.double(forKey: "snapAnimSpeed") }
+        if ud.object(forKey: "snapTabWidth")        != nil { snapTabWidth        = ud.double(forKey: "snapTabWidth") }
+        if ud.object(forKey: "debugMode")           != nil { debugMode           = ud.bool(forKey: "debugMode") }
         if !windowScale.isFinite || windowScale < 0.5 || windowScale > 2.0 { windowScale = 1.0 }
         if !magnifyProximity.isFinite || magnifyProximity <= 0 { magnifyProximity = 120 }
         if !magnifySpeed.isFinite || magnifySpeed <= 0 { magnifySpeed = 0.18 }
+        if !snapInactivityDelay.isFinite || snapInactivityDelay < 1 { snapInactivityDelay = 5 }
+        if !snapAnimSpeed.isFinite || snapAnimSpeed <= 0 { snapAnimSpeed = 1.0 }
+        if !snapTabWidth.isFinite || snapTabWidth < 8 || snapTabWidth > 48 { snapTabWidth = 19 }
     }
 
     func persistSettings() {
@@ -409,6 +425,10 @@ final class PlayerState: ObservableObject {
         ud.set(confirmBeforeDelete,     forKey: "confirmDelete")
         ud.set(hideMissingTracks,       forKey: "hideMissing")
         ud.set(snapEnabled,             forKey: "snapEnabled")
+        ud.set(snapInactivityDelay,     forKey: "snapInactivityDelay")
+        ud.set(snapAnimSpeed,           forKey: "snapAnimSpeed")
+        ud.set(snapTabWidth,            forKey: "snapTabWidth")
+        ud.set(debugMode,              forKey: "debugMode")
         ud.set(alwaysOnTop,             forKey: "alwaysOnTop")
         // Save base scale (not magnified override) so user preference is preserved
         ud.set(isMagnified ? magnifyBaseScale : windowScale, forKey: "windowScale")

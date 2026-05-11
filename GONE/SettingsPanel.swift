@@ -161,6 +161,7 @@ struct SettingsView: View {
         case audio    = "AUDIO"
         case playback = "PLAYBACK"
         case display  = "DISPLAY"
+        case snap     = "SNAP"
         case info     = "INFO"
     }
     @State private var tab: Tab = .audio
@@ -232,7 +233,8 @@ struct SettingsView: View {
                 case .audio:    AudioSettingsTab(state: state)
                 case .playback: PlaybackSettingsTab(state: state)
                 case .display:  DisplaySettingsTab(state: state)
-                case .info:     InfoSettingsTab()
+                case .snap:     SnapSettingsTab(state: state)
+                case .info:     InfoSettingsTab(state: state)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -669,11 +671,130 @@ private struct DisplaySettingsTab: View {
     }
 }
 
+// MARK: - Tab: SNAP
+
+private struct SnapSettingsTab: View {
+    @ObservedObject var state: PlayerState
+
+    private let delayOptions: [(String, Double)] = [
+        ("3 s", 3), ("5 s", 5), ("10 s", 10), ("20 s", 20)
+    ]
+    private let speedOptions: [(String, Double)] = [
+        ("SLOW", 1.8), ("MED", 1.0), ("FAST", 0.5)
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SHead(text: "DOCK DELAY")
+            HStack(spacing: 4) {
+                ForEach(delayOptions, id: \.0) { label, val in
+                    Button { state.snapInactivityDelay = val } label: {
+                        let active = abs(state.snapInactivityDelay - val) < 0.5
+                        Text(label)
+                            .font(G.mono(10, weight: active ? .semibold : .regular))
+                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(active ? 0.12 : 0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 14)
+
+            SDivider()
+
+            SHead(text: "ANIMATION")
+            HStack(spacing: 4) {
+                ForEach(speedOptions, id: \.0) { label, val in
+                    Button { state.snapAnimSpeed = val } label: {
+                        let active = abs(state.snapAnimSpeed - val) < 0.15
+                        Text(label)
+                            .font(G.mono(10, weight: active ? .semibold : .regular))
+                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(active ? 0.12 : 0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 14)
+
+            SDivider()
+
+            SHead(text: "PEEK TAB WIDTH")
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("VISIBLE PX")
+                        .font(G.mono(7, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.28))
+                        .tracking(0.7)
+                    Spacer()
+                    Text("\(Int(state.snapTabWidth)) px")
+                        .font(G.mono(10, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                        .monospacedDigit()
+                }
+                SettingsSlider(label: "", value: $state.snapTabWidth, range: 8...36)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+        .padding(.bottom, 14)
+    }
+}
+
 // MARK: - Tab: INFO
 
 private struct InfoSettingsTab: View {
+    @ObservedObject var state: PlayerState
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+
+            // Debug mode row at the top
+            SHead(text: "BETA TOOLS")
+            SRow(label: "Debug mode", sub: "show error codes on failure") {
+                MiniToggle(isOn: $state.debugMode)
+            }
+            if state.debugMode && !state.lastError.isEmpty {
+                SDivider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("LAST ERROR")
+                        .font(G.mono(7, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.20))
+                        .tracking(0.8)
+                    Text(state.lastError)
+                        .font(G.mono(9))
+                        .foregroundStyle(Color.white.opacity(0.50))
+                        .lineSpacing(2)
+                        .textSelection(.enabled)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+
+                SDivider()
+                Button {
+                    state.lastError = ""
+                } label: {
+                    Text("CLEAR")
+                        .font(G.mono(9, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.35))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+            }
+
+            SDivider()
+
             Image("GoneWordmark")
                 .resizable()
                 .renderingMode(.template)

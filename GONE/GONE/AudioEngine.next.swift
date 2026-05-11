@@ -78,6 +78,7 @@ final class AudioEngineNext {
     var onProgress: ((Double, Double) -> Void)?
     var onSpectrum: (([Float]) -> Void)?
     var onFinished: (() -> Void)?
+    var onError: ((String) -> Void)?   // fires with human-readable error string; only set when debugMode=true
 
     private var baseVolume: Double = 72
     var crossfadeGain: Float = 1.0 {
@@ -158,7 +159,9 @@ final class AudioEngineNext {
         } catch {
             audioFile = nil
             currentURL = nil
-            print("[AudioEngineNext] load failed: \(error)")
+            let msg = "load failed: \(error)"
+            print("[AudioEngineNext] \(msg)")
+            onError?(msg)
         }
     }
 
@@ -295,7 +298,11 @@ final class AudioEngineNext {
         guard let unit = engine.outputNode.audioUnit else { return }
         var id = deviceID == kAudioObjectUnknown ? systemDefaultOutputDeviceID() : deviceID
         let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
-        if status != noErr { print("[AudioEngineNext] setOutputDevice failed: \(status)") }
+        if status != noErr {
+            let msg = "setOutputDevice failed: OSStatus \(status)"
+            print("[AudioEngineNext] \(msg)")
+            onError?(msg)
+        }
     }
 
     private func systemDefaultOutputDeviceID() -> AudioDeviceID {
@@ -582,7 +589,9 @@ final class AudioEngineNext {
         do {
             try engine.start()
         } catch {
-            print("[AudioEngineNext] engine start failed: \(error)")
+            let msg = "engine start failed: \(error)"
+            print("[AudioEngineNext] \(msg)")
+            onError?(msg)
         }
     }
 
