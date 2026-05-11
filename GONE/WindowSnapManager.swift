@@ -31,6 +31,7 @@ final class WindowSnapManager {
     private var savedFrame:       NSRect?
     private var savedDockedY:     CGFloat?
     private var dockToken:        UInt64 = 0  // incremented per dock attempt; guards completion against rapid toggle
+    private var savedWindowWidth: CGFloat?    // full width saved when shrinking to tabVisible at dock; nil outside snap lifecycle
 
     // Captured at enable(), used for the full lifecycle.
     private weak var snapWindow: NSWindow?
@@ -54,6 +55,7 @@ final class WindowSnapManager {
         removeActivityMonitor()
         removeSpaceChangeObserver()
         unlockFrame()
+        savedWindowWidth = nil
         playerState?.isSnapping = false
     }
 
@@ -82,7 +84,13 @@ final class WindowSnapManager {
         // Cancel any in-flight dockToEdge completion — prevents a pending completion from
         // overwriting snapState/.docked and re-locking the frame after we've disabled snap.
         dockToken &+= 1
+        let fullWidth = savedWindowWidth  // capture before clearInfrastructure nils it
         clearInfrastructure()
+        // If we were docked at tabVisible width, restore full width before restoreFromSnap/animateTo.
+        if let w = fullWidth, window.frame.width < w {
+            let f = window.frame
+            window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: w, height: f.height), display: true)
+        }
         playerState?.snapEnabled = false
         savedDockedY = nil
         playerState?.snapTimerStart = nil
@@ -258,7 +266,11 @@ final class WindowSnapManager {
                 guard let self, let window, self.dockToken == capturedToken else { return }
                 self.snapState = .docked
                 self.lockFrame(window: window, x: snapX)
-                self.playerState?.isSnapping = false
+                // Keep isSnapping = true — guards updateWindowSize while window is at tabVisible width.
+                // Shrink window to tabVisible so no content extends past screen.maxX → no Space bleed.
+                self.savedWindowWidth = window.frame.width
+                let f = window.frame
+                window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
                 // screenSaverWindow (1000) puts the tab above the Space transition
                 // animation layer — prevents body from appearing during desktop swipe
                 // and ensures the tab is visible over fullscreen app Spaces.
@@ -345,7 +357,15 @@ final class WindowSnapManager {
     private func peek(window: NSWindow) {
         guard let screen = screen(for: window) else { return }
         snapState = .peeking  // set before animation so poll can't re-trigger
-        slideTo(window: window, x: screen.frame.maxX - peekVisible)
+        let peekX = screen.frame.maxX - peekVisible
+        if let fullWidth = savedWindowWidth, window.frame.width < fullWidth {
+            // Docked at tabVisible width — restore full width while sliding to peek position.
+            let y = savedDockedY ?? clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
+            let targetFrame = NSRect(x: peekX, y: y, width: fullWidth, height: window.frame.height)
+            slideFrameTo(window: window, frame: targetFrame, duration: peekAnimDuration)
+        } else {
+            slideTo(window: window, x: peekX)
+        }
     }
 
     private func dockFromProximity(window: NSWindow) {
@@ -353,11 +373,13 @@ final class WindowSnapManager {
         let snapX = screen.frame.maxX - tabVisible
         let y = savedDockedY ?? clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
         snapState = .docked           // set immediately to prevent poll re-triggering
-        playerState?.isSnapping = true // guard updateWindowSize during slide (same as dockToEdge)
-        slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: peekAnimDuration) { [weak self, weak window] in
+        playerState?.isSnapping = true // guard updateWindowSize during slide
+        // Animate origin + width simultaneously: slides back to edge and shrinks to tabVisible.
+        let targetFrame = NSRect(x: snapX, y: y, width: tabVisible, height: window.frame.height)
+        slideFrameTo(window: window, frame: targetFrame, duration: peekAnimDuration) { [weak self, weak window] in
             guard let self, let window else { return }
             self.lockFrame(window: window, x: snapX)
-            self.playerState?.isSnapping = false
+            // Keep isSnapping = true — window stays at tabVisible width.
             window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                          .fullScreenDisallowsTiling, .transient, .ignoresCycle]
@@ -372,7 +394,8 @@ final class WindowSnapManager {
             targetFrame = saved
         } else {
             let origin = centeredOrigin(for: window)
-            targetFrame = NSRect(origin: origin, size: window.frame.size)
+            let sz = NSSize(width: savedWindowWidth ?? window.frame.size.width, height: window.frame.size.height)
+            targetFrame = NSRect(origin: origin, size: sz)
         }
 
         snapState = .expanded
