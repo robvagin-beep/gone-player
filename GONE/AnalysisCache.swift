@@ -112,10 +112,10 @@ actor AnalysisCache {
         dirty = false
         let snapshot = map
         let url = fileURL
-        Task.detached(priority: .utility) {
-            if let data = try? JSONEncoder().encode(snapshot) {
-                try? data.write(to: url, options: .atomic)
-            }
+        // Serialized inside actor so two flushSoon completions cannot race on the file.
+        // JSON encode + atomic write briefly blocks the actor but guarantees write ordering.
+        if let data = try? JSONEncoder().encode(snapshot) {
+            try? data.write(to: url, options: .atomic)
         }
     }
 }

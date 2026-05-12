@@ -235,41 +235,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let engine = state.audioEngine
         engine.onProgress = { [weak self] progress, time in
             DispatchQueue.main.async { [weak self] in
-                self?.playerState?.progress = progress
-                self?.playerState?.currentTime = time
-                self?.playerState?.progressFeed.progress = progress
-                self?.playerState?.progressFeed.currentTime = time
+                MainActor.assumeIsolated {
+                    self?.playerState?.progress = progress
+                    self?.playerState?.currentTime = time
+                    self?.playerState?.progressFeed.progress = progress
+                    self?.playerState?.progressFeed.currentTime = time
+                }
             }
         }
         engine.onError = { [weak self] msg in
             DispatchQueue.main.async { [weak self] in
-                guard let s = self?.playerState, s.debugMode else { return }
-                let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-                s.lastError = "[\(timestamp)] \(msg)"
+                MainActor.assumeIsolated {
+                    guard let s = self?.playerState, s.debugMode else { return }
+                    let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+                    s.lastError = "[\(timestamp)] \(msg)"
+                }
             }
         }
         engine.onSpectrum = { [weak self] data in
             DispatchQueue.main.async { [weak self] in
-                self?.playerState?.spectrumFeed.data = data
+                MainActor.assumeIsolated {
+                    self?.playerState?.spectrumFeed.data = data
+                }
             }
         }
         engine.onFinished = { [weak self] in
             DispatchQueue.main.async { [weak self] in
-                guard let state = self?.playerState else { return }
-                switch state.repeatMode {
-                case .one:
-                    engine.seek(ratio: 0)
-                    engine.play()
-                case .all:
-                    state.selectNextTrack()
-                case .off:
-                    let list = state.sortedTracks(forPlaylistTabId: state.playingTabId ?? state.activePlaylistTabId)
-                    let available = list.indices.filter { !list[$0].isMissing }
-                    if let lastAvailable = available.last,
-                       list.firstIndex(where: { $0.id == state.currentId }) == lastAvailable {
-                        state.isPlaying = false
-                    } else {
+                MainActor.assumeIsolated {
+                    guard let state = self?.playerState else { return }
+                    switch state.repeatMode {
+                    case .one:
+                        engine.seek(ratio: 0)
+                        engine.play()
+                    case .all:
                         state.selectNextTrack()
+                    case .off:
+                        let list = state.sortedTracks(forPlaylistTabId: state.playingTabId ?? state.activePlaylistTabId)
+                        let available = list.indices.filter { !list[$0].isMissing }
+                        if let lastAvailable = available.last,
+                           list.firstIndex(where: { $0.id == state.currentId }) == lastAvailable {
+                            state.isPlaying = false
+                        } else {
+                            state.selectNextTrack()
+                        }
                     }
                 }
             }

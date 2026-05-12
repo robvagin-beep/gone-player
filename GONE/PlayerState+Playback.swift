@@ -124,6 +124,7 @@ extension PlayerState {
         }
         currentId = list[nextIdx].id
         progress = 0; currentTime = 0
+        hotCues = [nil, nil, nil, nil]
         progressFeed.reset()
         guard let current else { return }
         guard !current.isMissing else { isPlaying = false; audioEngine.stop(resetProgress: true); return }
@@ -151,6 +152,7 @@ extension PlayerState {
         }
         currentId = list[nextIdx].id
         progress = 0; currentTime = 0
+        hotCues = [nil, nil, nil, nil]
         progressFeed.reset()
         guard let current else { return }
         guard !current.isMissing else { isPlaying = false; audioEngine.stop(resetProgress: true); return }
@@ -175,8 +177,10 @@ extension PlayerState {
         guard let idx = tracks.firstIndex(where: { $0.id == id }) else { return }
         let wasCurrent = tracks[idx].id == currentId
         tracks.remove(at: idx)
+        ArtworkCache.shared.remove(for: id)
         guard wasCurrent else { return }
         progress = 0; currentTime = 0
+        hotCues = [nil, nil, nil, nil]
         progressFeed.reset()
 
         guard !tracks.isEmpty else {
