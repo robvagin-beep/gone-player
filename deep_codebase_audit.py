@@ -11,7 +11,7 @@ Pass 4 — Data layer (AnalysisCache, ArtworkCache, LibraryScanner, PlaybackProg
 Synthesis — All 4 results → one priority-ranked actionable report
 """
 
-import os, json, urllib.request
+import os, json, urllib.request, time
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GITHUB_TOKEN      = os.environ["GITHUB_TOKEN"]
@@ -74,23 +74,32 @@ C = {name: read_file(path) for name, path in FILE_PATHS.items()}
 
 def call_claude(prompt, label):
     print(f"[PASS] {label}...")
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=json.dumps({
-            "model": "claude-opus-4-7",
-            "max_tokens": 16000,
-            "messages": [{"role": "user", "content": prompt}]
-        }).encode(),
-        headers={
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        },
-        method="POST"
-    )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        data = json.loads(resp.read())
-    return "".join(b["text"] for b in data["content"] if b["type"] == "text")
+    payload = json.dumps({
+        "model": "claude-opus-4-7",
+        "max_tokens": 16000,
+        "messages": [{"role": "user", "content": prompt}]
+    }).encode()
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    for attempt in range(4):
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload, headers=headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                data = json.loads(resp.read())
+            return "".join(b["text"] for b in data["content"] if b["type"] == "text")
+        except urllib.error.HTTPError as e:
+            if e.code in (529, 529, 503, 429) and attempt < 3:
+                wait = [60, 90, 120][attempt]
+                print(f"  HTTP {e.code} — waiting {wait}s (attempt {attempt+1}/4)...")
+                time.sleep(wait)
+            else:
+                raise
 
 def post_comment(body):
     url = f"https://api.github.com/repos/{REPO}/issues/{PR_NUMBER}/comments"
