@@ -9,18 +9,20 @@ import Foundation
 // Writes are coalesced — flushSoon debounces to 1.5s after the last mutation.
 
 struct AnalysisCacheEntry: Codable {
-    let bpm: Double
-    let waveform: [Float]
-    let beatGridOffset: Double
-    let beatGridConfidence: Double
-    let size: Int64
-    let mtime: TimeInterval
-    let analyzerVersion: Int
+    var bpm: Double
+    var waveform: [Float]
+    var beatGridOffset: Double
+    var beatGridConfidence: Double
+    var size: Int64
+    var mtime: TimeInterval
+    var analyzerVersion: Int
+    var lastAccessed: Date?
 }
 
 actor AnalysisCache {
     static let shared = AnalysisCache()
     private static let version = 6  // v6: half-tempo threshold 0.60→0.82 (reduces double-BPM on slow electronic)
+    private static let maxEntries = 20_000
 
     private var map: [String: AnalysisCacheEntry] = [:]
     private let fileURL: URL
@@ -39,6 +41,11 @@ actor AnalysisCache {
            let decoded = try? JSONDecoder().decode([String: AnalysisCacheEntry].self, from: data) {
             // Drop entries from older algorithm versions on load — cheaper than scanning at lookup.
             self.map = decoded.filter { $0.value.analyzerVersion == Self.version }
+            purgeMissingFiles()
+            enforceLRUCap()
+            if dirty {
+                Task { await flushSoon() }
+            }
         }
     }
 
@@ -54,7 +61,12 @@ actor AnalysisCache {
         guard let f = fileKey(for: url), let entry = map[f.key],
               entry.size == f.size, abs(entry.mtime - f.mtime) < 1.0
         else { return nil }
-        return entry
+        var touched = entry
+        touched.lastAccessed = Date()
+        map[f.key] = touched
+        dirty = true
+        Task { await flushSoon() }
+        return touched
     }
 
     func putBPMAndWaveform(url: URL, bpm: Double, waveform: [Float],
@@ -65,8 +77,10 @@ actor AnalysisCache {
             beatGridOffset: beatGridOffset,
             beatGridConfidence: beatGridConfidence,
             size: f.size, mtime: f.mtime,
-            analyzerVersion: Self.version
+            analyzerVersion: Self.version,
+            lastAccessed: Date()
         )
+        enforceLRUCap()
         dirty = true
         Task { await flushSoon() }
     }
@@ -80,8 +94,10 @@ actor AnalysisCache {
             beatGridOffset: existing?.beatGridOffset ?? 0,
             beatGridConfidence: existing?.beatGridConfidence ?? 0,
             size: f.size, mtime: f.mtime,
-            analyzerVersion: Self.version
+            analyzerVersion: Self.version,
+            lastAccessed: Date()
         )
+        enforceLRUCap()
         dirty = true
         Task { await flushSoon() }
     }
@@ -95,8 +111,10 @@ actor AnalysisCache {
             beatGridOffset: existing?.beatGridOffset ?? 0,
             beatGridConfidence: existing?.beatGridConfidence ?? 0,
             size: f.size, mtime: f.mtime,
-            analyzerVersion: Self.version
+            analyzerVersion: Self.version,
+            lastAccessed: Date()
         )
+        enforceLRUCap()
         dirty = true
         Task { await flushSoon() }
     }
@@ -126,5 +144,25 @@ actor AnalysisCache {
         if let data = try? JSONEncoder().encode(snapshot) {
             try? data.write(to: url, options: .atomic)
         }
+    }
+
+    private func purgeMissingFiles() {
+        let before = map.count
+        map = map.filter { FileManager.default.fileExists(atPath: $0.key) }
+        if map.count != before { dirty = true }
+    }
+
+    private func enforceLRUCap() {
+        guard map.count > Self.maxEntries else { return }
+        let overflow = map.count - Self.maxEntries
+        let victims = map
+            .sorted {
+                ($0.value.lastAccessed ?? Date(timeIntervalSince1970: $0.value.mtime)) <
+                ($1.value.lastAccessed ?? Date(timeIntervalSince1970: $1.value.mtime))
+            }
+            .prefix(overflow)
+            .map(\.key)
+        for key in victims { map.removeValue(forKey: key) }
+        dirty = true
     }
 }

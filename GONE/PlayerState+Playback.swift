@@ -37,6 +37,60 @@ extension PlayerState {
         audioEngine.setPitch(pitch, masterTempo: masterTempo)
     }
 
+    // MARK: — A-B Loop
+
+    func setLoopPoint(at time: Double) {
+        if loopA == nil {
+            loopA = time
+        } else if loopB == nil {
+            loopB = time
+            if let a = loopA, let b = loopB, b < a {
+                loopA = b
+                loopB = a
+            }
+        } else {
+            loopA = time
+            loopB = nil
+        }
+    }
+
+    func setLoopA(at time: Double) {
+        loopA = time
+        if let b = loopB, b <= time { loopB = nil }
+    }
+
+    func setLoopB(at time: Double) {
+        if loopA == nil {
+            loopA = time
+        } else {
+            loopB = time
+            if let a = loopA, let b = loopB, b < a {
+                loopA = b
+                loopB = a
+            }
+        }
+    }
+
+    func clearLoop() {
+        loopA = nil
+        loopB = nil
+    }
+
+    func enforceLoopIfNeeded(at time: Double) {
+        guard let a = loopA,
+              let b = loopB,
+              let current,
+              current.duration > 0,
+              b > a,
+              time >= b else { return }
+
+        let ratio = max(0, min(1, a / current.duration))
+        progress = ratio
+        currentTime = a
+        progressFeed.update(progress: ratio, currentTime: a)
+        audioEngine.seek(ratio: ratio)
+    }
+
     // MARK: — Panel toggles
 
     func toggleAccordionPanels() {
@@ -65,6 +119,7 @@ extension PlayerState {
         currentId = id
         progress = 0; currentTime = 0; isPlaying = false
         hotCues = [nil, nil, nil, nil]
+        clearLoop()
         progressFeed.reset()
         audioEngine.load(track.url)
         applyBPMFilter(to: track)
@@ -78,6 +133,7 @@ extension PlayerState {
         if let fromTabId { playingTabOverride = fromTabId }
         progress = 0; currentTime = 0
         hotCues = [nil, nil, nil, nil]
+        clearLoop()
         progressFeed.reset()
         isPlaying = autoplay
         audioEngine.load(track.url)
@@ -125,6 +181,7 @@ extension PlayerState {
         currentId = list[nextIdx].id
         progress = 0; currentTime = 0
         hotCues = [nil, nil, nil, nil]
+        clearLoop()
         progressFeed.reset()
         guard let current else { return }
         guard !current.isMissing else { isPlaying = false; audioEngine.stop(resetProgress: true); return }
@@ -153,6 +210,7 @@ extension PlayerState {
         currentId = list[nextIdx].id
         progress = 0; currentTime = 0
         hotCues = [nil, nil, nil, nil]
+        clearLoop()
         progressFeed.reset()
         guard let current else { return }
         guard !current.isMissing else { isPlaying = false; audioEngine.stop(resetProgress: true); return }
@@ -171,6 +229,7 @@ extension PlayerState {
     }
 
     func deleteFromLibrary(id: UUID) {
+        cancelAnalysisTask(for: id)
         for index in playlistTabs.indices {
             playlistTabs[index].trackIds.removeAll { $0 == id }
         }
@@ -181,6 +240,7 @@ extension PlayerState {
         guard wasCurrent else { return }
         progress = 0; currentTime = 0
         hotCues = [nil, nil, nil, nil]
+        clearLoop()
         progressFeed.reset()
 
         guard !tracks.isEmpty else {

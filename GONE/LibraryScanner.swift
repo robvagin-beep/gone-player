@@ -260,6 +260,10 @@ final class LibraryScanner {
 
         while let buf = output.copyNextSampleBuffer(),
               let blockBuf = CMSampleBufferGetDataBuffer(buf) {
+            if Task.isCancelled {
+                reader.cancelReading()
+                return []
+            }
             let length = CMBlockBufferGetDataLength(blockBuf)
             var data = [Int16](repeating: 0, count: length / 2)
             CMBlockBufferCopyDataBytes(blockBuf, atOffset: 0, dataLength: length, destination: &data)
@@ -505,6 +509,10 @@ final class LibraryScanner {
         samples.reserveCapacity(targetSamples)
         while let buf = output.copyNextSampleBuffer(),
               let block = CMSampleBufferGetDataBuffer(buf) {
+            if Task.isCancelled {
+                reader.cancelReading()
+                return []
+            }
             let len = CMBlockBufferGetDataLength(block)
             var raw = [Int16](repeating: 0, count: len / 2)
             CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: len, destination: &raw)
@@ -571,6 +579,10 @@ final class LibraryScanner {
         var scale: Float = 1.0 / 32768.0
         while let buf = output.copyNextSampleBuffer(),
               let block = CMSampleBufferGetDataBuffer(buf) {
+            if Task.isCancelled {
+                reader.cancelReading()
+                return (0, [], 0, 0)
+            }
             let len   = CMBlockBufferGetDataLength(block)
             let count = len / 2
             var raw   = [Int16](repeating: 0, count: count)

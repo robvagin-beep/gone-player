@@ -1010,6 +1010,11 @@ struct PlaylistRowView: View {
                         .id(track.bpmAnalysisState)
                         .padding(.horizontal, 4)
 
+                    TrackFlagDot(flag: track.flag) {
+                        state.cycleFlag(for: track.id)
+                    }
+                    .padding(.trailing, 3)
+
                     // Duration
                     Text(fmtTime(track.duration))
                         .font(G.mono(10.5))
@@ -1355,12 +1360,16 @@ struct ClonePlayerButton: View {
             }
         } label: {
             Image(systemName: split.isActive ? "square.slash" : "square.on.square")
-                .font(.system(size: 9, weight: .regular))
-                .foregroundColor(Color.white.opacity(hovered ? 0.50 : 0.20))
+                .font(.system(size: 9, weight: split.isActive ? .semibold : .regular))
+                .foregroundColor(split.isActive ? .white : Color.white.opacity(hovered ? 0.50 : 0.20))
                 .frame(width: 18, height: 18)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.white.opacity(split.isActive ? 0.12 : 0))
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.white.opacity(hovered ? 0.18 : 0), lineWidth: 0.5)
+                        .stroke(Color.white.opacity(split.isActive ? 0.30 : (hovered ? 0.18 : 0)), lineWidth: 0.5)
                 )
         }
         .buttonStyle(.plain)
@@ -1466,6 +1475,35 @@ struct BPMCell: View {
     }
 }
 
+private struct TrackFlagDot: View {
+    let flag: TrackFlag
+    let action: () -> Void
+
+    private var fill: Color {
+        switch flag {
+        case .none: return Color.white.opacity(0.10)
+        case .green: return G.flagGreen
+        case .yellow: return G.flagYellow
+        case .red: return G.flagRed
+        }
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Circle()
+                .fill(fill)
+                .overlay {
+                    Circle()
+                        .stroke(Color.white.opacity(flag == .none ? 0.12 : 0.22), lineWidth: 0.5)
+                }
+                .frame(width: 8, height: 8)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .goneTooltip("Track flag")
+    }
+}
+
 private struct AnalyzingDots: View {
     let phase: Int
     @State private var active: Int = 0
@@ -1548,4 +1586,3 @@ private enum PlaylistContentHeightKey: PreferenceKey {
 }
 
 // ── Analyzing overlay — shown during import ──────────────────────────────────
-

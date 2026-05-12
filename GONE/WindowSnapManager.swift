@@ -69,6 +69,12 @@ final class WindowSnapManager {
     // MARK: – Enable / Disable
 
     func enable(window: NSWindow) {
+        guard playerState?.tracks.isEmpty != true else {
+            playerState?.snapEnabled = false
+            playerState?.snapTimerStart = nil
+            snapState = .off
+            return
+        }
         clearInfrastructure()
         snapWindow   = window
         playerState?.snapEnabled = true
@@ -273,6 +279,14 @@ final class WindowSnapManager {
     // MARK: – State Transitions
 
     private func dockToEdge(window: NSWindow) {
+        guard playerState?.tracks.isEmpty != true else {
+            inactivityTimer?.invalidate()
+            inactivityTimer = nil
+            playerState?.snapEnabled = false
+            playerState?.snapTimerStart = nil
+            snapState = .off
+            return
+        }
         guard let screen = screen(for: window) else { return }
         removeGlobalClickMonitor()
 
@@ -505,6 +519,20 @@ final class WindowSnapManager {
 
     func constrainCurrentWindow() {
         constrainSnapPosition(window: snapWindow ?? mainWindow)
+    }
+
+    func dragSnappedWindowVertically(window: NSWindow?, startOrigin: NSPoint, startMouse: NSPoint, currentMouse: NSPoint) {
+        guard let window,
+              let screen = screen(for: window),
+              snapState == .docked || snapState == .peeking else { return }
+
+        let snapX = snapState == .peeking
+            ? screen.frame.maxX - peekVisible
+            : screen.frame.maxX - tabVisible
+        let newY = clampY(startOrigin.y + currentMouse.y - startMouse.y, height: window.frame.height, screen: screen)
+        savedDockedY = newY
+        frameLockX = snapX
+        window.setFrameOrigin(NSPoint(x: snapX, y: newY))
     }
 
     private(set) var importPanelOpen = false

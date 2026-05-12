@@ -12,6 +12,12 @@ extension PlayerState {
 
     // MARK: — Public entry points
 
+    func cancelAnalysisTask(for trackId: UUID) {
+        analysisTasksByTrack[trackId]?.cancel()
+        analysisTasksByTrack.removeValue(forKey: trackId)
+        analysisFeed.progress.removeValue(forKey: trackId)
+    }
+
     func reanalyzeBPM(for trackId: UUID) {
         guard let idx = tracks.firstIndex(where: { $0.id == trackId }) else { return }
         tracks[idx].bpmAnalysisState = .pending
@@ -30,7 +36,8 @@ extension PlayerState {
         let floor   = bpmAnalysisFloor
         let ceiling = bpmAnalysisCeiling
 
-        Task.detached(priority: .userInitiated) { [self] in
+        cancelAnalysisTask(for: trackId)
+        let task = Task.detached(priority: .userInitiated) { [self] in
             let bpm = await LibraryScanner().analyzeBPMDeep(
                 url: track.url, floor: floor, ceiling: ceiling
             ) { progress in
@@ -38,8 +45,13 @@ extension PlayerState {
                     self?.analysisFeed.progress[trackId] = progress
                 }
             }
+            guard !Task.isCancelled else {
+                await MainActor.run { [weak self] in self?.cancelAnalysisTask(for: trackId) }
+                return
+            }
             await MainActor.run { [weak self] in
                 guard let self else { return }
+                self.analysisTasksByTrack.removeValue(forKey: trackId)
                 self.analysisFeed.progress.removeValue(forKey: trackId)
                 guard let i = self.tracks.firstIndex(where: { $0.id == trackId }) else { return }
                 var t = self.tracks[i]
@@ -57,6 +69,7 @@ extension PlayerState {
                 self.tracks[i] = t
             }
         }
+        analysisTasksByTrack[trackId] = task
     }
 
     // Triggers BPM + waveform for the current track, then schedules the rest.
@@ -104,26 +117,45 @@ extension PlayerState {
         // Mark all as .analyzing upfront so progress bars appear immediately.
         // Mutate a local copy and assign once → single objectWillChange broadcast.
         let pendingIds = Set(pending.map(\.id))
+        for id in pendingIds {
+            analysisTasksByTrack[id]?.cancel()
+        }
         var updated = tracks
         for i in updated.indices where pendingIds.contains(updated[i].id) { updated[i].bpmAnalysisState = .analyzing }
         tracks = updated
 
-        Task.detached(priority: .userInitiated) { [self] in
+        let task = Task.detached(priority: .userInitiated) { [self] in
             // Wait out any active import — competing AVAssetReaders freeze the UI.
             while await MainActor.run(body: { self.isImporting }) {
+                guard !Task.isCancelled else {
+                    await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
+                    return
+                }
                 try? await Task.sleep(for: .milliseconds(300))
+            }
+            guard !Task.isCancelled else {
+                await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
+                return
             }
 
             // Lane 1: current track alone, high priority — user sees BPM + beat grid first.
             // No other analysis competes during this phase.
             let first = pending[0]
             await Self.analyzeBPMAndCommit(track: first, state: self)
+            guard !Task.isCancelled else {
+                await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
+                return
+            }
 
             // Brief pause: let playback settle before batch analysis competes for disk I/O.
             // At 2 concurrent AVAssetReaders, seek + playback stutter is measurable.
             // This 1.5s gap costs nothing perceptible but keeps the first beat lag-free.
             if pending.count > 1 {
                 try? await Task.sleep(for: .milliseconds(1500))
+            }
+            guard !Task.isCancelled else {
+                await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
+                return
             }
 
             // Lane 2: background batch — capped at 2 concurrent to avoid I/O contention
@@ -132,6 +164,10 @@ extension PlayerState {
             let batchConcurrency = min(2, Self.analysisConcurrency)
             var queue = Array(pending.dropFirst())
             while !queue.isEmpty {
+                guard !Task.isCancelled else {
+                    await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
+                    return
+                }
                 let priorityId = await MainActor.run { self.bpmPriorityId ?? self.currentId }
                 if let pid = priorityId,
                    let idx = queue.firstIndex(where: { $0.id == pid }) {
@@ -162,21 +198,21 @@ extension PlayerState {
 
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.isAnalyzingBPM = false
-                self.bpmPriorityId = nil
-                let hasMore = self.tracks.contains {
-                    !$0.isMissing && $0.bpmAnalysisState == .pending
-                }
-                if hasMore { self.scheduleBPMAnalysis() }
+                self.finishBPMAnalysisTask(ids: pendingIds, reschedule: true)
             }
+        }
+        for id in pendingIds {
+            analysisTasksByTrack[id] = task
         }
     }
 
     private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
+        guard !Task.isCancelled else { return }
         // Cache hit: skip decode + analysis entirely. Saves ~300-500 ms per track.
         if let hit = await AnalysisCache.shared.get(for: track.url),
            hit.bpm > 0,
            hit.beatGridConfidence > 0 {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
                 var t = state.tracks[idx]
@@ -202,6 +238,7 @@ extension PlayerState {
                 state?.analysisFeed.progress[track.id] = progress
             }
         }
+        guard !Task.isCancelled else { return }
         if bpm > 0 {
             await AnalysisCache.shared.putBPMAndWaveform(url: track.url, bpm: bpm, waveform: waveform,
                                                          beatGridOffset: beatGridOffset, beatGridConfidence: gridConfidence)
@@ -223,6 +260,18 @@ extension PlayerState {
             }
             state.tracks[idx] = t
         }
+    }
+
+    private func finishBPMAnalysisTask(ids: Set<UUID>, reschedule: Bool) {
+        isAnalyzingBPM = false
+        bpmPriorityId = nil
+        for id in ids {
+            analysisTasksByTrack.removeValue(forKey: id)
+            analysisFeed.progress.removeValue(forKey: id)
+        }
+        guard reschedule else { return }
+        let hasMore = tracks.contains { !$0.isMissing && $0.bpmAnalysisState == .pending }
+        if hasMore { scheduleBPMAnalysis() }
     }
 
     // MARK: — Waveform computation

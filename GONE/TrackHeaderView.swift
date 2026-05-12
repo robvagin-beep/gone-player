@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 struct TrackHeaderView: View {
     @EnvironmentObject var state: PlayerState
@@ -42,11 +43,11 @@ struct TrackHeaderView: View {
                         }
                         if t.bpm > 0 {
                             let isAnalyzing = t.bpmAnalysisState == .analyzing
-                            Button { state.reanalyzeBPMDeep(for: t.id) } label: {
+                            Button { copyBPM(t.bpm) } label: {
                                 if isAnalyzing {
                                     BPMAnalyzingBadge()
                                 } else {
-                                    BadgeView(isBPMHovered ? "REFRESH" : "\(Int(t.bpm.rounded())) BPM", style: .filled)
+                                    BadgeView(isBPMHovered ? "COPY" : "\(Int(t.bpm.rounded())) BPM", style: .filled)
                                         .allowsHitTesting(false)
                                 }
                             }
@@ -54,7 +55,7 @@ struct TrackHeaderView: View {
                             .disabled(isAnalyzing)
                             .onHover { isBPMHovered = isAnalyzing ? false : $0 }
                             .cursor(isAnalyzing ? .arrow : .pointingHand)
-                            .goneTooltip(isAnalyzing ? "Analyzing…" : "Deep BPM re-analysis — wider range, half-tempo correction")
+                            .goneTooltip(isAnalyzing ? "Analyzing…" : "Copy BPM to clipboard")
                         }
                         if state.pitch != 0, t.bpm > 0 {
                             BadgeView("\(Int((t.bpm * (1 + state.pitch / 100)).rounded())) BPM",
@@ -116,7 +117,8 @@ struct TrackHeaderView: View {
         .padding(.bottom, 0)
         .animation(.easeInOut(duration: 0.2), value: state.pitch)
         .animation(.easeInOut(duration: 0.2), value: state.pitchBypassed)
-        .onReceive(state.progressFeed.$currentTime) { t in
+        .onReceive(state.progressFeed.objectWillChange) { _ in
+            let t = state.progressFeed.currentTime
             feedCurrentTime = t
             updateTimeLabel(currentTime: t)
         }
@@ -153,6 +155,12 @@ struct TrackHeaderView: View {
         guard let t = state.current else { timeLabelCache = "00:00 / 00:00"; return }
         let speed = 1.0 + state.pitch / 100.0
         timeLabelCache = "\(fmtTime(currentTime / speed)) / \(fmtTime(t.duration / speed))"
+    }
+
+    private func copyBPM(_ bpm: Double) {
+        guard bpm > 0 else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(String(format: "%.1f", bpm), forType: .string)
     }
 }
 

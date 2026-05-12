@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct ProgressRulerRow: View {
     @EnvironmentObject var state: PlayerState
@@ -14,6 +15,8 @@ struct ProgressRulerRow: View {
             beatGridConfidence: state.current?.beatGridConfidence ?? 0,
             isAnalyzingBeatGrid: state.current?.bpmAnalysisState == .analyzing,
             hotCues: state.hotCues,
+            loopA: state.loopA,
+            loopB: state.loopB,
             isPlaying: state.isPlaying,
             onSeek: { ratio in
                 feedProgress = ratio
@@ -24,7 +27,9 @@ struct ProgressRulerRow: View {
         .padding(.horizontal, 12)
         .padding(.top, 3)
         .padding(.bottom, 4)
-        .onReceive(state.progressFeed.$progress) { feedProgress = $0 }
+        .onReceive(state.progressFeed.objectWillChange) { _ in
+            feedProgress = state.progressFeed.progress
+        }
     }
 }
 
@@ -56,6 +61,8 @@ struct ProgressRuler: View {
     var isAnalyzingBeatGrid: Bool = false
     var meterBeatsPerBar: Int = 4
     var hotCues: [Double?] = []
+    var loopA: Double? = nil
+    var loopB: Double? = nil
     var isPlaying: Bool = true
     let onSeek: (Double) -> Void
 
@@ -136,7 +143,8 @@ struct ProgressRuler: View {
     //   3. Beat micro-ticks (2px) — bottom ruler texture, visible when beats fit
     //   4. Bar / sub-quarter ticks (subDivH) — secondary structure
     //   5. Track-quarter structural ticks (quarterH) — tallest navigation anchors
-    //   6. Hot cue markers
+    //   6. A-B loop region and markers
+    //   7. Hot cue markers
     //
     // Before analysis: 5 fixed structural marks at 0/25/50/75/100%.
     // After analysis:  full musical grid — start/end adapt to first/last bar.
@@ -144,6 +152,7 @@ struct ProgressRuler: View {
         let totalTicks = Self.totalTicks
         let playheadX  = size.width * CGFloat(displayProgress)
         let isDragging = dragRatio != nil
+        let dragPosition = dragRatio
         let h          = size.height
         let baseline   = h
 
@@ -271,10 +280,14 @@ struct ProgressRuler: View {
         } // end if !isAnalyzed
 
         // ── 4. Render musical grid ticks at exact time positions ─────────────────
+        let nearestMusicalDragRatio: Double? = dragPosition.flatMap { drag in
+            musicalTicks.min { abs($0.ratio - drag) < abs($1.ratio - drag) }?.ratio
+        }
         for tick in musicalTicks {
             let x = (CGFloat(tick.ratio) * size.width * 2).rounded() / 2
             let played = x <= playheadX
-            let animT: CGFloat = played || isDragging ? 1 : 0
+            let isDragTick = nearestMusicalDragRatio.map { abs($0 - tick.ratio) < 0.0001 } ?? false
+            let animT: CGFloat = isDragging ? (isDragTick ? 1 : 0) : (played ? 1 : 0)
 
             let tickH: CGFloat
             let alpha: Double
@@ -299,6 +312,9 @@ struct ProgressRuler: View {
 
         // ── 5. Render structural tick lines — only when beat grid is absent ───────
         if !isAnalyzed {
+        let nearestStructuralDragIndex = dragPosition.map {
+            max(0, min(totalTicks - 1, Int(round($0 * Double(totalTicks - 1)))))
+        }
         for i in 0..<totalTicks {
             let isMajor = structuralTicks.contains(i)
             let isSubMajor = subStructuralTicks.contains(i)
@@ -309,8 +325,8 @@ struct ProgressRuler: View {
             let played = x <= playheadX
 
             let animT: CGFloat
-            if isDragging {
-                animT = played ? 1 : 0
+            if let nearestStructuralDragIndex {
+                animT = i == nearestStructuralDragIndex ? 1 : 0
             } else if !played {
                 animT = 0
             } else if let playedAt = tracker.playedAt[i] {
@@ -341,7 +357,31 @@ struct ProgressRuler: View {
         }
         } // end if !isAnalyzed
 
-        // ── 6. Hot cue markers — topmost ─────────────────────────────────────────
+        // ── 6. A-B loop markers ──────────────────────────────────────────────────
+        if let loopA,
+           let loopB,
+           duration > 0,
+           loopB > loopA {
+            let ax = CGFloat(loopA / duration) * size.width
+            let bx = CGFloat(loopB / duration) * size.width
+            let region = CGRect(x: ax, y: 0, width: max(1, bx - ax), height: size.height)
+            ctx.fill(Path(region), with: .color(G.accentPrimary.opacity(0.10)))
+
+            for (x, label) in [(ax, "A"), (bx, "B")] {
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: size.height))
+                ctx.stroke(path, with: .color(G.accentPrimary.opacity(0.78)),
+                           style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+                ctx.draw(
+                    Text(label).font(G.mono(7, weight: .bold)).foregroundColor(G.textPrimary.opacity(0.75)),
+                    at: CGPoint(x: x + 4, y: 4),
+                    anchor: .topLeading
+                )
+            }
+        }
+
+        // ── 7. Hot cue markers — topmost ─────────────────────────────────────────
         let cueColors: [Color] = [
             Color(red: 1.0, green: 0.35, blue: 0.35),
             Color(red: 0.35, green: 0.70, blue: 1.0),

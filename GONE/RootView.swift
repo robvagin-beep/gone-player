@@ -337,12 +337,23 @@ final class DragHandleNSView: NSView {
             return
         }
         NSCursor.closedHand.set()
+        WindowSnapManager.shared.isDragging = true
         dragStartWindowOrigin = window?.frame.origin ?? .zero
         dragStartMouseScreen = NSEvent.mouseLocation
     }
 
     override func mouseDragged(with event: NSEvent) {
         let mouse = NSEvent.mouseLocation
+        let snapState = WindowSnapManager.shared.snapState
+        if snapState == .docked || snapState == .peeking {
+            WindowSnapManager.shared.dragSnappedWindowVertically(
+                window: window,
+                startOrigin: dragStartWindowOrigin,
+                startMouse: dragStartMouseScreen,
+                currentMouse: mouse
+            )
+            return
+        }
         window?.setFrameOrigin(NSPoint(
             x: dragStartWindowOrigin.x + mouse.x - dragStartMouseScreen.x,
             y: dragStartWindowOrigin.y + mouse.y - dragStartMouseScreen.y
@@ -350,6 +361,7 @@ final class DragHandleNSView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        WindowSnapManager.shared.isDragging = false
         let snapState = WindowSnapManager.shared.snapState
         if snapState == .peeking || snapState == .docked {
             WindowSnapManager.shared.constrainSnapPosition(window: window)

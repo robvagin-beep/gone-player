@@ -302,6 +302,15 @@ struct EQKnobStack: View {
         return "\(Int(state.reverbAmount * 100))%"
     }
 
+    private func cycleReverbPreset(direction: Int) {
+        let presets = PlayerState.reverbPresets
+        guard !presets.isEmpty else { return }
+        let idx = presets.firstIndex(of: state.reverbPreset) ?? 0
+        let nextIndex = (idx + direction + presets.count) % presets.count
+        state.reverbPreset = presets[nextIndex]
+        state.audioEngine.setReverbPreset(state.reverbPreset)
+    }
+
     var body: some View {
         // Centered vertically with equal top/bottom breathing room
         VStack {
@@ -335,9 +344,11 @@ struct EQKnobStack: View {
                     ),
                     label: fxLabel
                 )
-                ReverbPresetLabel(preset: state.reverbPreset) {
-                    state.cycleReverbPreset()
-                }
+                ReverbPresetLabel(
+                    preset: state.reverbPreset,
+                    previous: { cycleReverbPreset(direction: -1) },
+                    next: { cycleReverbPreset(direction: 1) }
+                )
                 .opacity(state.reverbAmount >= 0.015 ? 1 : 0.45)
             }
 
@@ -350,27 +361,45 @@ struct EQKnobStack: View {
 // ── Reverb preset pill — subtle tap target under the FX knob ─────────────────
 private struct ReverbPresetLabel: View {
     let preset: String
-    let action: () -> Void
+    let previous: () -> Void
+    let next: () -> Void
     @State private var hovered = false
 
     var body: some View {
-        Button(action: action) {
-            Text(preset.uppercased())
-                .font(G.mono(6.5, weight: .bold))
-                .tracking(0.4)
-                .foregroundStyle(Color.white.opacity(hovered ? 0.75 : 0.50))
-                .lineLimit(1)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.white.opacity(hovered ? 0.10 : 0.05))
-                )
+        GeometryReader { geo in
+            ZStack {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color.white.opacity(hovered ? 0.10 : 0.05))
+
+                HStack(spacing: 0) {
+                    Text("‹")
+                        .font(G.mono(6.5, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(hovered ? 0.34 : 0.22))
+                        .frame(width: 7)
+                    Text(preset.uppercased())
+                        .font(G.mono(6.5, weight: .bold))
+                        .tracking(0.4)
+                        .foregroundStyle(Color.white.opacity(hovered ? 0.75 : 0.50))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                    Text("›")
+                        .font(G.mono(6.5, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(hovered ? 0.34 : 0.22))
+                        .frame(width: 7)
+                }
+                .padding(.horizontal, 3)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onEnded { value in
+                        value.location.x < geo.size.width / 2 ? previous() : next()
+                    }
+            )
         }
-        .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .animation(.easeInOut(duration: 0.12), value: hovered)
-        .frame(width: 36)
+        .frame(width: 36, height: 13)
     }
 }
 

@@ -19,6 +19,15 @@ final class SplitModeManager: ObservableObject {
     private weak var primaryWindow: NSWindow?
     private var snapWasEnabled = false   // snap state before Clone Mode disabled it
     private var lifecycleObservers: [NSObjectProtocol] = []
+    private var stateObservers: Set<AnyCancellable> = []
+
+    var bpmDelta: Double? {
+        guard let a = primaryState?.current?.bpm,
+              let b = secondaryState?.current?.bpm,
+              a > 0,
+              b > 0 else { return nil }
+        return b - a
+    }
 
     // Serial queue for all secondary-engine ops — guarantees stop() from deactivation
     // always completes before setOutputDevice() from the next activation (no Core Audio race)
@@ -44,6 +53,7 @@ final class SplitModeManager: ObservableObject {
 
         let win = makeSecondWindow(primaryState: primaryState, relativeTo: primaryWindow)
         secondWindow = win
+        installStateObservers()
 
         positionWindows(primary: primaryWindow, secondary: win)
 
@@ -81,6 +91,7 @@ final class SplitModeManager: ObservableObject {
         guard isActive else { return }
         isActive = false
         removeLifecycleObservers()
+        stateObservers.removeAll()
         crossfade = 0.5
         primaryState?.audioEngine.crossfadeGain = 1.0
         // Clear callbacks BEFORE any teardown — prevents audio thread retaining [weak state]
@@ -144,6 +155,16 @@ final class SplitModeManager: ObservableObject {
         lifecycleObservers.removeAll()
     }
 
+    private func installStateObservers() {
+        stateObservers.removeAll()
+        primaryState?.objectWillChange
+            .sink { [weak self] _ in self?.geometryVersion += 1 }
+            .store(in: &stateObservers)
+        secondaryState?.objectWillChange
+            .sink { [weak self] _ in self?.geometryVersion += 1 }
+            .store(in: &stateObservers)
+    }
+
     // MARK: — Crossfade
 
     func setCrossfade(_ t: Double) {
@@ -200,12 +221,12 @@ final class SplitModeManager: ObservableObject {
         eng.onProgress = { [weak state] progress, time in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    state?.progress    = progress
-                    state?.currentTime = time
-                    state?.progressFeed.progress    = progress
-                    state?.progressFeed.currentTime = time
-                }
+                state?.progress    = progress
+                state?.currentTime = time
+                state?.progressFeed.update(progress: progress, currentTime: time)
+                state?.enforceLoopIfNeeded(at: time)
             }
+        }
         }
         eng.onFinished = { [weak state] in
             DispatchQueue.main.async {

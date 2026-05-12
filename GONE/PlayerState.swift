@@ -23,7 +23,10 @@ final class PlayerState: ObservableObject {
 
     // MARK: — Playback
 
-    @Published var tracks: [Track] = []
+    @Published var tracks: [Track] = [] {
+        didSet { rebuildTrackIndex() }
+    }
+    private var trackIndex: [UUID: Int] = [:]
     @Published var currentId: UUID?
     @Published var isPlaying = false
     var progress: Double = 0
@@ -82,6 +85,8 @@ final class PlayerState: ObservableObject {
 
     // MARK: — Hot Cues (session-only, 4 slots, reset on track change)
     @Published var hotCues: [Double?] = [nil, nil, nil, nil]
+    @Published var loopA: Double? = nil
+    @Published var loopB: Double? = nil
 
     // MARK: — Settings
 
@@ -135,6 +140,7 @@ final class PlayerState: ObservableObject {
     let analysisFeed = AnalysisProgressFeed()
     var bpmPriorityId: UUID? = nil
     var waveformPriorityId: UUID? = nil
+    var analysisTasksByTrack: [UUID: Task<Void, Never>] = [:]
     var isPresentingImportPanel = false
     var xyBridgeCancellables = Set<AnyCancellable>()
 
@@ -354,7 +360,14 @@ final class PlayerState: ObservableObject {
 
     // MARK: — Core computed
 
-    var current: Track? { tracks.first { $0.id == currentId } }
+    var current: Track? {
+        guard let id = currentId, let index = trackIndex[id], tracks.indices.contains(index) else { return nil }
+        return tracks[index]
+    }
+
+    private func rebuildTrackIndex() {
+        trackIndex = Dictionary(uniqueKeysWithValues: tracks.enumerated().map { ($1.id, $0) })
+    }
 
     // Set when user explicitly starts playback from a specific tab (double-click, context menu).
     // Cleared when that tab no longer contains the current track (tab closed, track moved).

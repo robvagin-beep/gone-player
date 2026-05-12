@@ -21,6 +21,9 @@ enum G {
     static let accentPrimary  = Color.white.opacity(0.92)
     static let danger         = Color(hex: "#ff8a7a")
     static let warning        = Color(hex: "#d4a017")
+    static let flagGreen      = Color(hex: "#4caf82")
+    static let flagYellow     = warning
+    static let flagRed        = danger
 
     static let borderSubtle   = Color.white.opacity(0.06)
     static let borderDefault  = Color.white.opacity(0.08)

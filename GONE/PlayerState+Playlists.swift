@@ -3,6 +3,8 @@ import AppKit
 
 extension PlayerState {
 
+    private static let lastSessionKey = "lastSession"
+
     // MARK: — Track queries
 
     func tracks(forPlaylistTabId tabId: UUID) -> [Track] {
@@ -90,6 +92,34 @@ extension PlayerState {
             }
             splitPlaylistView = true
         }
+    }
+
+    func cycleFlag(for trackId: UUID) {
+        guard let index = tracks.firstIndex(where: { $0.id == trackId }) else { return }
+        tracks[index].flag = tracks[index].flag.next
+    }
+
+    func saveSession() {
+        let urls = tracks(forPlaylistTabId: activePlaylistTabId).map { $0.url.absoluteString }
+        UserDefaults.standard.set(urls, forKey: Self.lastSessionKey)
+    }
+
+    func restoreSession() async {
+        guard tracks.isEmpty else { return }
+        guard let strings = UserDefaults.standard.stringArray(forKey: Self.lastSessionKey) else { return }
+
+        let urls = strings
+            .compactMap(URL.init(string:))
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !urls.isEmpty else { return }
+
+        let oldAutoPlay = autoPlayOnImport
+        let oldAutoOpen = autoOpenPlaylistOnImport
+        autoPlayOnImport = false
+        autoOpenPlaylistOnImport = false
+        await importURLs(urls, intoPlaylistTabId: activePlaylistTabId)
+        autoPlayOnImport = oldAutoPlay
+        autoOpenPlaylistOnImport = oldAutoOpen
     }
 
     func copyTrack(_ trackId: UUID, to destinationTabId: UUID) {
@@ -198,6 +228,7 @@ extension PlayerState {
                     guard let idx = t.firstIndex(where: { $0.id == track.id }) else { continue }
                     var updated = track
                     updated.rating = t[idx].rating
+                    updated.flag = t[idx].flag
                     updated.hasArtwork = track.hasArtwork || t[idx].hasArtwork
                     updated.waveform = t[idx].waveform
                     if t[idx].bpm > 0 { updated.bpm = t[idx].bpm }

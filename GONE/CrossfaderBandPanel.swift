@@ -244,6 +244,16 @@ struct CrossfaderBridgeView: View {
                 ctx.stroke(bar, with: .color(Color(white: 0.50).opacity(0.40)),
                            style: StrokeStyle(lineWidth: 1.0))
 
+                if let label = bpmDeltaLabel {
+                    let text = Text(label)
+                        .font(G.mono(11, weight: .semibold))
+                        .foregroundColor(G.textSecondary)
+                    ctx.draw(
+                        text,
+                        at: CGPoint(x: midX + nx * (barHW + 18), y: midY + ny * (barHW + 18))
+                    )
+                }
+
                 // ── 2. Centre spine line ──────────────────────────────────────
                 var spine = Path()
                 spine.move(to: eA)
@@ -316,5 +326,11 @@ struct CrossfaderBridgeView: View {
             )
         }
         .ignoresSafeArea()
+    }
+
+    private var bpmDeltaLabel: String? {
+        guard let delta = manager.bpmDelta else { return nil }
+        if abs(delta) < 0.1 { return "= BPM" }
+        return String(format: "%+.1f BPM", delta)
     }
 }

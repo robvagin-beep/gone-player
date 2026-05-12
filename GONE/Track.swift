@@ -7,6 +7,22 @@ enum BPMAnalysisState: Equatable {
     case failed
 }
 
+enum TrackFlag: String, Codable {
+    case none
+    case green
+    case yellow
+    case red
+
+    var next: TrackFlag {
+        switch self {
+        case .none: return .green
+        case .green: return .yellow
+        case .yellow: return .red
+        case .red: return .none
+        }
+    }
+}
+
 struct Track: Identifiable, Equatable {
     let id: UUID
     var url: URL
@@ -20,6 +36,7 @@ struct Track: Identifiable, Equatable {
     var bitrate: Int              // kbps; 0 if lossless (use sampleRate instead)
     var sampleRate: Double        // Hz
     var rating: Int               // 0–5
+    var flag: TrackFlag = .none
     var hasArtwork: Bool           // true when ArtworkCache has an image for this id
     var waveform: [Float]         // 84 bars, computed async
     var isMissing: Bool           // file not found at url

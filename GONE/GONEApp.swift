@@ -47,9 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupNowPlayingObservation()
             setupSettingsPersistence()
             if playerState?.magnifyEnabled == true { installMagnifyMonitor() }
+            Task { @MainActor [weak self] in
+                await self?.playerState?.restoreSession()
+            }
             // Two-stage snap restore: preference was loaded above; arm WindowSnapManager
             // on the next tick once the window is fully configured.
-            if playerState?.snapEnabled == true {
+            if playerState?.snapEnabled == true, playerState?.tracks.isEmpty == false {
                 DispatchQueue.main.async { [weak self] in self?.setSnapEnabled(true) }
             }
         }
@@ -220,6 +223,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow = window
 
         if enabled {
+            guard !playerState.tracks.isEmpty else {
+                playerState.snapEnabled = false
+                playerState.snapTimerStart = nil
+                return
+            }
             // Always re-arm — repairs stale runtime even if snapEnabled is already true.
             WindowSnapManager.shared.enable(window: window)
         } else {
@@ -237,8 +245,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { [weak self] in
                 self?.playerState?.progress = progress
                 self?.playerState?.currentTime = time
-                self?.playerState?.progressFeed.progress = progress
-                self?.playerState?.progressFeed.currentTime = time
+                self?.playerState?.progressFeed.update(progress: progress, currentTime: time)
+                self?.playerState?.enforceLoopIfNeeded(at: time)
             }
         }
         engine.onError = { [weak self] msg in
@@ -303,6 +311,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let activeState: PlayerState = isSecondaryKey
                 ? (SplitModeManager.shared.secondaryState ?? state)
                 : state
+
+            if let chars = event.charactersIgnoringModifiers {
+                switch chars {
+                case "[":
+                    activeState.setLoopA(at: activeState.audioEngine.snapshot().currentTime)
+                    return nil
+                case "]":
+                    activeState.setLoopB(at: activeState.audioEngine.snapshot().currentTime)
+                    return nil
+                case "\\":
+                    activeState.clearLoop()
+                    return nil
+                default:
+                    break
+                }
+            }
 
             switch event.keyCode {
             case 18, 19, 20, 21: // keys 1–4 → hot cues for primary player
@@ -439,8 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _ in self?.updateNowPlayingInfo() }
             .store(in: &nowPlayingCancellables)
-        state.progressFeed.$currentTime
-            .removeDuplicates()
+        state.progressFeed.objectWillChange
             .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.updateNowPlayingTiming() }
             .store(in: &nowPlayingCancellables)
@@ -480,6 +503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
         }
+        playerState?.saveSession()
         playerState?.persistSettings()
         // Flush any pending cache writes before process exits.
         // flushSoon debounces to 1.5s — synchronous flush here captures the last analysis session.
