@@ -157,11 +157,19 @@ final class SplitModeManager: ObservableObject {
 
     private func installStateObservers() {
         stateObservers.removeAll()
-        primaryState?.objectWillChange
-            .sink { [weak self] _ in self?.geometryVersion += 1 }
-            .store(in: &stateObservers)
-        secondaryState?.objectWillChange
-            .sink { [weak self] _ in self?.geometryVersion += 1 }
+        guard let primary = primaryState, let secondary = secondaryState else { return }
+        // Observe only BPM-relevant track changes on both players.
+        // Subscribing to the full objectWillChange fires on every @Published mutation —
+        // including during deactivation teardown — which can draw into a closing window.
+        Publishers.CombineLatest(primary.$tracks, secondary.$tracks)
+            .receive(on: RunLoop.main)
+            .removeDuplicates { l, r in
+                l.0.first(where: { $0.id == primary.currentId })?.bpm ==
+                r.0.first(where: { $0.id == primary.currentId })?.bpm &&
+                l.1.first(where: { $0.id == secondary.currentId })?.bpm ==
+                r.1.first(where: { $0.id == secondary.currentId })?.bpm
+            }
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &stateObservers)
     }
 
