@@ -159,20 +159,20 @@ def fetch_applied_history():
 
 
 def create_pr(branch, title, body):
-    url = f"https://api.github.com/repos/{REPO}/pulls"
-    data = json.dumps({
-        "title": title,
-        "body": body,
-        "head": branch,
-        "base": "dev",
-    }).encode()
-    req = urllib.request.Request(url, data=data, headers={
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "Content-Type": "application/json",
-    }, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
+    # Use gh CLI — avoids 403 that urllib gets with workflow_dispatch tokens
+    result = subprocess.run(
+        ["gh", "pr", "create",
+         "--repo", REPO,
+         "--head", branch,
+         "--base", "dev",
+         "--title", title,
+         "--body", body],
+        capture_output=True, text=True, cwd=BASE
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"gh pr create failed: {result.stderr}")
+    pr_url = result.stdout.strip()
+    return {"html_url": pr_url}
 
 
 def apply_patch(file_rel, old_code, new_code):
