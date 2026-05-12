@@ -42,17 +42,19 @@ extension PlayerState {
                 guard let self else { return }
                 self.analysisFeed.progress.removeValue(forKey: trackId)
                 guard let i = self.tracks.firstIndex(where: { $0.id == trackId }) else { return }
+                var t = self.tracks[i]
                 if bpm > 0 {
-                    self.tracks[i].bpm = bpm
-                    self.tracks[i].bpmAnalysisState = .analyzed
+                    t.bpm = bpm
+                    t.bpmAnalysisState = .analyzed
                     // BPM changed → existing offset is invalid against new beat duration.
                     // Zero confidence so WaveformView falls back to safe (uniform) grid
                     // until a combined analysis pass recomputes the offset.
-                    self.tracks[i].beatGridOffset = 0
-                    self.tracks[i].beatGridConfidence = 0
+                    t.beatGridOffset = 0
+                    t.beatGridConfidence = 0
                 } else {
-                    self.tracks[i].bpmAnalysisState = .failed
+                    t.bpmAnalysisState = .failed
                 }
+                self.tracks[i] = t
             }
         }
     }
@@ -161,11 +163,13 @@ extension PlayerState {
         if let hit = await AnalysisCache.shared.get(for: track.url), hit.bpm > 0 {
             await MainActor.run {
                 guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
-                state.tracks[idx].bpm = hit.bpm
-                state.tracks[idx].bpmAnalysisState = .analyzed
-                if state.tracks[idx].waveform.isEmpty, !hit.waveform.isEmpty {
-                    state.tracks[idx].waveform = hit.waveform
+                var t = state.tracks[idx]
+                t.bpm = hit.bpm
+                t.bpmAnalysisState = .analyzed
+                if t.waveform.isEmpty, !hit.waveform.isEmpty {
+                    t.waveform = hit.waveform
                 }
+                state.tracks[idx] = t
             }
             return
         }
@@ -186,17 +190,19 @@ extension PlayerState {
         await MainActor.run {
             state.analysisFeed.progress.removeValue(forKey: track.id)
             guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
+            var t = state.tracks[idx]
             if bpm > 0 {
-                state.tracks[idx].bpm = bpm
-                state.tracks[idx].bpmAnalysisState = .analyzed
-                state.tracks[idx].beatGridOffset = beatGridOffset
-                state.tracks[idx].beatGridConfidence = gridConfidence
-                if state.tracks[idx].waveform.isEmpty, !waveform.isEmpty {
-                    state.tracks[idx].waveform = waveform
+                t.bpm = bpm
+                t.bpmAnalysisState = .analyzed
+                t.beatGridOffset = beatGridOffset
+                t.beatGridConfidence = gridConfidence
+                if t.waveform.isEmpty, !waveform.isEmpty {
+                    t.waveform = waveform
                 }
             } else {
-                state.tracks[idx].bpmAnalysisState = .failed
+                t.bpmAnalysisState = .failed
             }
+            state.tracks[idx] = t
         }
     }
 
