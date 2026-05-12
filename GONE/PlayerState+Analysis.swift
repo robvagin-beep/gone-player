@@ -77,8 +77,11 @@ extension PlayerState {
         bpmPriorityId = nil
 
         // Mark all as .analyzing upfront so progress bars appear immediately.
+        // Mutate a local copy and assign once → single objectWillChange broadcast.
         let pendingIds = Set(pending.map(\.id))
-        for i in tracks.indices where pendingIds.contains(tracks[i].id) { tracks[i].bpmAnalysisState = .analyzing }
+        var updated = tracks
+        for i in updated.indices where pendingIds.contains(updated[i].id) { updated[i].bpmAnalysisState = .analyzing }
+        tracks = updated
 
         Task.detached(priority: .userInitiated) { [self] in
             // Wait out any active import — competing AVAssetReaders freeze the UI.
