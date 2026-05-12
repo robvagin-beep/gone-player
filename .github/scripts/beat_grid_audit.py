@@ -63,7 +63,8 @@ End with one sentence: overall render safety rating (Safe / Marginal / Unsafe) +
 
 
 def call_claude(client, system: str, content: str) -> str:
-    for attempt in range(3):
+    import time
+    for attempt in range(4):
         try:
             msg = client.messages.create(
                 model="claude-opus-4-7",
@@ -73,10 +74,10 @@ def call_claude(client, system: str, content: str) -> str:
             )
             return msg.content[0].text
         except Exception as e:
-            if "rate_limit" in str(e).lower() and attempt < 2:
-                import time
-                print(f"Rate limited, retry {attempt + 2}/3 in 65s...")
-                time.sleep(65)
+            if attempt < 3 and any(c in str(e) for c in ["529", "503", "429", "rate_limit", "overloaded"]):
+                wait = [60, 90, 120][attempt]
+                print(f"  API throttle ({e}) — waiting {wait}s (attempt {attempt+1}/4)...")
+                time.sleep(wait)
             else:
                 raise
 
