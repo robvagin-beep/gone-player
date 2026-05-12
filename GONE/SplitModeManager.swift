@@ -19,7 +19,6 @@ final class SplitModeManager: ObservableObject {
     private weak var primaryWindow: NSWindow?
     private var snapWasEnabled = false   // snap state before Clone Mode disabled it
     private var lifecycleObservers: [NSObjectProtocol] = []
-    private var stateObservers: Set<AnyCancellable> = []
 
     var bpmDelta: Double? {
         guard let a = primaryState?.current?.bpm,
@@ -53,8 +52,6 @@ final class SplitModeManager: ObservableObject {
 
         let win = makeSecondWindow(primaryState: primaryState, relativeTo: primaryWindow)
         secondWindow = win
-        installStateObservers()
-
         positionWindows(primary: primaryWindow, secondary: win)
 
         let gap = CrossfaderGapWindow(manager: self, windowA: primaryWindow, windowB: win)
@@ -91,7 +88,6 @@ final class SplitModeManager: ObservableObject {
         guard isActive else { return }
         isActive = false
         removeLifecycleObservers()
-        stateObservers.removeAll()
         crossfade = 0.5
         primaryState?.audioEngine.crossfadeGain = 1.0
         // Clear callbacks BEFORE any teardown — prevents audio thread retaining [weak state]
@@ -155,24 +151,6 @@ final class SplitModeManager: ObservableObject {
         lifecycleObservers.removeAll()
     }
 
-    private func installStateObservers() {
-        stateObservers.removeAll()
-        guard let primary = primaryState, let secondary = secondaryState else { return }
-        // Observe only BPM-relevant track changes on both players.
-        // Subscribing to the full objectWillChange fires on every @Published mutation —
-        // including during deactivation teardown — which can draw into a closing window.
-        Publishers.CombineLatest(primary.$tracks, secondary.$tracks)
-            .receive(on: RunLoop.main)
-            .removeDuplicates { l, r in
-                l.0.first(where: { $0.id == primary.currentId })?.bpm ==
-                r.0.first(where: { $0.id == primary.currentId })?.bpm &&
-                l.1.first(where: { $0.id == secondary.currentId })?.bpm ==
-                r.1.first(where: { $0.id == secondary.currentId })?.bpm
-            }
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &stateObservers)
-    }
-
     // MARK: — Crossfade
 
     func setCrossfade(_ t: Double) {
@@ -223,6 +201,7 @@ final class SplitModeManager: ObservableObject {
         state.debugMode           = primaryState.debugMode
         state.lastError           = primaryState.lastError
         secondaryState = state
+        geometryVersion += 1
 
         // Wire secondary engine callbacks into secondaryState
         let eng = AudioEngineNext.secondary
