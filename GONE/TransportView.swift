@@ -322,8 +322,9 @@ final class ClickNSView: NSView {
 }
 
 // ── Hold-seek transport button ────────────────────────────────────────────────
-// Short press (< 180 ms) → tap action (prev/next track).
-// Hold (≥ 180 ms)        → scrub: forward = 4× varispeed; backward = periodic seek-back.
+// Short press (< 300 ms) → tap action (prev/next track).
+// Hold (≥ 300 ms) → scrub at 2× speed. Drag horizontally to adjust multiplier (1×–8×).
+// DragValuePanel shows "→ 2.0×" / "← 2.0×" while held, matching the pitch fader indicator.
 private struct HoldSeekBtn: View {
     let icon: String
     let forward: Bool
@@ -332,6 +333,30 @@ private struct HoldSeekBtn: View {
 
     @State private var hovered = false
     @State private var holding = false
+    @State private var dragAccum: CGFloat = 0
+
+    // Fine zone (0–24px): 0.5% → 1.0% (within button area, one decimal place)
+    // Coarse zone (24px+): 1% + (beyond / 30px) per 1% increments
+    private func percentFromAccum(_ accum: CGFloat) -> Double {
+        if accum <= 24 {
+            return 0.5 + Double(accum / 24.0) * 0.5   // 0.5% → 1.0%
+        } else {
+            return 1.0 + Double((accum - 24) / 30.0)   // 1% + 1%/30px
+        }
+    }
+
+    private func panelLabel(percent: Double) -> String {
+        if percent < 1.0 {
+            return forward
+                ? String(format: "+%.1f%%", percent)
+                : String(format: "-%.1f%%", percent)
+        } else {
+            let pct = Int(percent.rounded())
+            return forward
+                ? String(format: "+%d%%", pct)
+                : String(format: "-%d%%", pct)
+        }
+    }
 
     var body: some View {
         Image(systemName: icon)
@@ -347,16 +372,26 @@ private struct HoldSeekBtn: View {
                     onTap: tapAction,
                     onHoldBegan: {
                         holding = true
+                        dragAccum = 0
                         engine.startHoldSeek(forward: forward)
+                        DragValuePanel.shared.show(text: panelLabel(percent: 0.5))
                     },
                     onHoldEnded: {
                         holding = false
+                        dragAccum = 0
                         engine.stopHoldSeek()
+                        DragValuePanel.shared.hide()
                     },
                     onPressStart: {
-                        // Safety flush: clears any speedNode.rate override left over
-                        // from a previous interaction where mouseUp was not delivered.
                         engine.stopHoldSeek()
+                    },
+                    onHoldDrag: { delta in
+                        // Forward: drag right = faster. Backward: drag left = slower (reverse).
+                        let sign: CGFloat = forward ? 1 : -1
+                        dragAccum = max(0, min(360, dragAccum + delta * sign))
+                        let pct = percentFromAccum(dragAccum)
+                        engine.setHoldSeekPercent(pct)
+                        DragValuePanel.shared.show(text: panelLabel(percent: pct))
                     }
                 )
             )
@@ -369,9 +404,8 @@ private struct PressDetector: NSViewRepresentable {
     let onTap: () -> Void
     let onHoldBegan: () -> Void
     let onHoldEnded: () -> Void
-    // Fires on every mouseDown before the hold timer starts — used to flush any
-    // previously stuck hold-seek state (e.g. app lost focus during a hold).
     let onPressStart: () -> Void
+    var onHoldDrag: ((CGFloat) -> Void)? = nil
 
     func makeNSView(context: Context) -> PressDetectNSView {
         let v = PressDetectNSView()
@@ -379,6 +413,7 @@ private struct PressDetector: NSViewRepresentable {
         v.onHoldBegan  = onHoldBegan
         v.onHoldEnded  = onHoldEnded
         v.onPressStart = onPressStart
+        v.onHoldDrag   = onHoldDrag
         return v
     }
 
@@ -387,6 +422,7 @@ private struct PressDetector: NSViewRepresentable {
         v.onHoldBegan  = onHoldBegan
         v.onHoldEnded  = onHoldEnded
         v.onPressStart = onPressStart
+        v.onHoldDrag   = onHoldDrag
     }
 }
 
@@ -395,10 +431,11 @@ final class PressDetectNSView: NSView {
     var onHoldBegan:  (() -> Void)?
     var onHoldEnded:  (() -> Void)?
     var onPressStart: (() -> Void)?
+    var onHoldDrag:   ((CGFloat) -> Void)?
 
     private var holdTimer: Timer?
-    private var isHolding = false
-    // 300ms: comfortable above typical click duration (~50–200ms) but fast for DJ use.
+    private var isHolding  = false
+    private var hadHolding = false  // stays true once hold begins; prevents tap on mouseUp after mouseExited
     private let holdThreshold: TimeInterval = 0.30
 
     override func updateTrackingAreas() {
@@ -413,20 +450,23 @@ final class PressDetectNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // Flush any state left over from a missed mouseUp (e.g. app lost focus).
         onPressStart?()
-        isHolding = false
+        isHolding  = false
+        hadHolding = false
         holdTimer?.invalidate()
-        // Timer() + RunLoop.main.add(.common) is the correct pattern.
-        // scheduledTimer adds to .default only; combining with add(.common) risks
-        // double-registration of the timer in the .default mode subset.
         let t = Timer(timeInterval: holdThreshold, repeats: false) { [weak self] _ in
             guard let self else { return }
-            self.isHolding = true
+            self.isHolding  = true
+            self.hadHolding = true
             self.onHoldBegan?()
         }
         RunLoop.main.add(t, forMode: .common)
         holdTimer = t
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isHolding else { return }
+        onHoldDrag?(event.deltaX)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -435,17 +475,22 @@ final class PressDetectNSView: NSView {
         if isHolding {
             isHolding = false
             onHoldEnded?()
-        } else {
+        } else if !hadHolding {
+            // Only fire tap if hold never started during this press.
+            // If hadHolding is true but isHolding is false, mouseExited already
+            // ended the hold — firing onTap here would spuriously switch tracks.
             onTap?()
         }
     }
 
     override func mouseExited(with event: NSEvent) {
-        guard isHolding else { return }
-        isHolding = false
+        // Always cancel the pending hold timer so it can't fire after the cursor leaves.
         holdTimer?.invalidate()
         holdTimer = nil
+        guard isHolding else { return }
+        isHolding = false
         onHoldEnded?()
+        // hadHolding stays true → blocks the spurious onTap in the subsequent mouseUp.
     }
 }
 
@@ -502,4 +547,3 @@ struct VolumeSlider: View {
         .cursor(.pointingHand)
     }
 }
-

@@ -71,6 +71,8 @@ final class SettingsPanel {
     private var hostController: NSHostingController<SettingsHostView>?
     private var localMonitor: Any?
     private var globalMonitor: Any?
+    private weak var anchorWindow: NSWindow?
+    private var anchorObservers: [NSObjectProtocol] = []
 
     var currentPanel: NSPanel? { panel }
 
@@ -81,6 +83,7 @@ final class SettingsPanel {
 
     @MainActor
     func show(near window: NSWindow, state: PlayerState) {
+        anchorWindow = window
         let root = SettingsHostView(state: state)
         if let hc = hostController { hc.rootView = root } else { hostController = NSHostingController(rootView: root) }
         guard let hc = hostController else { return }
@@ -107,13 +110,11 @@ final class SettingsPanel {
         }
 
         hc.view.layoutSubtreeIfNeeded()
-        let size  = hc.view.fittingSize
-        let winF  = window.frame
-        let baseBottom = winF.maxY - FullPlayerView.baseHeight - 12
-        let x = winF.minX + 8
-        let y = baseBottom - size.height - 4
-        panel!.setFrame(CGRect(origin: CGPoint(x: x, y: y), size: size), display: true)
+        updatePanelFrame(size: hc.view.fittingSize)
         panel!.orderFront(nil)
+
+        installAnchorObservers(for: window)
+        removeEventMonitors()
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self, let p = self.panel, p.isVisible else { return event }
@@ -136,6 +137,61 @@ final class SettingsPanel {
     @MainActor
     func hide() {
         panel?.orderOut(nil)
+        removeEventMonitors()
+        removeAnchorObservers()
+        anchorWindow = nil
+    }
+
+    @MainActor
+    private func updatePanelFrame(size: CGSize? = nil) {
+        guard let panel, let window = anchorWindow else { return }
+        let panelSize = size ?? panel.frame.size
+        let winF = window.frame
+        let baseBottom = winF.maxY - FullPlayerView.baseHeight - 12
+        let x = winF.minX + 8
+        let y = baseBottom - panelSize.height - 4
+        panel.setFrame(CGRect(origin: CGPoint(x: x, y: y), size: panelSize), display: true)
+    }
+
+    @MainActor
+    private func installAnchorObservers(for window: NSWindow) {
+        removeAnchorObservers()
+        let center = NotificationCenter.default
+        let repositionNames: [NSNotification.Name] = [
+            NSWindow.didMoveNotification,
+            NSWindow.didResizeNotification,
+            NSWindow.didChangeScreenNotification
+        ]
+        for name in repositionNames {
+            let token = center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                guard let self, !SettingsView.isDraggingGlobal else { return }
+                Task { @MainActor in
+                    self.updatePanelFrame()
+                }
+            }
+            anchorObservers.append(token)
+        }
+        let hideNames: [NSNotification.Name] = [
+            NSWindow.willCloseNotification,
+            NSWindow.willMiniaturizeNotification
+        ]
+        for name in hideNames {
+            let token = center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    self?.hide()
+                }
+            }
+            anchorObservers.append(token)
+        }
+    }
+
+    private func removeAnchorObservers() {
+        let center = NotificationCenter.default
+        anchorObservers.forEach(center.removeObserver)
+        anchorObservers.removeAll()
+    }
+
+    private func removeEventMonitors() {
         if let m = localMonitor  { NSEvent.removeMonitor(m); localMonitor  = nil }
         if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
     }

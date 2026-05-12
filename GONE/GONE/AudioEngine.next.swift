@@ -60,8 +60,6 @@ final class AudioEngineNext {
     private var isUserPlaying = false           // Main-thread only; tracks user intent, not hardware node state
 
     // Pre-decoded PCM prefetch — keeps 3s of audio in RAM ahead of playhead.
-    // 1s chunk: the sync read on seek/hot-cue decodes only ~350KB instead of
-    // the previous ~1.7MB, cutting the perceived hot-cue latency ~5×.
     private let bufferQueue = DispatchQueue(label: "gone.audio.prefetch", qos: .userInteractive)
     private let prefetchChunkSeconds: Double = 1.0
     private let prefetchDepth: Int = 3  // chunks queued ahead (3 × 1s = 3s)
@@ -332,34 +330,42 @@ final class AudioEngineNext {
     // MARK: - Hold-seek (transport button scrub)
 
     private var holdSeekTimer: Timer?
-    private var holdSeekStep: Int = 0  // counts ticks for forward ramp-up
+    private var holdSeekStep: Int = 0
+    private var holdSeekBaseRate: Double = 1.0
+    private var holdSeekForward: Bool = true
 
     // Called when the user holds a transport arrow.
-    // Forward: immediate +3% speed, escalates to +5% after 3s held.
-    // Backward: immediate -3% speed (slow-down), escalates to -5% after 3s held.
-    // Both use speed manipulation — no position seeking, no ramp.
+    // Starts at 0.5% offset — subtle immediate scrub feel. Drag for more.
     func startHoldSeek(forward: Bool) {
         stopHoldSeek()
         holdSeekStep = 0
-        let baseRate = currentRate          // user's current pitch/tempo setting
+        holdSeekForward = forward
+        holdSeekBaseRate = currentRate
         pitchNode.bypass = true
         pitchNode.rate = 1.0
         pitchNode.pitch = 0
-        let initialRate = forward ? baseRate * 1.03 : baseRate * 0.97
-        speedNode.rate = Float(max(0.1, initialRate))
+        let baseOffset = forward ? 1.005 : 0.995   // +0.5% / -0.5%
+        speedNode.rate = Float(max(0.05, holdSeekBaseRate * baseOffset))
         let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.holdSeekStep += 1
-                if self.holdSeekStep > 250 { self.stopHoldSeek(); return }  // 20s safety cutoff
-                if self.holdSeekStep == 20 {   // ~3s held → escalate
-                    let escalated = forward ? baseRate * 1.05 : baseRate * 0.95
-                    self.speedNode.rate = Float(max(0.1, escalated))
-                }
+                if self.holdSeekStep > 250 { self.stopHoldSeek() }  // 20s safety cutoff
             }
         }
         RunLoop.main.add(t, forMode: .common)
         holdSeekTimer = t
+    }
+
+    // Linear percentage control: +5% per 30px drag.
+    // Forward: +percent speeds up. Backward: +percent slows down further (reverse scrub).
+    func setHoldSeekPercent(_ percent: Double) {
+        guard holdSeekTimer != nil else { return }
+        let factor = 1.0 + max(-95, min(700, percent)) / 100.0
+        let rate = holdSeekForward
+            ? holdSeekBaseRate * factor
+            : holdSeekBaseRate / max(0.01, factor)
+        speedNode.rate = Float(max(0.02, rate))
     }
 
     // Safe to call at any time — also called from stop() which may run off main.
@@ -731,6 +737,13 @@ final class AudioEngineNext {
         let currentTime = min(seconds(forFrame: currentFrame), duration)
         let progress = duration > 0 ? currentTime / duration : 0
         onProgress?(min(max(progress, 0), 1), currentTime)
+    }
+
+    // Real-time playback position — sample-accurate, bypasses the 24fps progress timer.
+    // Used by hot cue SET so the saved position is not stale.
+    var currentPlaybackRatio: Double {
+        guard let file = audioFile, file.length > 0 else { return 0 }
+        return Double(currentPlaybackFrame()) / Double(file.length)
     }
 
     private func currentPlaybackFrame() -> AVAudioFramePosition {

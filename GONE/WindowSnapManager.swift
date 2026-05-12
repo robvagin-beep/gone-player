@@ -402,12 +402,15 @@ final class WindowSnapManager {
         guard let screen = screen(for: window) else { return }
         let snapX = screen.frame.maxX - tabVisible
         let y = savedDockedY ?? clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
-        snapState = .docked           // set immediately to prevent poll re-triggering
-        playerState?.isSnapping = true // guard updateWindowSize during slide
+        dockToken &+= 1
+        let capturedToken = dockToken
+        playerState?.isSnapping = true
         // Animate position only — avoids per-frame resize artifacts.
         // Shrink to tabVisible in completion when window is already at the screen edge (invisible).
         slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: peekAnimDuration) { [weak self, weak window] in
-            guard let self, let window else { return }
+            guard let self, let window, self.dockToken == capturedToken else { return }
+            self.snapState = .docked
+            self.savedWindowWidth = window.frame.width
             let f = window.frame
             window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
             self.lockFrame(window: window, x: snapX)
@@ -606,4 +609,3 @@ final class WindowSnapManager {
         )
     }
 }
-

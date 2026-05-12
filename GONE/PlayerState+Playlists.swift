@@ -239,7 +239,6 @@ extension PlayerState {
             }
             await MainActor.run { [batchResults] in
                 var t = self.tracks
-                var needsCurrentAnalysis = false
                 for track in batchResults {
                     guard let idx = t.firstIndex(where: { $0.id == track.id }) else { continue }
                     var updated = track
@@ -249,10 +248,8 @@ extension PlayerState {
                     if t[idx].bpm > 0 { updated.bpm = t[idx].bpm }
                     if t[idx].bpmAnalysisState != .pending { updated.bpmAnalysisState = t[idx].bpmAnalysisState }
                     t[idx] = updated
-                    if self.currentId == track.id { needsCurrentAnalysis = true }
                 }
                 self.tracks = t  // single objectWillChange for the whole batch
-                if needsCurrentAnalysis { self.scheduleCurrentTrackAnalysis() }
                 // BPM/waveform analysis intentionally NOT started per-batch —
                 // starting analysis while reading metadata causes competing AVAssetReaders
                 // that freeze the UI. Analysis is deferred until import finishes.

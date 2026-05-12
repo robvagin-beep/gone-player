@@ -1,5 +1,6 @@
 import Combine
 
+@MainActor
 final class SpectrumFeed: ObservableObject {
     static let shared = SpectrumFeed()
     @Published var data: [Float] = Array(repeating: 0, count: 28)

@@ -8,6 +8,7 @@ final class BandHitTestView: NSView {
     var segA: NSPoint = .zero
     var segB: NSPoint = .zero
     let hitRadius: CGFloat = 60
+    var onScroll: (CGFloat) -> Void = { _ in }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Require endpoints to be meaningfully apart (> 4pt) before accepting hits.
@@ -15,6 +16,18 @@ final class BandHitTestView: NSView {
         let dx = segB.x - segA.x, dy = segB.y - segA.y
         guard dx*dx + dy*dy > 16 else { return nil }
         return distanceToSegment(point) <= hitRadius ? super.hitTest(point) : nil
+    }
+
+    // Scroll events bubble up from SwiftUI canvas (which doesn't consume them)
+    // through the responder chain to this root content view — handle them here.
+    override func scrollWheel(with event: NSEvent) {
+        guard event.momentumPhase == .stationary else { return }
+        let dx = event.scrollingDeltaX
+        let dy = event.scrollingDeltaY
+        let delta = abs(dx) >= abs(dy) ? dx : -dy
+        // Mouse wheel gives ~1.0 per detent; boost so ~15 notches spans full range.
+        let adjusted = event.hasPreciseScrollingDeltas ? delta : delta * 10.0
+        onScroll(adjusted)
     }
 
     private func distanceToSegment(_ p: NSPoint) -> CGFloat {
@@ -66,9 +79,14 @@ final class CrossfaderGapWindow: NSPanel {
                               .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         hidesOnDeactivate  = false
 
-        // Root view: BandHitTestView passes through clicks far from the bar
+        // Root view: BandHitTestView passes through clicks far from the bar.
+        // Scroll events that bubble up from the SwiftUI canvas are handled here.
         let bv = BandHitTestView(frame: contentRect(forFrameRect: frame))
         bv.autoresizingMask = [.width, .height]
+        bv.onScroll = { [weak manager] delta in
+            guard let m = manager else { return }
+            m.setCrossfade(m.crossfade + Double(delta) * 0.006)
+        }
         contentView = bv
         hitView = bv
 
@@ -93,7 +111,11 @@ final class CrossfaderGapWindow: NSPanel {
             // Canvas already reads panel geometry directly; this just triggers a redraw
             self.manager?.geometryVersion += 1
         }
-        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+        for name in [
+            NSWindow.didMoveNotification,
+            NSWindow.didResizeNotification,
+            NSWindow.didChangeScreenNotification
+        ] {
             observers.append(contentsOf: [
                 NotificationCenter.default.addObserver(forName: name, object: windowA, queue: .main, using: refresh),
                 NotificationCenter.default.addObserver(forName: name, object: windowB, queue: .main, using: refresh)
@@ -156,43 +178,12 @@ final class CrossfaderGapWindow: NSPanel {
     }
 }
 
-// ── Scroll wheel capture — transparent NSView forwarding deltas to a closure ──
-private final class ScrollWheelNSView: NSView {
-    var onScroll: (CGFloat) -> Void = { _ in }
-    override func scrollWheel(with event: NSEvent) {
-        // Ignore trackpad momentum phase — prevents crossfader drifting after finger lift
-        guard event.momentumPhase == .stationary else { return }
-        let dx = event.scrollingDeltaX
-        let dy = event.scrollingDeltaY
-        let delta = abs(dx) >= abs(dy) ? dx : -dy   // right/up = positive (toward B)
-        // Trackpad gives continuous pixel-scale deltas (large); mouse wheel gives ~1.0 per detent.
-        // Boost mouse detents so a reasonable number of notches (~30) spans the full crossfader range.
-        let mouseDetentScale: CGFloat = 10.0
-        let adjusted = event.hasPreciseScrollingDeltas ? delta : delta * mouseDetentScale
-        onScroll(adjusted)
-    }
-}
-
-private struct ScrollWheelHandler: NSViewRepresentable {
-    let onScroll: (CGFloat) -> Void
-    func makeNSView(context: Context) -> ScrollWheelNSView {
-        let v = ScrollWheelNSView()
-        v.onScroll = onScroll
-        return v
-    }
-    func updateNSView(_ nsView: ScrollWheelNSView, context: Context) {
-        nsView.onScroll = onScroll
-    }
-}
-
 // ── CrossfaderBridgeView — draws tilted flat plaque at any angle ──────────────
 struct CrossfaderBridgeView: View {
     @ObservedObject var manager: SplitModeManager
     weak var panel: CrossfaderGapWindow?
 
     @State private var isDragging = false
-
-    private let scrollSensitivity: Double = 0.003  // crossfade units per scroll delta point
 
     var body: some View {
         GeometryReader { _ in
@@ -294,11 +285,6 @@ struct CrossfaderBridgeView: View {
                          at: CGPoint(x: cB.x + nx*lo, y: cB.y + ny*lo))
             }
             .contentShape(Rectangle())
-            .background(
-                ScrollWheelHandler { delta in
-                    manager.setCrossfade(manager.crossfade + Double(delta) * scrollSensitivity)
-                }
-            )
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { val in

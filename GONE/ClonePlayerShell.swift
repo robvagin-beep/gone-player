@@ -109,6 +109,9 @@ struct ClonePlayerShell: View {
         .onChange(of: shellSize) { newSize in
             resizeWindow(to: newSize)
         }
+        .onDisappear {
+            myWindow = nil
+        }
     }
 
     private func resizeWindow(to size: CGSize, window: NSWindow? = nil) {

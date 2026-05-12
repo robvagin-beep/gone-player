@@ -20,11 +20,7 @@ struct PeekPanelView: View {
 
     var body: some View {
         ZStack {
-            // Tap-to-expand base layer — catches taps through elements with allowsHitTesting(false)
-            // (artwork, marquee text, BPM bar) and fires when no button above consumes the event
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
+            interactionSurface
 
             // Keep content in tree always so it can fade — only hide via opacity
             peekContent
@@ -40,11 +36,35 @@ struct PeekPanelView: View {
         .frame(width: panelWidth)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
-        .simultaneousGesture(panelDragGesture)
         .background(panelBackground)
         .mask(panelMask)
         .allowsHitTesting(state.snapState == .docked || state.snapState == .peeking)
         .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: onFileDrop)
+    }
+
+    @ViewBuilder
+    private var interactionSurface: some View {
+        if state.snapState == .docked {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
+                .gesture(panelDragGesture)
+        } else {
+            ZStack {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
+                    .allowsHitTesting(false)
+
+                HStack(spacing: 0) {
+                    Color.clear
+                        .frame(width: 18)
+                        .contentShape(Rectangle())
+                        .gesture(panelDragGesture)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
     }
 
     private var peekContent: some View {
@@ -208,8 +228,8 @@ struct PeekPanelView: View {
         // Uses NSEvent.mouseLocation (screen-space) to avoid the SwiftUI .local coordinate space
         // feedback loop: when we move the window, the view moves with it, causing translation to
         // partially cancel the movement → stuttering "прыг-прыг" effect.
-        // minimumDistance: 8 so that simple button taps don't trigger dragging.
-        // simultaneousGesture on the ZStack means this fires even over peekContent's buttons.
+        // minimumDistance: 8 keeps simple taps as expand events and leaves transport buttons
+        // out of the drag path because the gesture now lives on the base surface only.
         DragGesture(minimumDistance: 8)
             .onChanged { _ in
                 guard let window = WindowSnapManager.shared.currentWindow else { return }

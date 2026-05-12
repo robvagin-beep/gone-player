@@ -16,7 +16,9 @@ final class SplitModeManager: ObservableObject {
     var secondaryWindow: NSWindow? { secondWindow }
     private var gapWindow: CrossfaderGapWindow?
     private weak var primaryState: PlayerState?
+    private weak var primaryWindow: NSWindow?
     private var snapWasEnabled = false   // snap state before Clone Mode disabled it
+    private var lifecycleObservers: [NSObjectProtocol] = []
 
     // Serial queue for all secondary-engine ops — guarantees stop() from deactivation
     // always completes before setOutputDevice() from the next activation (no Core Audio race)
@@ -29,6 +31,7 @@ final class SplitModeManager: ObservableObject {
     func activate(primaryWindow: NSWindow, primaryState: PlayerState) {
         guard !isActive else { return }
         self.primaryState = primaryState
+        self.primaryWindow = primaryWindow
 
         // Snap and Clone Mode are incompatible — disable snap (expands window if docked).
         // Remember the state so deactivate() can restore it.
@@ -46,6 +49,7 @@ final class SplitModeManager: ObservableObject {
 
         let gap = CrossfaderGapWindow(manager: self, windowA: primaryWindow, windowB: win)
         gapWindow = gap
+        installLifecycleObservers(primary: primaryWindow, secondary: win)
 
         updateCrossfade()
 
@@ -76,6 +80,7 @@ final class SplitModeManager: ObservableObject {
     func deactivate() {
         guard isActive else { return }
         isActive = false
+        removeLifecycleObservers()
         crossfade = 0.5
         primaryState?.audioEngine.crossfadeGain = 1.0
         // Clear callbacks BEFORE any teardown — prevents audio thread retaining [weak state]
@@ -96,10 +101,11 @@ final class SplitModeManager: ObservableObject {
         gapWindow = nil
         secondWindow?.close()
         secondWindow = nil
+        primaryWindow = nil
         secondaryState = nil
         // Restore snap if it was active before Clone Mode disabled it
         if snapWasEnabled,
-           let delegate = NSApp.delegate as? AppDelegate,
+           let delegate = AppDelegate.shared,
            let win = delegate.resolvedMainWindow() {
             snapWasEnabled = false
             WindowSnapManager.shared.enable(window: win)
@@ -112,6 +118,30 @@ final class SplitModeManager: ObservableObject {
             AudioEngineNext.secondary.stop(resetProgress: false)
             AudioEngineNext.secondary.crossfadeGain = 1.0
         }
+    }
+
+    private func installLifecycleObservers(primary: NSWindow, secondary: NSWindow) {
+        removeLifecycleObservers()
+        let center = NotificationCenter.default
+        for window in [primary, secondary] {
+            let token = center.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isActive else { return }
+                    self.deactivate()
+                }
+            }
+            lifecycleObservers.append(token)
+        }
+    }
+
+    private func removeLifecycleObservers() {
+        let center = NotificationCenter.default
+        lifecycleObservers.forEach(center.removeObserver)
+        lifecycleObservers.removeAll()
     }
 
     // MARK: — Crossfade
@@ -176,7 +206,9 @@ final class SplitModeManager: ObservableObject {
             DispatchQueue.main.async { state?.selectNextTrack() }
         }
         eng.onSpectrum = { [weak state] data in
-            state?.spectrumFeed.data = data
+            DispatchQueue.main.async {
+                state?.spectrumFeed.data = data
+            }
         }
         eng.onError = { [weak state] msg in
             DispatchQueue.main.async {

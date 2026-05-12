@@ -38,8 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // By the time playerState is set, onAppear has fired → window definitely exists.
             // Cache it now so resolvedMainWindow() is reliable from this point on.
             if mainWindow == nil || !(mainWindow?.isVisible ?? false) {
-                mainWindow = NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible })
-                    ?? NSApp.windows.first(where: { !($0 is NSPanel) })
+                mainWindow = bestAvailableWindow()
             }
             if let window = resolvedMainWindow() {
                 applyPresencePolicy(to: window)
@@ -82,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             $0.hidesOnDeactivate = false
         }
         DispatchQueue.main.async {
-            guard let window = NSApp.windows.first else { return }
+            guard let window = self.bestAvailableWindow() else { return }
             window.alphaValue = 0          // safety net if window appeared after the sync call
             self.configureWindow(window)
             // One extra tick for SwiftUI layout to settle, then fade in
@@ -146,22 +145,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let mainWindow, mainWindow.isVisible, !mainWindow.isMiniaturized {
             return mainWindow
         }
-        // Fast path failed — search all app windows, excluding clone (NSWindow, not NSPanel).
-        let clone = SplitModeManager.shared.secondaryWindow
-        let found = NSApp.windows.first(where: { !($0 is NSPanel) && $0 !== clone && $0.isVisible && !$0.isMiniaturized })
-            ?? NSApp.windows.first(where: { !($0 is NSPanel) && $0 !== clone })
+        let found = bestAvailableWindow()
         if let found { mainWindow = found }
         return found
     }
 
-    private func bestAvailableWindow() -> NSWindow? {
-        // Exclude NSPanel subclasses and the clone player window.
+    private func primaryPlayerWindows() -> [NSWindow] {
         let clone = SplitModeManager.shared.secondaryWindow
-        let isMainWin: (NSWindow) -> Bool = { !($0 is NSPanel) && $0 !== clone && $0.isVisible && !$0.isMiniaturized }
-        if let keyWindow = NSApp.keyWindow, isMainWin(keyWindow) { return keyWindow }
-        if let mainAppWindow = NSApp.mainWindow, isMainWin(mainAppWindow) { return mainAppWindow }
-        if let visible = NSApp.windows.first(where: isMainWin) { return visible }
-        return NSApp.windows.first(where: { !($0 is NSPanel) && $0 !== clone })
+        return NSApp.windows.filter { !($0 is NSPanel) && $0 !== clone }
+    }
+
+    private func bestAvailableWindow() -> NSWindow? {
+        let windows = primaryPlayerWindows()
+        if let keyWindow = NSApp.keyWindow,
+           windows.contains(where: { $0 === keyWindow && keyWindow.isVisible && !keyWindow.isMiniaturized }) {
+            return keyWindow
+        }
+        if let mainAppWindow = NSApp.mainWindow,
+           windows.contains(where: { $0 === mainAppWindow && mainAppWindow.isVisible && !mainAppWindow.isMiniaturized }) {
+            return mainAppWindow
+        }
+        if let visible = windows.first(where: { $0.isVisible && !$0.isMiniaturized }) {
+            return visible
+        }
+        return windows.first
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
@@ -244,8 +251,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         engine.onSpectrum = { [weak self] data in
-            SpectrumFeed.shared.data = data          // PeekPanelView reads .shared
-            self?.playerState?.spectrumFeed.data = data
+            DispatchQueue.main.async { [weak self] in
+                SpectrumFeed.shared.data = data
+                self?.playerState?.spectrumFeed.data = data
+            }
         }
         engine.onFinished = { [weak self] in
             DispatchQueue.main.async { [weak self] in
@@ -357,7 +366,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let cue = state.hotCues[index] {
             state.audioEngine.seek(ratio: cue)
         } else {
-            state.hotCues[index] = state.progress
+            // Use real-time frame position — state.progress is 24fps-quantized (up to 41ms stale).
+            state.hotCues[index] = state.audioEngine.currentPlaybackRatio
         }
     }
 

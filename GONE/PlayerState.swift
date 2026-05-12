@@ -366,6 +366,14 @@ final class PlayerState: ObservableObject, @unchecked Sendable {
            playlistTabs.first(where: { $0.id == override })?.trackIds.contains(currentId) == true {
             return override
         }
+        if playlistTabs.first(where: { $0.id == activePlaylistTabId })?.trackIds.contains(currentId) == true {
+            return activePlaylistTabId
+        }
+        if splitPlaylistView,
+           let secondaryPlaylistTabId,
+           playlistTabs.first(where: { $0.id == secondaryPlaylistTabId })?.trackIds.contains(currentId) == true {
+            return secondaryPlaylistTabId
+        }
         return playlistTabs.first(where: { $0.trackIds.contains(currentId) })?.id
     }
 

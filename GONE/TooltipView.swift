@@ -34,9 +34,11 @@ final class TooltipPanel {
     private var panel: NSPanel?
     private var hostController: NSHostingController<GoneTooltipBubble>?
     private var followTimer: Timer? = nil
+    private var visibilityToken: UInt = 0
 
     @MainActor
     func show(text: String, near mouse: NSPoint) {
+        visibilityToken &+= 1
         if let hc = hostController {
             hc.rootView = GoneTooltipBubble(text: text)
         } else {
@@ -69,11 +71,16 @@ final class TooltipPanel {
         let origin = tooltipOrigin(size: size, mouse: mouse)
 
         panel!.setFrame(CGRect(origin: origin, size: size), display: false)
-        panel!.alphaValue = 0
-        panel!.orderFront(nil)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
-            panel!.animator().alphaValue = 1
+        if panel!.isVisible {
+            panel!.alphaValue = 1
+            panel!.orderFront(nil)
+        } else {
+            panel!.alphaValue = 0
+            panel!.orderFront(nil)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.12
+                panel!.animator().alphaValue = 1
+            }
         }
 
         startFollowing()
@@ -83,11 +90,14 @@ final class TooltipPanel {
     func hide() {
         stopFollowing()
         guard let p = panel, p.isVisible else { return }
+        visibilityToken &+= 1
+        let token = visibilityToken
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.08
             p.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            self?.panel?.orderOut(nil)
+            guard let self, self.visibilityToken == token else { return }
+            self.panel?.orderOut(nil)
         })
     }
 
@@ -197,8 +207,8 @@ final class DragValuePanel {
     func hide() { panel?.orderOut(nil) }
 
     private func origin(size: CGSize, mouse: NSPoint) -> NSPoint {
-        let x = mouse.x + 14
-        let y = mouse.y - size.height / 2
+        let x = mouse.x - size.width / 2   // horizontally centered on cursor
+        let y = mouse.y + 20               // above cursor
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         if let s = screen {
             return NSPoint(
