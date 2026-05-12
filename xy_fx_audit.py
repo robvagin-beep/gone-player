@@ -67,13 +67,14 @@ Reference exact file + approximate line."""
 
 def call_claude_with_retry(client, **kwargs):
     import time
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             return client.messages.create(**kwargs)
         except Exception as e:
-            if "rate_limit" in str(e).lower() and attempt < 2:
-                print(f"Rate limited, waiting 65s before retry {attempt + 2}/3...")
-                time.sleep(65)
+            if attempt < 3 and any(code in str(e) for code in ["529", "503", "429", "rate_limit", "overloaded"]):
+                wait = [60, 90, 120][attempt]
+                print(f"  API throttle ({e}) — waiting {wait}s (attempt {attempt+1}/4)...")
+                time.sleep(wait)
             else:
                 raise
 

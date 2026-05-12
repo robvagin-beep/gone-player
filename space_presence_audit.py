@@ -36,23 +36,33 @@ def read_file(path):
         return f"[FILE NOT FOUND: {path}]"
 
 def call_claude(prompt):
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=json.dumps({
-            "model": "claude-opus-4-7",
-            "max_tokens": 16000,
-            "messages": [{"role": "user", "content": prompt}]
-        }).encode(),
-        headers={
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        },
-        method="POST"
-    )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        data = json.loads(resp.read())
-    return "".join(b["text"] for b in data["content"] if b["type"] == "text")
+    import time
+    for attempt in range(4):
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps({
+                "model": "claude-opus-4-7",
+                "max_tokens": 16000,
+                "messages": [{"role": "user", "content": prompt}]
+            }).encode(),
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                data = json.loads(resp.read())
+            return "".join(b["text"] for b in data["content"] if b["type"] == "text")
+        except Exception as e:
+            if attempt < 3 and any(code in str(e) for code in ["529", "503", "429", "overloaded"]):
+                wait = [60, 90, 120][attempt]
+                print(f"  API throttle ({e}) — waiting {wait}s (attempt {attempt+1}/4)...")
+                time.sleep(wait)
+            else:
+                raise
 
 def post_comment(body):
     url = f"https://api.github.com/repos/{REPO}/issues/{PR_NUMBER}/comments"

@@ -3,7 +3,7 @@
 Pre-merge regression check: reads CLAUDE.md fragile systems list + diff,
 asks Claude Opus: does this diff risk breaking any documented fragile subsystem?
 """
-import os, anthropic, urllib.request, urllib.error, json, subprocess
+import os, anthropic, urllib.request, urllib.error, json, subprocess, time
 
 SYSTEM_PROMPT = """You are a senior Swift/macOS engineer doing a pre-merge regression check for GONE Player.
 
@@ -64,6 +64,19 @@ def post_comment(repo, pr_number, body, token):
         raise RuntimeError(f"GitHub API error: {e.code} {e.reason}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Network error: {e.reason}") from e
+
+def call_claude_with_retry(client, **kwargs):
+    for attempt in range(4):
+        try:
+            return client.messages.create(**kwargs)
+        except Exception as e:
+            if attempt < 3 and any(code in str(e) for code in ["529", "503", "429", "rate_limit", "overloaded"]):
+                wait = [60, 90, 120][attempt]
+                print(f"  API throttle ({e}) — waiting {wait}s (attempt {attempt+1}/4)...")
+                time.sleep(wait)
+            else:
+                raise
+
 
 def main():
     api_key      = os.environ["ANTHROPIC_API_KEY"]
