@@ -233,7 +233,7 @@ final class SplitModeManager: ObservableObject {
 
         // Snapshot A's full audio state into B engine.
         // Enqueued on audioOpQueue so any pending stop() from a prior deactivation drains first.
-        let primaryDeviceID = AudioEngineNext.shared.currentOutputDeviceID()
+        let primaryDeviceID = primaryState.audioEngine.currentOutputDeviceID()
         let snapVol     = primaryState.volume
         let snapPitch   = primaryState.pitchBypassed ? 0.0 : primaryState.pitch
         let snapMT      = primaryState.masterTempo

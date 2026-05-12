@@ -12,7 +12,7 @@ struct PlaylistTabModel: Identifiable, Equatable {
 }
 
 @MainActor
-final class PlayerState: ObservableObject, @unchecked Sendable {
+final class PlayerState: ObservableObject {
     static let initialPlaylistTabId = UUID()
 
     let audioEngine: AudioEngineNext
