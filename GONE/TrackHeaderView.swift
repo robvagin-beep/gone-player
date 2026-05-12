@@ -43,11 +43,14 @@ struct TrackHeaderView: View {
                         }
                         if t.bpm > 0 {
                             let isAnalyzing = t.bpmAnalysisState == .analyzing
-                            Button { copyBPM(t.bpm) } label: {
+                            Button {
+                                guard !isAnalyzing else { return }
+                                state.reanalyzeBPMDeep(for: t.id)
+                            } label: {
                                 if isAnalyzing {
                                     BPMAnalyzingBadge()
                                 } else {
-                                    BadgeView(isBPMHovered ? "COPY" : "\(Int(t.bpm.rounded())) BPM", style: .filled)
+                                    BadgeView(isBPMHovered ? "↺ REFRESH" : "\(Int(t.bpm.rounded())) BPM", style: .filled)
                                         .allowsHitTesting(false)
                                 }
                             }
@@ -55,7 +58,7 @@ struct TrackHeaderView: View {
                             .disabled(isAnalyzing)
                             .onHover { isBPMHovered = isAnalyzing ? false : $0 }
                             .cursor(isAnalyzing ? .arrow : .pointingHand)
-                            .goneTooltip(isAnalyzing ? "Analyzing…" : "Copy BPM to clipboard")
+                            .goneTooltip(isAnalyzing ? "Analyzing…" : "Re-analyze BPM")
                         }
                         if state.pitch != 0, t.bpm > 0 {
                             BadgeView("\(Int((t.bpm * (1 + state.pitch / 100)).rounded())) BPM",
@@ -157,11 +160,6 @@ struct TrackHeaderView: View {
         timeLabelCache = "\(fmtTime(currentTime / speed)) / \(fmtTime(t.duration / speed))"
     }
 
-    private func copyBPM(_ bpm: Double) {
-        guard bpm > 0 else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(String(format: "%.1f", bpm), forType: .string)
-    }
 }
 
 // ── Art swatch ─────────────────────────────────────────────────────────────────
