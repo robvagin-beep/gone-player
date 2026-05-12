@@ -407,25 +407,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         cc.playCommand.isEnabled = true
         cc.playCommand.addTarget { [weak self] _ in
-            guard let s = self?.playerState, !s.isPlaying else { return .noSuchContent }
-            s.togglePlayback(); return .success
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let s = self?.playerState, !s.isPlaying else { return }
+                    s.togglePlayback()
+                }
+            }
+            return .success
         }
         cc.pauseCommand.isEnabled = true
         cc.pauseCommand.addTarget { [weak self] _ in
-            guard let s = self?.playerState, s.isPlaying else { return .noSuchContent }
-            s.togglePlayback(); return .success
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let s = self?.playerState, s.isPlaying else { return }
+                    s.togglePlayback()
+                }
+            }
+            return .success
         }
         cc.togglePlayPauseCommand.isEnabled = true
         cc.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.playerState?.togglePlayback(); return .success
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.playerState?.togglePlayback()
+                }
+            }
+            return .success
         }
         cc.nextTrackCommand.isEnabled = true
         cc.nextTrackCommand.addTarget { [weak self] _ in
-            self?.playerState?.selectNextTrack(); return .success
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.playerState?.selectNextTrack()
+                }
+            }
+            return .success
         }
         cc.previousTrackCommand.isEnabled = true
         cc.previousTrackCommand.addTarget { [weak self] _ in
-            self?.playerState?.selectPreviousTrack(); return .success
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.playerState?.selectPreviousTrack()
+                }
+            }
+            return .success
         }
     }
 
@@ -484,7 +509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Flush any pending cache writes before process exits.
         // flushSoon debounces to 1.5s — synchronous flush here captures the last analysis session.
         let sema = DispatchSemaphore(value: 0)
-        Task { await AnalysisCache.shared.flushNow(); sema.signal() }
+        Task.detached { await AnalysisCache.shared.flushNow(); sema.signal() }
         _ = sema.wait(timeout: .now() + 2.0)
     }
 

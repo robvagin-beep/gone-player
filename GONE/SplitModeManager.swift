@@ -190,31 +190,44 @@ final class SplitModeManager: ObservableObject {
         state.lpfCutoff           = primaryState.lpfCutoff
         state.reverbAmount        = primaryState.reverbAmount
         state.reverbPreset        = primaryState.reverbPreset
+        // Debug — secondary onError is gated on debugMode; without this copy errors are silently dropped.
+        state.debugMode           = primaryState.debugMode
+        state.lastError           = primaryState.lastError
         secondaryState = state
 
         // Wire secondary engine callbacks into secondaryState
         let eng = AudioEngineNext.secondary
         eng.onProgress = { [weak state] progress, time in
             DispatchQueue.main.async {
-                state?.progress    = progress
-                state?.currentTime = time
-                state?.progressFeed.progress    = progress
-                state?.progressFeed.currentTime = time
+                MainActor.assumeIsolated {
+                    state?.progress    = progress
+                    state?.currentTime = time
+                    state?.progressFeed.progress    = progress
+                    state?.progressFeed.currentTime = time
+                }
             }
         }
         eng.onFinished = { [weak state] in
-            DispatchQueue.main.async { state?.selectNextTrack() }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    state?.selectNextTrack()
+                }
+            }
         }
         eng.onSpectrum = { [weak state] data in
             DispatchQueue.main.async {
-                state?.spectrumFeed.data = data
+                MainActor.assumeIsolated {
+                    state?.spectrumFeed.data = data
+                }
             }
         }
         eng.onError = { [weak state] msg in
             DispatchQueue.main.async {
-                guard let s = state, s.debugMode else { return }
-                let ts = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-                s.lastError = "[B/\(ts)] \(msg)"
+                MainActor.assumeIsolated {
+                    guard let s = state, s.debugMode else { return }
+                    let ts = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+                    s.lastError = "[B/\(ts)] \(msg)"
+                }
             }
         }
 
