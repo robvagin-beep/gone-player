@@ -262,8 +262,15 @@ extension PlayerState {
         try? await Task.sleep(for: .milliseconds(150))
 
         await MainActor.run {
-            if autoBPMOnImport { scheduleBPMAnalysis() }
-            scheduleWaveformComputation()
+            // analyzeBPMWithWaveform already decodes the waveform in the same AVAssetReader
+            // pass as BPM. Running scheduleWaveformComputation concurrently opens a second
+            // reader on the same file, which freezes the UI. Only schedule standalone
+            // waveform computation when BPM analysis is disabled.
+            if autoBPMOnImport {
+                scheduleBPMAnalysis()
+            } else {
+                scheduleWaveformComputation()
+            }
         }
     }
 
