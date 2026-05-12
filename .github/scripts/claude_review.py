@@ -24,13 +24,13 @@ End with a brief summary (2-3 sentences). Be direct, no filler."""
 
 def call_claude_with_retry(client, **kwargs):
     import time
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             return client.messages.create(**kwargs)
         except Exception as e:
-            if "rate_limit" in str(e).lower() and attempt < 2:
+            if attempt < 3 and any(c in str(e) for c in ["529", "503", "429", "rate_limit", "overloaded"]):
                 print(f"Rate limited, waiting 65s before retry {attempt + 2}/3...")
-                time.sleep(65)
+                wait = [60, 90, 120][attempt]; print(f"  API throttle — waiting {wait}s..."); time.sleep(wait)
             else:
                 raise
 
