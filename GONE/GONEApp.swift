@@ -239,8 +239,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.playerState?.currentTime = time
                 self?.playerState?.progressFeed.progress = progress
                 self?.playerState?.progressFeed.currentTime = time
-                PlaybackProgressFeed.shared.progress = progress
-                PlaybackProgressFeed.shared.currentTime = time
             }
         }
         engine.onError = { [weak self] msg in
@@ -252,7 +250,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         engine.onSpectrum = { [weak self] data in
             DispatchQueue.main.async { [weak self] in
-                SpectrumFeed.shared.data = data
                 self?.playerState?.spectrumFeed.data = data
             }
         }
@@ -442,7 +439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _ in self?.updateNowPlayingInfo() }
             .store(in: &nowPlayingCancellables)
-        PlaybackProgressFeed.shared.$currentTime
+        state.progressFeed.$currentTime
             .removeDuplicates()
             .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.updateNowPlayingTiming() }
@@ -561,7 +558,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installMagnifyMonitor() {
         removeMagnifyMonitor()
         let timer = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
-            self?.checkMagnifyProximity()
+            MainActor.assumeIsolated {
+                self?.checkMagnifyProximity()
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         magnifyTimer = timer
@@ -592,11 +591,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 state.windowScale = 1.0
             }
         } else if state.isMagnified && distance > 15 {
-            // Exit when cursor is >15px outside the current (enlarged) window frame
-            state.isMagnified = false
+            // Exit when cursor is >15px outside the current (enlarged) window frame.
+            // Defer isMagnified=false past spring duration so debouncedSave keeps skipping
+            // the in-flight windowScale frames (guard in setupSettingsPersistence).
             magnifyBaseFrame = .zero
-            withAnimation(.spring(response: state.magnifySpeed, dampingFraction: 0.8)) {
+            let springDuration = state.magnifySpeed
+            withAnimation(.spring(response: springDuration, dampingFraction: 0.8)) {
                 state.windowScale = state.magnifyBaseScale
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + springDuration + 0.1) { [weak state] in
+                state?.isMagnified = false
             }
         }
     }
