@@ -98,7 +98,7 @@ final class SettingsPanel {
             p.isOpaque           = false
             p.backgroundColor    = .clear
             p.hasShadow          = true
-            p.level              = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
+            p.level              = GWindowLevel.floatingPanel
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                      .fullScreenDisallowsTiling, .ignoresCycle]
             p.hidesOnDeactivate  = false

@@ -136,6 +136,7 @@ final class PlayerState: ObservableObject {
     var bpmPriorityId: UUID? = nil
     var waveformPriorityId: UUID? = nil
     var isPresentingImportPanel = false
+    var xyBridgeCancellables = Set<AnyCancellable>()
 
     // MARK: — Snap state
 

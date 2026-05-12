@@ -275,9 +275,9 @@ final class SplitModeManager: ObservableObject {
         win.isMovableByWindowBackground = false   // ClonePlayerShell has DragHandleNSView zones
         win.acceptsMouseMovedEvents = true
         win.appearance = NSAppearance(named: .darkAqua)
-        // Clone player one level above main player (overlayWindow+1=103) so the crossfader
-        // panel at overlayWindow-1 (101) is hidden under both player windows at their endpoints.
-        win.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)) + 1)
+        // Clone player uses the same topmost level as the primary player.
+        // Crossfader sits one level below both so window bodies hide its endpoints.
+        win.level = GWindowLevel.player
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                   .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         win.hidesOnDeactivate = false

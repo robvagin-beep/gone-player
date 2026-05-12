@@ -110,8 +110,8 @@ final class WindowSnapManager {
         // In .expanded, restoreFromSnap() already ran inside expand() — calling it again here
         // would overwrite whatever the user changed manually in the expanded state.
         let needsRestore = snapState == .docked || snapState == .peeking
-        // Restore to normal presence level — docked state raises to screenSaverWindow.
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
+        // Restore to expanded presence level — player level keeps window above fullscreen apps.
+        window.level = GWindowLevel.player
         // Cancel any in-flight dockToEdge completion — prevents a pending completion from
         // overwriting snapState/.docked and re-locking the frame after we've disabled snap.
         dockToken &+= 1
@@ -226,7 +226,7 @@ final class WindowSnapManager {
     // MARK: – Space Change Observer
     // The docked window extends beyond screen.maxX. The Space-transition compositor
     // can briefly reveal the off-screen body during swipes. Two defences:
-    // (1) screenSaverWindow level puts the tab above the transition layer.
+    // (1) player level puts the tab above the transition layer.
     // (2) This observer corrects any frame drift and kills visible artifacts
     //     the instant the transition completes.
 
@@ -302,10 +302,10 @@ final class WindowSnapManager {
                 self.savedWindowWidth = window.frame.width
                 let f = window.frame
                 window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
-                // screenSaverWindow (1000) puts the tab above the Space transition
+                // screenSaverWindow+1 (1001) puts the tab above the Space transition
                 // animation layer — prevents body from appearing during desktop swipe
                 // and ensures the tab is visible over fullscreen app Spaces.
-                window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
+                window.level = GWindowLevel.player
                 window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                              .fullScreenDisallowsTiling, .transient, .ignoresCycle]
             }
@@ -407,7 +407,9 @@ final class WindowSnapManager {
         playerState?.isSnapping = true
         // Animate position only — avoids per-frame resize artifacts.
         // Shrink to tabVisible in completion when window is already at the screen edge (invisible).
-        slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: peekAnimDuration) { [weak self, weak window] in
+        // Shorter duration than peek-in: off-screen slides are compositor-throttled,
+        // so 0.12s looks crisper than 0.18s (macOS deprioritises going-off-screen windows).
+        slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: 0.12 * animMul) { [weak self, weak window] in
             guard let self, let window, self.dockToken == capturedToken else { return }
             self.snapState = .docked
             self.savedWindowWidth = window.frame.width
@@ -415,7 +417,7 @@ final class WindowSnapManager {
             window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
             self.lockFrame(window: window, x: snapX)
             // Keep isSnapping = true — window stays at tabVisible width.
-            window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
+            window.level = GWindowLevel.player
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                          .fullScreenDisallowsTiling, .transient, .ignoresCycle]
         }
@@ -443,7 +445,7 @@ final class WindowSnapManager {
 
         snapState = .expanded
         playerState?.isSnapping = true
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
+        window.level = GWindowLevel.player
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
 

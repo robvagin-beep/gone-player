@@ -71,11 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(systemDidWake),
             name: NSWorkspace.didWakeNotification, object: nil
         )
-        // overlayWindow (102) sits above all app windows and fullscreen-app Spaces without
-        // the DRM-surface conflicts that screenSaverWindow (1000) can cause in expanded state.
+        // screenSaverWindow+1 (1001): appears above fullscreen apps (Chrome, etc.).
+        // Same level used by WindowSnapManager in docked state.
+        // Trade-off: DRM-protected video in other apps renders as black below this window.
         NSApp.windows.forEach {
             $0.alphaValue = 0
-            $0.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
+            $0.level = GWindowLevel.player
             $0.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
             $0.hidesOnDeactivate = false
@@ -172,10 +173,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
-        // overlayWindow (102): above all app windows and fullscreen-app Spaces.
-        // DRM-safe for the expanded state. WindowSnapManager raises to screenSaverWindow
-        // (1000) while docked so the tab clears the Space-transition compositor layer.
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
+        // screenSaverWindow+1 (1001): above fullscreen apps and Space-transition layer.
+        // Unified with docked level so window stays above Chrome/fullscreen in all states.
+        window.level = GWindowLevel.player
         // .canJoinAllSpaces: enrolls window in every Space including new fullscreen Spaces.
         // .fullScreenAuxiliary: required alongside canJoinAllSpaces for fullscreen Spaces
         //   on macOS 11+ — both flags together are the load-bearing pair.
@@ -235,49 +235,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let engine = state.audioEngine
         engine.onProgress = { [weak self] progress, time in
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    self?.playerState?.progress = progress
-                    self?.playerState?.currentTime = time
-                    self?.playerState?.progressFeed.progress = progress
-                    self?.playerState?.progressFeed.currentTime = time
-                }
+                self?.playerState?.progress = progress
+                self?.playerState?.currentTime = time
+                self?.playerState?.progressFeed.progress = progress
+                self?.playerState?.progressFeed.currentTime = time
             }
         }
         engine.onError = { [weak self] msg in
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let s = self?.playerState, s.debugMode else { return }
-                    let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-                    s.lastError = "[\(timestamp)] \(msg)"
-                }
+                guard let s = self?.playerState, s.debugMode else { return }
+                let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+                s.lastError = "[\(timestamp)] \(msg)"
             }
         }
         engine.onSpectrum = { [weak self] data in
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    self?.playerState?.spectrumFeed.data = data
-                }
+                self?.playerState?.spectrumFeed.data = data
             }
         }
         engine.onFinished = { [weak self] in
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let state = self?.playerState else { return }
-                    switch state.repeatMode {
-                    case .one:
-                        engine.seek(ratio: 0)
-                        engine.play()
-                    case .all:
+                guard let state = self?.playerState else { return }
+                switch state.repeatMode {
+                case .one:
+                    engine.seek(ratio: 0)
+                    engine.play()
+                case .all:
+                    state.selectNextTrack()
+                case .off:
+                    let list = state.sortedTracks(forPlaylistTabId: state.playingTabId ?? state.activePlaylistTabId)
+                    let available = list.indices.filter { !list[$0].isMissing }
+                    if let lastAvailable = available.last,
+                       list.firstIndex(where: { $0.id == state.currentId }) == lastAvailable {
+                        state.isPlaying = false
+                    } else {
                         state.selectNextTrack()
-                    case .off:
-                        let list = state.sortedTracks(forPlaylistTabId: state.playingTabId ?? state.activePlaylistTabId)
-                        let available = list.indices.filter { !list[$0].isMissing }
-                        if let lastAvailable = available.last,
-                           list.firstIndex(where: { $0.id == state.currentId }) == lastAvailable {
-                            state.isPlaying = false
-                        } else {
-                            state.selectNextTrack()
-                        }
                     }
                 }
             }
@@ -415,50 +407,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         cc.playCommand.isEnabled = true
         cc.playCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let s = self?.playerState, !s.isPlaying else { return }
-                    s.togglePlayback()
-                }
-            }
-            return .success
+            guard let s = self?.playerState, !s.isPlaying else { return .noSuchContent }
+            s.togglePlayback(); return .success
         }
         cc.pauseCommand.isEnabled = true
         cc.pauseCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let s = self?.playerState, s.isPlaying else { return }
-                    s.togglePlayback()
-                }
-            }
-            return .success
+            guard let s = self?.playerState, s.isPlaying else { return .noSuchContent }
+            s.togglePlayback(); return .success
         }
         cc.togglePlayPauseCommand.isEnabled = true
         cc.togglePlayPauseCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    self?.playerState?.togglePlayback()
-                }
-            }
-            return .success
+            self?.playerState?.togglePlayback(); return .success
         }
         cc.nextTrackCommand.isEnabled = true
         cc.nextTrackCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    self?.playerState?.selectNextTrack()
-                }
-            }
-            return .success
+            self?.playerState?.selectNextTrack(); return .success
         }
         cc.previousTrackCommand.isEnabled = true
         cc.previousTrackCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    self?.playerState?.selectPreviousTrack()
-                }
-            }
-            return .success
+            self?.playerState?.selectPreviousTrack(); return .success
         }
     }
 
@@ -517,7 +484,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Flush any pending cache writes before process exits.
         // flushSoon debounces to 1.5s — synchronous flush here captures the last analysis session.
         let sema = DispatchSemaphore(value: 0)
-        Task.detached { await AnalysisCache.shared.flushNow(); sema.signal() }
+        Task { await AnalysisCache.shared.flushNow(); sema.signal() }
         _ = sema.wait(timeout: .now() + 2.0)
     }
 
@@ -591,9 +558,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installMagnifyMonitor() {
         removeMagnifyMonitor()
         let timer = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.checkMagnifyProximity()
-            }
+            self?.checkMagnifyProximity()
         }
         RunLoop.main.add(timer, forMode: .common)
         magnifyTimer = timer
@@ -624,16 +589,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 state.windowScale = 1.0
             }
         } else if state.isMagnified && distance > 15 {
-            // Exit when cursor is >15px outside the current (enlarged) window frame.
-            // Defer isMagnified=false past spring duration so debouncedSave keeps skipping
-            // the in-flight windowScale frames (guard in setupSettingsPersistence).
+            // Exit when cursor is >15px outside the current (enlarged) window frame
+            state.isMagnified = false
             magnifyBaseFrame = .zero
-            let springDuration = state.magnifySpeed
-            withAnimation(.spring(response: springDuration, dampingFraction: 0.8)) {
+            withAnimation(.spring(response: state.magnifySpeed, dampingFraction: 0.8)) {
                 state.windowScale = state.magnifyBaseScale
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + springDuration + 0.1) { [weak state] in
-                state?.isMagnified = false
             }
         }
     }

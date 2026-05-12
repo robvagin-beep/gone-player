@@ -6,7 +6,6 @@ struct PeekPanelView: View {
     @Binding var isDropTarget: Bool
     var onFileDrop: ([NSItemProvider]) -> Bool = { _ in false }
     @EnvironmentObject var state: PlayerState
-    @ObservedObject private var progressFeed = PlaybackProgressFeed.shared
     @State private var dragStartWindowOrigin: NSPoint?
     @State private var dragStartMouseY: CGFloat = 0
     @State private var hasDraggedBeyondThreshold = false
@@ -54,7 +53,6 @@ struct PeekPanelView: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
-                    .allowsHitTesting(false)
 
                 HStack(spacing: 0) {
                     Color.clear
@@ -140,7 +138,7 @@ struct PeekPanelView: View {
                 .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
 
                 if let bpm = currentBPM {
-                    PeekBPMBar(label: bpm, progress: progressFeed.progress)
+                    PeekBPMBar(label: bpm, progress: state.progressFeed.progress)
                         .frame(width: 54, height: 12)
                         .padding(.top, 2)
                         .padding(.bottom, 4)
@@ -164,7 +162,6 @@ struct PeekPanelView: View {
         if state.snapState == .docked {
             RoundedRectangle(cornerRadius: 16)
                 .fill(G.bgWindow)
-                .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
                         .stroke(Color.white.opacity(0.12), lineWidth: 1)
@@ -173,7 +170,6 @@ struct PeekPanelView: View {
         } else {
             RoundedRectangle(cornerRadius: G.rWindowInner)
                 .fill(G.bgWindow)
-                .gradientMap(hue: state.gradientMapHue, saturation: state.gradientMapSaturation)
                 .overlay(
                     RoundedRectangle(cornerRadius: G.rWindowInner)
                         .stroke(Color.white.opacity(0.04), lineWidth: 1)
@@ -214,7 +210,7 @@ struct PeekPanelView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 7)
                     .fill(Color.white.opacity(0.05))
-                PixelSpectrumView(isPlaying: state.isPlaying)
+                PixelSpectrumView(feed: state.spectrumFeed, isPlaying: state.isPlaying)
                     .padding(5)
             }
             .frame(width: 40, height: 40)
@@ -333,7 +329,7 @@ private struct PeekBPMBar: View {
 // MARK: – Pixel-grid spectrum (for artwork placeholder) — mirrors main SpectrumView logic
 
 private struct PixelSpectrumView: View {
-    @ObservedObject private var feed = SpectrumFeed.shared
+    @ObservedObject var feed: SpectrumFeed
     let isPlaying: Bool
 
     private let cols = 8

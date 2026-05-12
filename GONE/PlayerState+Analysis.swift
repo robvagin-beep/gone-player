@@ -62,8 +62,22 @@ extension PlayerState {
     // Triggers BPM + waveform for the current track, then schedules the rest.
     func scheduleCurrentTrackAnalysis() {
         guard let current = current, !current.isMissing else { return }
+        let currentNeedsBeatGrid = current.bpm > 0
+            && current.beatGridConfidence <= 0
+            && current.bpmAnalysisState == .analyzed
+        if currentNeedsBeatGrid,
+           let idx = tracks.firstIndex(where: { $0.id == current.id }) {
+            tracks[idx].bpmAnalysisState = .pending
+        }
+
+        let analysisState = tracks.first(where: { $0.id == current.id })?.bpmAnalysisState ?? current.bpmAnalysisState
+        let needsStandaloneWaveform = current.waveform.isEmpty
+            && analysisState != .pending
+            && analysisState != .analyzing
         scheduleBPMAnalysis()
-        scheduleWaveformComputation(currentOnly: true)
+        if needsStandaloneWaveform {
+            scheduleWaveformComputation(currentOnly: true)
+        }
     }
 
     // MARK: — BPM analysis
@@ -160,12 +174,16 @@ extension PlayerState {
 
     private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
         // Cache hit: skip decode + analysis entirely. Saves ~300-500 ms per track.
-        if let hit = await AnalysisCache.shared.get(for: track.url), hit.bpm > 0 {
+        if let hit = await AnalysisCache.shared.get(for: track.url),
+           hit.bpm > 0,
+           hit.beatGridConfidence > 0 {
             await MainActor.run {
                 guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
                 var t = state.tracks[idx]
                 t.bpm = hit.bpm
                 t.bpmAnalysisState = .analyzed
+                t.beatGridOffset = hit.beatGridOffset
+                t.beatGridConfidence = hit.beatGridConfidence
                 if t.waveform.isEmpty, !hit.waveform.isEmpty {
                     t.waveform = hit.waveform
                 }
@@ -185,7 +203,8 @@ extension PlayerState {
             }
         }
         if bpm > 0 {
-            await AnalysisCache.shared.putBPMAndWaveform(url: track.url, bpm: bpm, waveform: waveform)
+            await AnalysisCache.shared.putBPMAndWaveform(url: track.url, bpm: bpm, waveform: waveform,
+                                                         beatGridOffset: beatGridOffset, beatGridConfidence: gridConfidence)
         }
         await MainActor.run {
             state.analysisFeed.progress.removeValue(forKey: track.id)

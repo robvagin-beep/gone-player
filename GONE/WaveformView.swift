@@ -36,9 +36,14 @@ private final class BarTracker {
 
 // Ruler tick hierarchy — determines height (tallest → shortest).
 private enum MusicalTickType: Int {
-    case beat    = 1  // 5px — "millimeter" texture
+    case beat    = 1  // 2px — bottom "millimeter" texture
     case bar     = 2  // subDivH — bar downbeats
-    case fourBar = 3  // quarterH — 4-bar navigation anchors
+    case fourBar = 3  // subDivH — 4-bar musical anchors
+}
+
+private struct MusicalGridTick {
+    let ratio: Double
+    let type: MusicalTickType
 }
 
 struct ProgressRuler: View {
@@ -68,6 +73,12 @@ struct ProgressRuler: View {
 
     // Pre-analysis fallback: fixed marks at 0 / 25 / 50 / 75 / 100%.
     private static let defaultStructuralTicks: Set<Int> = [0, 40, 80, 120, 160]
+    private static let defaultSubStructuralTicks: Set<Int> = [
+        10, 20, 30,
+        50, 60, 70,
+        90, 100, 110,
+        130, 140, 150
+    ]
 
     private var displayProgress: Double { dragRatio ?? progress }
     private var hasBeatGrid: Bool { bpm > 0 && duration > 0 && meterBeatsPerBar > 0 }
@@ -114,18 +125,18 @@ struct ProgressRuler: View {
 
     private func updateWaveCache() {
         guard !waveform.isEmpty else { waveMinCache = 0; waveRangeCache = 1; return }
-        let lo = CGFloat(waveform.min()!)
         let hi = CGFloat(waveform.max()!)
-        waveMinCache   = lo
-        waveRangeCache = max(hi - lo, 0.02)
+        waveMinCache   = 0
+        waveRangeCache = max(hi, 0.001)
     }
 
     // Drawing layers (bottom → top):
     //   1. Waveform silhouette — filled grey shape, flat bottom, amplitude top
-    //   2. Beat micro-ticks (5px) — "millimeter marks", visible when beats fit
-    //   3. Bar ticks (subDivH) — bar downbeats, same visual style as structural
-    //   4. 4-bar / structural ticks (quarterH) — tallest, navigation anchors
-    //   5. Hot cue markers
+    //   2. Interstitial bottom ticks (3px) — one extra mark between ruler divisions
+    //   3. Beat micro-ticks (2px) — bottom ruler texture, visible when beats fit
+    //   4. Bar / sub-quarter ticks (subDivH) — secondary structure
+    //   5. Track-quarter structural ticks (quarterH) — tallest navigation anchors
+    //   6. Hot cue markers
     //
     // Before analysis: 5 fixed structural marks at 0/25/50/75/100%.
     // After analysis:  full musical grid — start/end adapt to first/last bar.
@@ -137,9 +148,10 @@ struct ProgressRuler: View {
         let baseline   = h
 
         // Height levels (tallest → shortest):
-        let quarterH: CGFloat = (h * 0.73).rounded()             // ~16px — 4-bar anchors
-        let subDivH:  CGFloat = (quarterH * 0.75).rounded() - 1  // ~11px — bar (2px shorter than before)
-        let tinyH:    CGFloat = 5                                 // 5px  — beat micro-ticks
+        let quarterH: CGFloat = (h * 0.73).rounded()             // ~16px — track quarters
+        let subDivH:  CGFloat = (quarterH * 0.75).rounded() - 1  // ~11px — sub-quarters / bars
+        let tinyH:    CGFloat = 2                                // 2px  — bottom micro-ticks
+        let interstitialH: CGFloat = 3                           // 3px  — marks between divisions
         let maxWaveH: CGFloat = subDivH - 1                      // ~10px — silhouette ceiling
 
         let waveMin   = waveMinCache
@@ -165,7 +177,7 @@ struct ProgressRuler: View {
                     let lerp = pos - CGFloat(ci0)
                     let v    = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
                     let norm = max(0, (v - waveMin) / waveRange)
-                    let amp  = pow(norm, 2.8) * maxWaveH
+                    let amp  = max(1.0, pow(norm, 1.5) * maxWaveH)
                     p.addLine(to: CGPoint(x: CGFloat(px), y: baseline - amp))
                 }
                 p.addLine(to: CGPoint(x: CGFloat(endPx), y: baseline))
@@ -180,13 +192,14 @@ struct ProgressRuler: View {
         }
 
         // ── 2. Compute tick positions ────────────────────────────────────────────
-        var musicalTicks: [Int: MusicalTickType] = [:]
+        var musicalTicks: [MusicalGridTick] = []
         let structuralTicks: Set<Int>
+        let subStructuralTicks: Set<Int>
 
         if hasBeatGrid && isAnalyzed {
-            // Full musical grid — no separate structural set.
-            // Start and end are determined by first/last bar positions.
-            structuralTicks = []
+            // Keep track quarters stable even when the musical beat grid is available.
+            structuralTicks = Self.defaultStructuralTicks
+            subStructuralTicks = Self.defaultSubStructuralTicks
 
             let beatDur      = 60.0 / bpm
             let pxPerBeat    = size.width * CGFloat(beatDur / duration)
@@ -220,32 +233,76 @@ struct ProgressRuler: View {
 
                 let barI      = beatI / meterBeatsPerBar
                 let beatInBar = beatI % meterBeatsPerBar
-                let mapped    = Int((t / duration * Double(totalTicks - 1)).rounded())
-                guard mapped >= 0, mapped < totalTicks else { continue }
+                let ratio = t / duration
+                guard ratio >= 0, ratio <= 1 else { continue }
 
                 if beatInBar == 0 && barI % barStride == 0 {
-                    // 4-bar landmark or bar downbeat — highest type wins.
+                    // 4-bar landmark or bar downbeat — keep true time position.
                     let type: MusicalTickType = (barI % 4 == 0) ? .fourBar : .bar
-                    if let existing = musicalTicks[mapped] {
-                        if type.rawValue > existing.rawValue { musicalTicks[mapped] = type }
-                    } else {
-                        musicalTicks[mapped] = type
-                    }
+                    musicalTicks.append(MusicalGridTick(ratio: ratio, type: type))
                 } else if beatInBar != 0 && showBeats {
-                    if musicalTicks[mapped] == nil { musicalTicks[mapped] = .beat }
+                    musicalTicks.append(MusicalGridTick(ratio: ratio, type: .beat))
                 }
             }
 
         } else {
             // Pre-analysis: five fixed structural marks at exact quarter positions.
             structuralTicks = Self.defaultStructuralTicks
+            subStructuralTicks = Self.defaultSubStructuralTicks
         }
 
-        // ── 3. Render tick lines ─────────────────────────────────────────────────
+        // ── 3. Render interstitial bottom ticks — only when no beat grid ────────────
+        // When isAnalyzed, musical beat micro-ticks (section 4) provide the texture.
+        if !isAnalyzed {
+        for i in 0..<(totalTicks - 1) {
+            let posInGap = i % 10
+            guard posInGap == 3 || posInGap == 6 else { continue }
+            let frac = (CGFloat(i) + 0.5) / CGFloat(totalTicks - 1)
+            let x = (frac * size.width * 2).rounded() / 2
+            let played = x <= playheadX
+            let alpha: Double = played ? 0.24 : 0.11
+
+            var path = Path()
+            path.move(to: CGPoint(x: x, y: baseline))
+            path.addLine(to: CGPoint(x: x, y: baseline - interstitialH))
+            ctx.stroke(path, with: .color(.white.opacity(alpha)),
+                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+        }
+        } // end if !isAnalyzed
+
+        // ── 4. Render musical grid ticks at exact time positions ─────────────────
+        for tick in musicalTicks {
+            let x = (CGFloat(tick.ratio) * size.width * 2).rounded() / 2
+            let played = x <= playheadX
+            let animT: CGFloat = played || isDragging ? 1 : 0
+
+            let tickH: CGFloat
+            let alpha: Double
+            switch tick.type {
+            case .fourBar:
+                tickH = subDivH
+                alpha = 0.28 + 0.55 * Double(animT)
+            case .bar:
+                tickH = subDivH
+                alpha = 0.22 + 0.48 * Double(animT)
+            case .beat:
+                tickH = tinyH
+                alpha = 0.18 + 0.32 * Double(animT)
+            }
+
+            var path = Path()
+            path.move(to: CGPoint(x: x, y: baseline))
+            path.addLine(to: CGPoint(x: x, y: baseline - tickH))
+            ctx.stroke(path, with: .color(.white.opacity(alpha)),
+                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+        }
+
+        // ── 5. Render structural tick lines — only when beat grid is absent ───────
+        if !isAnalyzed {
         for i in 0..<totalTicks {
             let isMajor = structuralTicks.contains(i)
-            let musical = musicalTicks[i]
-            guard isMajor || musical != nil else { continue }
+            let isSubMajor = subStructuralTicks.contains(i)
+            guard isMajor || isSubMajor else { continue }
 
             let frac   = CGFloat(i) / CGFloat(totalTicks - 1)
             let x      = (frac * size.width * 2).rounded() / 2
@@ -267,25 +324,14 @@ struct ProgressRuler: View {
             let alpha: Double
 
             if isMajor {
-                // Pre-analysis structural mark.
+                // Track quarter mark — tallest and most stable visual anchor.
                 tickH = quarterH
-                alpha = 0.35 + 0.65 * Double(animT)
-            } else {
-                switch musical! {
-                case .fourBar:
-                    // 4-bar navigation anchor — tallest.
-                    tickH = quarterH
-                    alpha = 0.35 + 0.65 * Double(animT)
-                case .bar:
-                    // Bar downbeat — same visual style, 2px shorter.
-                    tickH = subDivH
-                    alpha = 0.35 + 0.65 * Double(animT)
-                case .beat:
-                    // Micro-tick — ruler "millimeter" mark, very subtle.
-                    tickH = tinyH
-                    alpha = 0.12 + 0.28 * Double(animT)
-                }
-            }
+                alpha = 0.32 + 0.48 * Double(animT)
+            } else if isSubMajor {
+                // Sub-quarter mark — lower secondary ruler division.
+                tickH = subDivH
+                alpha = 0.18 + 0.37 * Double(animT)
+            } else { continue }
 
             var path = Path()
             path.move(to:    CGPoint(x: x, y: baseline))
@@ -293,8 +339,9 @@ struct ProgressRuler: View {
             ctx.stroke(path, with: .color(.white.opacity(alpha)),
                        style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
         }
+        } // end if !isAnalyzed
 
-        // ── 4. Hot cue markers — topmost ─────────────────────────────────────────
+        // ── 6. Hot cue markers — topmost ─────────────────────────────────────────
         let cueColors: [Color] = [
             Color(red: 1.0, green: 0.35, blue: 0.35),
             Color(red: 0.35, green: 0.70, blue: 1.0),

@@ -11,6 +11,8 @@ import Foundation
 struct AnalysisCacheEntry: Codable {
     let bpm: Double
     let waveform: [Float]
+    let beatGridOffset: Double
+    let beatGridConfidence: Double
     let size: Int64
     let mtime: TimeInterval
     let analyzerVersion: Int
@@ -18,7 +20,7 @@ struct AnalysisCacheEntry: Codable {
 
 actor AnalysisCache {
     static let shared = AnalysisCache()
-    private static let version = 2  // v2: HPF bass reduction + gamma 1.1 in computeWaveformFromSamples
+    private static let version = 6  // v6: half-tempo threshold 0.60→0.82 (reduces double-BPM on slow electronic)
 
     private var map: [String: AnalysisCacheEntry] = [:]
     private let fileURL: URL
@@ -55,10 +57,13 @@ actor AnalysisCache {
         return entry
     }
 
-    func putBPMAndWaveform(url: URL, bpm: Double, waveform: [Float]) {
+    func putBPMAndWaveform(url: URL, bpm: Double, waveform: [Float],
+                           beatGridOffset: Double = 0, beatGridConfidence: Double = 0) {
         guard let f = fileKey(for: url) else { return }
         map[f.key] = AnalysisCacheEntry(
             bpm: bpm, waveform: waveform,
+            beatGridOffset: beatGridOffset,
+            beatGridConfidence: beatGridConfidence,
             size: f.size, mtime: f.mtime,
             analyzerVersion: Self.version
         )
@@ -72,6 +77,8 @@ actor AnalysisCache {
         map[f.key] = AnalysisCacheEntry(
             bpm: bpm,
             waveform: existing?.waveform ?? [],
+            beatGridOffset: existing?.beatGridOffset ?? 0,
+            beatGridConfidence: existing?.beatGridConfidence ?? 0,
             size: f.size, mtime: f.mtime,
             analyzerVersion: Self.version
         )
@@ -85,6 +92,8 @@ actor AnalysisCache {
         map[f.key] = AnalysisCacheEntry(
             bpm: existing?.bpm ?? 0,
             waveform: waveform,
+            beatGridOffset: existing?.beatGridOffset ?? 0,
+            beatGridConfidence: existing?.beatGridConfidence ?? 0,
             size: f.size, mtime: f.mtime,
             analyzerVersion: Self.version
         )

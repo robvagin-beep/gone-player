@@ -321,6 +321,7 @@ struct VerticalPitchTrack: View {
     var onCommit: ((Double) -> Void)? = nil
 
     @State private var lastCommit: Date = .distantPast
+    @State private var dragStartValue: Double? = nil
     private let commitThrottle: TimeInterval = 0.016
 
     var body: some View {
@@ -374,12 +375,19 @@ struct VerticalPitchTrack: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
-                        // Absolute: click/drag anywhere maps directly to a fader value
-                        let trackTop    = trackInset + knobHalfHeight
-                        let trackBottom = h - trackInset - knobHalfHeight
-                        let clampedY    = max(trackTop, min(trackBottom, g.location.y))
-                        let t = (clampedY - trackTop) / max(1, travelHeight) // 0=top(+range) 1=bottom(-range)
-                        var v = range - t * range * 2
+                        // Phase 1 — snap knob to click position on drag start.
+                        // Phase 2 — track g.translation.height (not g.location.y) so the
+                        // gesture continues responding when the cursor exits the window bounds.
+                        if dragStartValue == nil {
+                            let trackTop    = trackInset + knobHalfHeight
+                            let trackBottom = h - trackInset - knobHalfHeight
+                            let clampedY    = max(trackTop, min(trackBottom, g.startLocation.y))
+                            let t           = (clampedY - trackTop) / max(1, travelHeight)
+                            let snapped     = range - t * range * 2
+                            dragStartValue  = max(-range, min(range, (snapped * 100).rounded() / 100))
+                        }
+                        let pxPerUnit = Double(travelHeight) / (range * 2)
+                        var v = dragStartValue! - Double(g.translation.height) / pxPerUnit
                         if abs(v) < 0.3 { v = 0 }
                         value = max(-range, min(range, (v * 100).rounded() / 100))
                         let now = Date()
@@ -390,6 +398,7 @@ struct VerticalPitchTrack: View {
                         DragValuePanel.shared.show(text: label)
                     }
                     .onEnded { _ in
+                        dragStartValue = nil
                         DragValuePanel.shared.hide()
                         onCommit?(value)
                     }

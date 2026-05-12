@@ -335,27 +335,16 @@ private struct HoldSeekBtn: View {
     @State private var holding = false
     @State private var dragAccum: CGFloat = 0
 
-    // Fine zone (0–24px): 0.5% → 1.0% (within button area, one decimal place)
-    // Coarse zone (24px+): 1% + (beyond / 30px) per 1% increments
+    // Base: 1% at press (center). Quadratic curve so drag feels progressive:
+    // 60px → ~1.25%, 120px → ~1.9%, 180px → ~2.4%, 240px → ~3.2%, 360px → ~6%.
     private func percentFromAccum(_ accum: CGFloat) -> Double {
-        if accum <= 24 {
-            return 0.5 + Double(accum / 24.0) * 0.5   // 0.5% → 1.0%
-        } else {
-            return 1.0 + Double((accum - 24) / 30.0)   // 1% + 1%/30px
-        }
+        let t = Double(max(0, accum)) / 360.0
+        return 1.0 + t * t * 5.0
     }
 
     private func panelLabel(percent: Double) -> String {
-        if percent < 1.0 {
-            return forward
-                ? String(format: "+%.1f%%", percent)
-                : String(format: "-%.1f%%", percent)
-        } else {
-            let pct = Int(percent.rounded())
-            return forward
-                ? String(format: "+%d%%", pct)
-                : String(format: "-%d%%", pct)
-        }
+        let pct = max(1, Int(percent.rounded()))
+        return forward ? String(format: "+%d%%", pct) : String(format: "-%d%%", pct)
     }
 
     var body: some View {
@@ -374,7 +363,7 @@ private struct HoldSeekBtn: View {
                         holding = true
                         dragAccum = 0
                         engine.startHoldSeek(forward: forward)
-                        DragValuePanel.shared.show(text: panelLabel(percent: 0.5))
+                        DragValuePanel.shared.show(text: panelLabel(percent: 1.0))
                     },
                     onHoldEnded: {
                         holding = false
@@ -484,10 +473,14 @@ final class PressDetectNSView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        // Always cancel the pending hold timer so it can't fire after the cursor leaves.
+        // Cancel pending hold timer — it must not fire after cursor leaves.
         holdTimer?.invalidate()
         holdTimer = nil
         guard isHolding else { return }
+        // If the mouse button is still held, the user is drag-holding beyond the button bounds.
+        // Keep isHolding true so mouseDragged (which AppKit delivers globally while button is down)
+        // continues adjusting seek speed. mouseUp will end the hold correctly.
+        if NSEvent.pressedMouseButtons & 1 != 0 { return }
         isHolding = false
         onHoldEnded?()
         // hadHolding stays true → blocks the spurious onTap in the subsequent mouseUp.

@@ -605,9 +605,19 @@ final class LibraryScanner {
         var beatGridOffset: Double = 0
         var gridConfidence: Double = 0
         if bpm > 0 {
-            let onset = computeOnset(from: allSamples, hopSize: 128)
+            // Use the same 30-sec slice as BPM detection, not allSamples.
+            // Over a full 4-min track even 0.1 BPM error accumulates ~10 frames of phase drift —
+            // the ±2-frame Hann window stops catching kicks, all 256 candidates score equally,
+            // z → 0, confidence → 0, no beat grid shown.
+            // Within 30 sec the drift stays < 2 frames, z-score stays high.
+            let onset = computeOnset(from: bpmSlice, hopSize: 128)
             let fps   = 11025.0 / 128.0
-            (beatGridOffset, gridConfidence) = estimateBeatGridOffset(bpm: bpm, onset: onset, fps: fps)
+            var rawOffset: Double = 0
+            (rawOffset, gridConfidence) = estimateBeatGridOffset(bpm: bpm, onset: onset, fps: fps)
+            // rawOffset is relative to the start of bpmSlice; make it absolute (track-start-relative)
+            // by adding startSec and wrapping to [0, beatDur).
+            let beatDur = 60.0 / bpm
+            beatGridOffset = (startSec + rawOffset).truncatingRemainder(dividingBy: beatDur)
         }
 
         onProgress?(1.0)
@@ -661,7 +671,7 @@ final class LibraryScanner {
         guard bestScore > 0 else { return 0 }
 
         let halfLag = bestLag / 2
-        if halfLag >= minLag, halfLag <= maxLag, corrValues[halfLag] >= bestScore * 0.60 {
+        if halfLag >= minLag, halfLag <= maxLag, corrValues[halfLag] >= bestScore * 0.82 {
             bestLag = halfLag
         }
 
@@ -825,10 +835,10 @@ final class LibraryScanner {
 
         guard bestScore > 0 else { return 0 }
 
-        // Half-tempo correction: if double-tempo (bestLag/2) scores ≥60% of best, prefer it.
+        // Half-tempo correction: if double-tempo (bestLag/2) scores ≥82% of best, prefer it.
         // Fixes 62→124 BPM misdetection common in house/electronic tracks.
         let halfLag = bestLag / 2
-        if halfLag >= minLag, halfLag <= maxLag, corrValues[halfLag] >= bestScore * 0.60 {
+        if halfLag >= minLag, halfLag <= maxLag, corrValues[halfLag] >= bestScore * 0.82 {
             bestLag = halfLag
         }
 
@@ -870,6 +880,16 @@ final class LibraryScanner {
     private func estimateBeatGridOffset(bpm: Double, onset: [Float], fps: Double) -> (offset: Double, confidence: Double) {
         guard bpm > 0, onset.count > 0 else { return (0, 0) }
 
+        // Normalize onset to peak=1 so confidence is amplitude-independent.
+        // Without this, quiet tracks produce all-near-zero scores for every candidate
+        // → σ ≈ 0 → z ≈ 0 → confidence ≈ 0, even with a perfectly clear kick pattern.
+        var onsetPeak: Float = 0
+        vDSP_maxv(onset, 1, &onsetPeak, vDSP_Length(onset.count))
+        guard onsetPeak > 0 else { return (0, 0) }
+        var invPeak = 1.0 / onsetPeak
+        var normOnset = [Float](repeating: 0, count: onset.count)
+        vDSP_vsmul(onset, 1, &invPeak, &normOnset, 1, vDSP_Length(onset.count))
+
         let beatFrames = fps * 60.0 / bpm           // frames per beat (fractional)
         let candidateN = 256
         var scores     = [Double](repeating: 0, count: candidateN)
@@ -881,18 +901,18 @@ final class LibraryScanner {
             let offsetFrac = Double(ci) / Double(candidateN)
             var score: Double = 0
             var beatPos = offsetFrac * beatFrames
-            while beatPos < Double(onset.count) {
+            while beatPos < Double(normOnset.count) {
                 let center = Int(beatPos.rounded())
                 for delta in -2...2 {
                     let idx = center + delta
-                    guard idx >= 0, idx < onset.count else { continue }
+                    guard idx >= 0, idx < normOnset.count else { continue }
                     let weight: Double
                     switch abs(delta) {
                     case 0: weight = 1.00
                     case 1: weight = 0.50
                     default: weight = 0.25
                     }
-                    score += Double(onset[idx]) * weight
+                    score += Double(normOnset[idx]) * weight
                 }
                 beatPos += beatFrames
             }

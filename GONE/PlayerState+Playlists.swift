@@ -40,42 +40,7 @@ extension PlayerState {
         }
     }
 
-    // MARK: — Tab management
-
-    func createPlaylistTab() {
-        let tab = PlaylistTabModel(id: UUID(), title: "Tab \(playlistTabs.count + 1)", trackIds: [])
-        playlistTabs.append(tab)
-        activePlaylistTabId = tab.id
-        if secondaryPlaylistTabId == nil {
-            secondaryPlaylistTabId = playlistTabs.first(where: { $0.id != tab.id })?.id
-        }
-        playlistOpen = true
-    }
-
-    func selectPlaylistTab(id: UUID) {
-        guard playlistTabs.contains(where: { $0.id == id }) else { return }
-        activePlaylistTabId = id
-        ensureCurrentTrackVisible(in: id)
-    }
-
-    func closePlaylistTab(id: UUID) {
-        guard playlistTabs.count > 1,
-              let index = playlistTabs.firstIndex(where: { $0.id == id }) else { return }
-        playlistTabs.remove(at: index)
-        if activePlaylistTabId == id {
-            let fallback = min(index, playlistTabs.count - 1)
-            activePlaylistTabId = playlistTabs[fallback].id
-            ensureCurrentTrackVisible(in: activePlaylistTabId)
-        }
-        if secondaryPlaylistTabId == id {
-            secondaryPlaylistTabId = playlistTabs.first(where: { $0.id != activePlaylistTabId })?.id
-        }
-    }
-
-    func selectSecondaryPlaylistTab(id: UUID) {
-        guard playlistTabs.contains(where: { $0.id == id }), id != activePlaylistTabId else { return }
-        secondaryPlaylistTabId = id
-    }
+    // MARK: — Playlist ordering
 
     func reorderTrack(_ trackId: UUID, before targetTrackId: UUID, inTabId tabId: UUID) {
         guard trackId != targetTrackId,
@@ -109,16 +74,6 @@ extension PlayerState {
         }
         playlistTabs[tabIndex].trackIds.removeAll { $0 == trackId }
         playlistTabs[tabIndex].trackIds.append(trackId)
-    }
-
-    func reorderPlaylistTab(from tabId: UUID, before targetTabId: UUID) {
-        guard tabId != targetTabId,
-              let sourceIndex = playlistTabs.firstIndex(where: { $0.id == tabId }),
-              let targetIndex = playlistTabs.firstIndex(where: { $0.id == targetTabId })
-        else { return }
-        let tab = playlistTabs.remove(at: sourceIndex)
-        let insertAt = sourceIndex < targetIndex ? max(0, targetIndex - 1) : targetIndex
-        playlistTabs.insert(tab, at: insertAt)
     }
 
     func toggleSplitPlaylistView() {
@@ -288,11 +243,10 @@ extension PlayerState {
         panel.allowsMultipleSelection = true
         isPresentingImportPanel = true
 
-        // Raise the open panel above the player (screenSaverWindow = 1000) so it is
+        // Raise the open panel above the player so it is
         // always fully visible. beginSheetModal attaches to the player window and ends
         // up behind it on same-level z-order; plain begin() + elevated level is reliable.
-        let ssl = Int(CGWindowLevelForKey(.screenSaverWindow))
-        panel.level = NSWindow.Level(rawValue: ssl + 2)
+        panel.level = GWindowLevel.importPanel
 
         let destinationTabId = tabId ?? activePlaylistTabId
 

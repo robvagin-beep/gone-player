@@ -41,8 +41,8 @@ final class BandHitTestView: NSView {
 
 // ── CrossfaderGapWindow — bounding-box window that spans both player centres ──
 // Much smaller than the full screen; only covers the area between the windows.
-// Player windows at (screenSaverWindow) level render on top → line ends hidden.
-// Level = screenSaverWindow-1 so it still floats above other apps.
+// Player windows render on top → line ends hidden.
+// Level = player-1 so it still floats above other apps.
 final class CrossfaderGapWindow: NSPanel {
     private weak var manager: SplitModeManager?
     private weak var windowA: NSWindow?
@@ -70,11 +70,10 @@ final class CrossfaderGapWindow: NSPanel {
         backgroundColor    = .clear
         hasShadow          = false
         ignoresMouseEvents = false
-        // Player windows sit at overlayWindow (102); crossfader must be strictly below
+        // Player windows sit at GWindowLevel.player; crossfader must be strictly below
         // both so they render on top and hide the line endpoints where the bar enters
         // each window. Interactive only in the gap where no player window covers it.
-        let overlayLevel   = Int(CGWindowLevelForKey(.overlayWindow))
-        level              = NSWindow.Level(rawValue: overlayLevel - 1)
+        level              = GWindowLevel.crossfader
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                               .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         hidesOnDeactivate  = false

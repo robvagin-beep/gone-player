@@ -47,6 +47,14 @@ final class ArtworkCache: @unchecked Sendable {
         }
     }
 
+    func remove(for id: UUID) {
+        cache.removeObject(forKey: id.uuidString as NSString)
+        let url = dir.appendingPathComponent(id.uuidString + ".jpg")
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     private func writeToDisk(_ image: NSImage, to url: URL) {
         guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
         let w = cg.width, h = cg.height
