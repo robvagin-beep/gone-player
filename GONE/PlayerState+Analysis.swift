@@ -42,8 +42,17 @@ extension PlayerState {
                 guard let self else { return }
                 self.analysisFeed.progress.removeValue(forKey: trackId)
                 guard let i = self.tracks.firstIndex(where: { $0.id == trackId }) else { return }
-                if bpm > 0 { self.tracks[i].bpm = bpm; self.tracks[i].bpmAnalysisState = .analyzed }
-                else       { self.tracks[i].bpmAnalysisState = .failed }
+                if bpm > 0 {
+                    self.tracks[i].bpm = bpm
+                    self.tracks[i].bpmAnalysisState = .analyzed
+                    // BPM changed → existing offset is invalid against new beat duration.
+                    // Zero confidence so WaveformView falls back to safe (uniform) grid
+                    // until a combined analysis pass recomputes the offset.
+                    self.tracks[i].beatGridOffset = 0
+                    self.tracks[i].beatGridConfidence = 0
+                } else {
+                    self.tracks[i].bpmAnalysisState = .failed
+                }
             }
         }
     }

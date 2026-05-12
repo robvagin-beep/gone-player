@@ -396,7 +396,7 @@ final class PlayerState: ObservableObject, @unchecked Sendable {
         if ud.object(forKey: "bpmFloor")            != nil { bpmAnalysisFloor    = ud.double(forKey: "bpmFloor") }
         if ud.object(forKey: "bpmCeiling")          != nil { bpmAnalysisCeiling  = ud.double(forKey: "bpmCeiling") }
         if !bpmAnalysisFloor.isFinite || bpmAnalysisFloor < 30 || bpmAnalysisFloor > 300 { bpmAnalysisFloor = 60 }
-        if !bpmAnalysisCeiling.isFinite || bpmAnalysisCeiling < 60 || bpmAnalysisCeiling > 400 { bpmAnalysisCeiling = 180 }
+        if !bpmAnalysisCeiling.isFinite || bpmAnalysisCeiling < 60 || bpmAnalysisCeiling > 400 { bpmAnalysisCeiling = 200 }
         if bpmAnalysisCeiling <= bpmAnalysisFloor { bpmAnalysisCeiling = bpmAnalysisFloor + 30 }
         if ud.object(forKey: "autoPlay")            != nil { autoPlayOnImport    = ud.bool(forKey: "autoPlay") }
         if ud.object(forKey: "autoOpenPlaylist")    != nil { autoOpenPlaylistOnImport = ud.bool(forKey: "autoOpenPlaylist") }
@@ -425,7 +425,6 @@ final class PlayerState: ObservableObject, @unchecked Sendable {
         ud.set(pitchRange,              forKey: "pitchRange")
         ud.set(masterTempo,             forKey: "masterTempo")
         ud.set(repeatMode.rawValue,     forKey: "repeatMode")
-        ud.set(windowScale,             forKey: "windowScale")
         ud.set(gradientMapHue,          forKey: "gradientMapHue")
         ud.set(gradientMapSaturation,   forKey: "gradientMapSat")
         ud.set(autoBPMOnImport,         forKey: "autoBPMOnImport")
