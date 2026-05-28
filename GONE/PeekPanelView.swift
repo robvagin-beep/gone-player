@@ -159,39 +159,47 @@ struct PeekPanelView: View {
 
     @ViewBuilder
     private var panelBackground: some View {
-        if state.snapState == .docked {
-            RoundedRectangle(cornerRadius: 16)
-                .fill(G.bgWindow)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        let isDocked = state.snapState == .docked
+        let cornerR: CGFloat = isDocked ? 16 : G.rWindowInner
+        RoundedRectangle(cornerRadius: cornerR)
+            .fill(G.bgWindow)
+            .overlay { peekPanelTint(cornerRadius: cornerR) }
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerR)
+                    .stroke(Color.white.opacity(isDocked ? 0.12 : 0.04), lineWidth: 1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerR)
+                    .stroke(Color.black.opacity(0.6), lineWidth: 1)
+                    .blur(radius: 0.2)
+                    .opacity(isDocked ? 0 : 1)
+            )
+            .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private func peekPanelTint(cornerRadius: CGFloat) -> some View {
+        if state.gradientMapSaturation > 0.5 {
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .fill(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color(hue: state.gradientMapHue / 360, saturation: state.gradientMapSaturation / 100, brightness: 0.22).opacity(0.44), location: 0.0),
+                            .init(color: Color(hue: state.gradientMapHue / 360, saturation: state.gradientMapSaturation / 100, brightness: 0.12).opacity(0.28), location: 0.58),
+                            .init(color: Color(hue: state.gradientMapHue / 360, saturation: state.gradientMapSaturation / 100, brightness: 0.08).opacity(0.18), location: 1.0),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
                 )
-                .padding(.vertical, peekingVerticalInset)
-        } else {
-            RoundedRectangle(cornerRadius: G.rWindowInner)
-                .fill(G.bgWindow)
-                .overlay(
-                    RoundedRectangle(cornerRadius: G.rWindowInner)
-                        .stroke(Color.white.opacity(0.04), lineWidth: 1)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: G.rWindowInner)
-                        .stroke(Color.black.opacity(0.6), lineWidth: 1)
-                        .blur(radius: 0.2)
-                )
-                .padding(.vertical, 6)
+                .allowsHitTesting(false)
         }
     }
 
     @ViewBuilder
     private var panelMask: some View {
-        if state.snapState == .docked {
-            RoundedRectangle(cornerRadius: 16)
-                .padding(.vertical, peekingVerticalInset)
-        } else {
-            RoundedRectangle(cornerRadius: G.rWindowInner)
-                .padding(.vertical, 6)
-        }
+        RoundedRectangle(cornerRadius: state.snapState == .docked ? 16 : G.rWindowInner)
+            .padding(.vertical, 6)
     }
 
     // Artwork — if present show it; otherwise pixel-grid spectrum
@@ -288,7 +296,7 @@ struct PeekPanelView: View {
                         .font(G.mono(7, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.65))
                         .multilineTextAlignment(.center)
-                        .tracking(0.35)
+                        .kerning(0.35)
                 }
             }
             .padding(8)
@@ -474,6 +482,7 @@ private struct MarqueeText: View {
     var colorOpacity: Double = 1.0
     @State private var measured: CGFloat = 0
     @State private var offset: CGFloat = 0
+    @State private var scrollTask: Task<Void, Never>?
 
     private let containerW: CGFloat = 68
     private let speed: CGFloat = 28
@@ -489,7 +498,7 @@ private struct MarqueeText: View {
                 GeometryReader { geo in
                     Color.clear
                         .onAppear { measured = geo.size.width }
-                        .task(id: text) { measured = geo.size.width }
+                        .onChange(of: text) { _ in measured = geo.size.width }
                 }
             )
             .frame(width: containerW, alignment: .leading)
@@ -507,39 +516,42 @@ private struct MarqueeText: View {
                 )
                 .allowsHitTesting(false)
             )
-            .task(id: measured) {
-                offset = 0
-                // Guard against the initial measured=0 pass — would animate invisible air
-                guard !text.isEmpty, measured > 4 else { return }
-                let overflow = measured - containerW + 4
-                if overflow > 0 {
-                    // Long text: scroll overflow → instant reset → tiny pause → repeat
-                    let duration = Double(overflow) / Double(speed)
-                    while !Task.isCancelled {
-                        withAnimation(.linear(duration: duration)) { offset = -overflow }
-                        try? await Task.sleep(for: .seconds(duration))
-                        guard !Task.isCancelled else { break }
-                        withAnimation(.none) { offset = 0 }
-                        try? await Task.sleep(for: .milliseconds(50))
-                    }
-                } else {
-                    // Short text fits in container: show briefly, scroll off edge (measured + small
-                    // invisible gap), pause while blank, reset, repeat.
-                    let exitDist    = measured + 12   // 12px past left edge — reset is invisible
-                    let exitDuration = Double(exitDist) / Double(speed)
-                    while !Task.isCancelled {
-                        try? await Task.sleep(for: .milliseconds(800))    // 0.8s readable window
-                        guard !Task.isCancelled else { break }
-                        withAnimation(.linear(duration: exitDuration)) { offset = -exitDist }
-                        try? await Task.sleep(for: .seconds(exitDuration))
-                        guard !Task.isCancelled else { break }
-                        try? await Task.sleep(for: .milliseconds(300))    // 0.3s blank gap
-                        guard !Task.isCancelled else { break }
-                        withAnimation(.none) { offset = 0 }
-                    }
+            .onAppear { startScroll() }
+            .onChange(of: measured) { _ in startScroll() }
+            .onDisappear { scrollTask?.cancel() }
+            .allowsHitTesting(false)
+    }
+
+    private func startScroll() {
+        scrollTask?.cancel()
+        scrollTask = Task { @MainActor in
+            offset = 0
+            guard !text.isEmpty, measured > 4 else { return }
+            let overflow = measured - containerW + 4
+            if overflow > 0 {
+                let duration = Double(overflow) / Double(speed)
+                while !Task.isCancelled {
+                    withAnimation(.linear(duration: duration)) { offset = -overflow }
+                    try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                    guard !Task.isCancelled else { break }
+                    withAnimation(.none) { offset = 0 }
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+            } else {
+                let exitDist     = measured + 12
+                let exitDuration = Double(exitDist) / Double(speed)
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    guard !Task.isCancelled else { break }
+                    withAnimation(.linear(duration: exitDuration)) { offset = -exitDist }
+                    try? await Task.sleep(nanoseconds: UInt64(exitDuration * 1_000_000_000))
+                    guard !Task.isCancelled else { break }
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    guard !Task.isCancelled else { break }
+                    withAnimation(.none) { offset = 0 }
                 }
             }
-            .allowsHitTesting(false)
+        }
     }
 }
 

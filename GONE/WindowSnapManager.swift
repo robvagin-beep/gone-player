@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import SwiftUI
 
 @MainActor
 final class WindowSnapManager {
@@ -136,7 +137,7 @@ final class WindowSnapManager {
         savedFrame  = nil
         snapWindow  = nil
         Task { @MainActor [weak self, weak window] in
-            try? await Task.sleep(for: .milliseconds(50))
+            try? await Task.sleep(nanoseconds: 50_000_000)
             guard let self, let window else { return }
             // Set snapState = .off here, after restoreFromSnap() has settled, so that
             // windowMoveAnchorUpdate cannot fire while the window is still at the docked
@@ -290,9 +291,6 @@ final class WindowSnapManager {
         guard let screen = screen(for: window) else { return }
         removeGlobalClickMonitor()
 
-        savedFrame = window.frame
-        savedOrigin = window.frame.origin
-
         let snapX = screen.frame.maxX - tabVisible
 
         // Slide starts first, panel collapse follows ~80ms later so the horizontal
@@ -304,6 +302,11 @@ final class WindowSnapManager {
         let capturedToken = dockToken
         DispatchQueue.main.async { [weak self, weak window] in
             guard let self, let window, let screen = self.screen(for: window) else { return }
+            // Capture savedFrame here (after isSnapping=true is about to be set) so that
+            // any pending updateWindowSize that ran during the prior 1-tick gap is included.
+            // This keeps savedFrame consistent with savedDockedY and prevents Y drift.
+            self.savedFrame  = window.frame
+            self.savedOrigin = window.frame.origin
             let y = self.savedDockedY ?? self.clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
             self.savedDockedY = y
             self.playerState?.isSnapping = true
@@ -324,7 +327,7 @@ final class WindowSnapManager {
                                              .fullScreenDisallowsTiling, .transient, .ignoresCycle]
             }
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(80))
+                try? await Task.sleep(nanoseconds: 80_000_000)
                 self?.playerState?.prepareForSnap()
             }
         }
@@ -392,16 +395,16 @@ final class WindowSnapManager {
     }
 
     // Used by proximity polling — no panel collapse, just position change.
+    // Only slides horizontally; Y stays at current window position (respects user drag).
     private func slideTo(window: NSWindow, x: CGFloat) {
-        guard let screen = screen(for: window) else { return }
-        let y = savedDockedY ?? window.frame.origin.y
-        let target = NSPoint(x: x, y: clampY(y, height: window.frame.height, screen: screen))
-        slideOffScreen(window: window, to: target, duration: peekAnimDuration)
+        slideOffScreen(window: window, to: NSPoint(x: x, y: window.frame.origin.y), duration: peekAnimDuration)
     }
 
     private func peek(window: NSWindow) {
         guard let screen = screen(for: window) else { return }
-        snapState = .peeking  // set before animation so poll can't re-trigger
+        withAnimation(.easeInOut(duration: peekAnimDuration)) {
+            snapState = .peeking  // set before animation so poll can't re-trigger
+        }
         // Restore full width instantly before sliding — window is at screen edge so the
         // resize is off-screen and invisible. Avoids per-frame resize during slide animation
         // which causes macOS shadow/border compositor artifacts.
@@ -425,7 +428,9 @@ final class WindowSnapManager {
         // so 0.12s looks crisper than 0.18s (macOS deprioritises going-off-screen windows).
         slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: 0.12 * animMul) { [weak self, weak window] in
             guard let self, let window, self.dockToken == capturedToken else { return }
-            self.snapState = .docked
+            withAnimation(.easeInOut(duration: 0.08 * self.animMul)) {
+                self.snapState = .docked
+            }
             self.savedWindowWidth = window.frame.width
             let f = window.frame
             window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
@@ -440,6 +445,10 @@ final class WindowSnapManager {
     func expand(window: NSWindow) {
         unlockFrame()  // allow window to move freely
 
+        // Always return to the exact pre-dock frame. savedFrame is captured atomically
+        // with savedDockedY (inside the dockToEdge async block), so they are consistent.
+        // Using savedDockedY for Y caused upward drift: if updateWindowSize ran in the
+        // 1-tick gap before isSnapping=true, savedDockedY got a higher Y than savedFrame.
         let targetFrame: NSRect
         if let saved = savedFrame {
             targetFrame = saved
@@ -466,7 +475,7 @@ final class WindowSnapManager {
         // Delay panel restore so the window travels away from the edge before content expands.
         // isSnapping blocks updateWindowSize, so the frame is controlled by slideFrameTo only.
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(50))
+            try? await Task.sleep(nanoseconds: 50_000_000)
             self?.playerState?.restoreFromSnap()
         }
 

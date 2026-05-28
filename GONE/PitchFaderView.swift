@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PitchFaderView: View {
     @EnvironmentObject var state: PlayerState
+    @ObservedObject private var split = SplitModeManager.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,23 +31,35 @@ struct PitchFaderView: View {
                     .frame(width: 1)
 
                 PitchRailSectionButton(
-                    title: "R",
-                    symbolName: state.pitchBypassed ? "circle.fill" : "circle",
-                    fontSize: 6.5,
-                    activeBackgroundOpacity: 0.22,
-                    contentOffset: -0.5,
-                    active: state.pitchBypassed,
+                    title: "",
+                    symbolName: split.isTransitioning
+                        ? "circle.dotted"
+                        : (split.isActive ? "square.slash" : "square.on.square"),
+                    fontSize: split.isTransitioning ? 7 : 8,
+                    activeBackgroundOpacity: 0.18,
+                    spinning: split.isTransitioning,
+                    active: split.isActive && !split.isTransitioning,
                     action: {
-                        guard !state.tracks.isEmpty else { return }
-                        state.pitchBypassed.toggle()
-                        if state.pitchBypassed {
-                            state.audioEngine.setPitch(0, masterTempo: state.masterTempo)
-                        } else {
-                            state.audioEngine.setPitch(state.pitch, masterTempo: state.masterTempo)
+                        guard !split.isTransitioning else { return }
+                        Task { @MainActor in
+                            if split.isActive {
+                                split.deactivate()
+                            } else {
+                                let win = AppDelegate.shared?.resolvedMainWindow()
+                                    ?? WindowSnapManager.shared.currentWindow
+                                guard let win else { return }
+                                split.activate(primaryWindow: win, primaryState: state)
+                            }
                         }
                     }
                 )
-                .goneTooltip("Bypass pitch shift — plays at original tempo")
+                .goneTooltip(
+                    split.isTransitioning ? "Clone Mode — loading…"
+                    : split.isActive      ? "Exit Clone Mode"
+                    :                       "Clone Mode — open second player"
+                )
+                .opacity(split.isTransitioning ? 0.45 : 1.0)
+                .animation(.easeInOut(duration: 0.15), value: split.isTransitioning)
             }
             .frame(height: 20)
             .overlay(alignment: .bottom) {
@@ -151,6 +164,7 @@ private struct PitchRailSectionButton: View {
     var activeBackgroundOpacity: Double = 0.12
     var contentOffset: CGFloat = 0
     var xOffset: CGFloat = 0
+    var spinning: Bool = false
     let active: Bool
     let action: () -> Void
 
@@ -160,12 +174,16 @@ private struct PitchRailSectionButton: View {
         Button(action: action) {
             Group {
                 if let sym = symbolName {
-                    Image(systemName: sym)
-                        .font(.system(size: fontSize, weight: .medium))
+                    if spinning {
+                        SpinnerSymbol(name: sym, size: fontSize)
+                    } else {
+                        Image(systemName: sym)
+                            .font(.system(size: fontSize, weight: .medium))
+                    }
                 } else {
                     Text(title)
                         .font(G.sans(fontSize, weight: .light))
-                        .tracking(0.3)
+                        .kerning(0.3)
                 }
             }
             .offset(x: xOffset, y: contentOffset)
@@ -179,6 +197,23 @@ private struct PitchRailSectionButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
+    }
+}
+
+private struct SpinnerSymbol: View {
+    let name: String
+    let size: CGFloat
+    @State private var angle: Double = 0
+
+    var body: some View {
+        Image(systemName: name)
+            .font(.system(size: size, weight: .medium))
+            .rotationEffect(.degrees(angle))
+            .onAppear {
+                withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                    angle = 360
+                }
+            }
     }
 }
 
@@ -363,8 +398,8 @@ struct VerticalPitchTrack: View {
                     .overlay(
                         Rectangle()
                             .fill(abs(value) < 0.001
-                                ? Color.white.opacity(0.22)
-                                : Color.white.opacity(0.80))
+                                ? Color.white.opacity(0.35)
+                                : Color.white)
                             .frame(height: 1)
                     )
                     .frame(width: 26, height: 14)

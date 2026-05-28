@@ -53,6 +53,7 @@ final class AudioEngineNext {
     }
     private var isScheduled = false
     private var configChangeObserver: NSObjectProtocol?
+    var suppressConfigChange = false   // set by SplitModeManager during deactivate to prevent engine.start() racing with stop()
 
     private var pitchPercent: Double = 0       // Main-thread only
     private var masterTempo = true              // Main-thread only
@@ -212,12 +213,16 @@ final class AudioEngineNext {
         endAudioActivity()
     }
 
-    func stop(resetProgress: Bool = true) {
+    func stop(resetProgress: Bool = true, drain: Bool = false) {
         isUserPlaying = false
         // Ensure any stuck hold-seek rate override is cleared before stopping.
         stopHoldSeek()
         bumpToken()             // cancels pending scheduling (checked in schedulePCMChunk)
-        playerNode.stop()               // flush queued buffers; completions use .async so no deadlock risk
+        // drain=true: called from deactivation on audioOpQueue. Blocks until any in-flight
+        // schedulePCMChunk (which calls playerNode.scheduleBuffer) exits bufferQueue.
+        // Without this, concurrent scheduleBuffer + stop() inside AVAudioPlayerNode deadlock.
+        if drain { bufferQueue.sync {} }
+        playerNode.stop()               // safe: bufferQueue is drained when drain=true
         // Timer must be invalidated on the thread it was installed on (RunLoop.main).
         // Use async (not sync) — stop() may be called from Task.detached (Split Mode deactivate)
         // and sync to main while main awaits the task is a deadlock.
@@ -335,17 +340,27 @@ final class AudioEngineNext {
     private var holdSeekForward: Bool = true
 
     // Called when the user holds a transport arrow.
-    // Starts at 0.5% offset — subtle immediate scrub feel. Drag for more.
+    // masterTempo ON  → time-stretch scrub via pitchNode.rate; pitch stays constant.
+    // masterTempo OFF → varispeed scrub via speedNode.rate; pitch follows speed (vinyl feel).
     func startHoldSeek(forward: Bool) {
         stopHoldSeek()
         holdSeekStep = 0
         holdSeekForward = forward
         holdSeekBaseRate = currentRate
-        pitchNode.bypass = true
-        pitchNode.rate = 1.0
-        pitchNode.pitch = 0
-        let baseOffset = forward ? 1.005 : 0.995   // +0.5% / -0.5%
-        speedNode.rate = Float(max(0.05, holdSeekBaseRate * baseOffset))
+        let baseOffset = forward ? 1.025 : 0.975   // +2.5% / -2.5%
+
+        if masterTempo {
+            speedNode.rate = 1.0
+            pitchNode.bypass = false
+            pitchNode.rate = Float(max(0.05, holdSeekBaseRate * baseOffset))
+            pitchNode.pitch = 0
+        } else {
+            pitchNode.bypass = true
+            pitchNode.rate = 1.0
+            pitchNode.pitch = 0
+            speedNode.rate = Float(max(0.05, holdSeekBaseRate * baseOffset))
+        }
+
         let t = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -365,7 +380,11 @@ final class AudioEngineNext {
         let rate = holdSeekForward
             ? holdSeekBaseRate * factor
             : holdSeekBaseRate / max(0.01, factor)
-        speedNode.rate = Float(max(0.02, rate))
+        if masterTempo {
+            pitchNode.rate = Float(max(0.02, rate))
+        } else {
+            speedNode.rate = Float(max(0.02, rate))
+        }
     }
 
     // Safe to call at any time — also called from stop() which may run off main.
@@ -540,6 +559,7 @@ final class AudioEngineNext {
     }
 
     private func handleEngineConfigurationChange() {
+        guard !suppressConfigChange else { return }
         let wasPlaying = isUserPlaying   // use intent flag — playerNode.isPlaying may already be false
         let frame = currentPlaybackFrame()
 
@@ -613,6 +633,13 @@ final class AudioEngineNext {
         guard let activity = audioActivity else { return }
         ProcessInfo.processInfo.endActivity(activity)
         audioActivity = nil
+    }
+
+    // Full engine shutdown — called during Clone Mode deactivation after playerNode.stop().
+    // Stops the AVAudioEngine I/O unit entirely, releasing the shared hardware device slot
+    // and preventing the secondary render thread from interfering with the primary engine.
+    func stopEngine() {
+        engine.stop()
     }
 
     // MARK: - Scheduling and progress

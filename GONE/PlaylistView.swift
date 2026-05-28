@@ -66,17 +66,6 @@ struct PlaylistView: View {
                 .padding(.trailing, 10)
                 .padding(.bottom, 10)
         }
-        .overlay {
-            GeometryReader { geo in
-                ClonePlayerButton()
-                    .position(
-                        x: state.splitPlaylistView
-                            ? geo.size.width / 2 - 19   // 10px from divider + half button (9)
-                            : geo.size.width / 2,
-                        y: geo.size.height - 19         // 10px from bottom + half button (9)
-                    )
-            }
-        }
         .background(G.bgPanelPL)
         .overlay {
             Group {
@@ -193,7 +182,7 @@ struct SplitDropChooserOverlay: View {
                     Text(name.uppercased())
                         .font(G.mono(9, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(isHov ? 0.65 : 0.28))
-                        .tracking(0.5)
+                        .kerning(0.5)
                         .lineLimit(1)
                         .padding(.horizontal, 16)
                 }
@@ -219,7 +208,7 @@ struct PlaylistDropTargetOverlay: View {
                     Text("DROP TRACKS HERE")
                         .font(G.mono(11, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.65))
-                        .tracking(0.35)
+                        .kerning(0.35)
                         .lineLimit(1)
                 }
                 .padding(.horizontal, 18)
@@ -521,7 +510,7 @@ struct PlaylistTracksPane: View {
                                 Text(isDropHintHovered ? "DROP TRACKS HERE, OR CLICK" : "DROP TRACKS HERE")
                                     .font(G.mono(isCompact ? 7 : 8))
                                     .foregroundStyle(Color.white.opacity(isDropHintHovered ? 0.30 : 0.17))
-                                    .tracking(0.5)
+                                    .kerning(0.5)
                                     .id(isDropHintHovered)
                             }
                             .padding(.horizontal, 24)
@@ -818,12 +807,12 @@ struct PlaylistHeaderRow: View {
                 Text("#")
                     .font(G.mono(11))
                     .foregroundStyle(active ? Color.white.opacity(0.78) : G.textMuted)
-                    .tracking(0.2)
+                    .kerning(0.2)
                 if showArrow {
                     Text(dir == .asc ? "▲" : "▼")
                         .font(.system(size: 5.5, weight: .semibold))
-                        .foregroundStyle(G.textMuted)
                         .baselineOffset(1)
+                        .foregroundStyle(G.textMuted)
                 }
             }
             .frame(width: 20, alignment: .center)
@@ -850,7 +839,7 @@ struct PlaylistHeaderRow: View {
             Text("CUE")
                 .font(G.mono(7, weight: .semibold))
                 .foregroundStyle(Color.white.opacity(textOpacity))
-                .tracking(0.5)
+                .kerning(0.5)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2.5)
                 .background(
@@ -884,7 +873,7 @@ struct PlaylistHeaderRow: View {
                 Text(label)
                     .font(G.mono(9))
                     .foregroundStyle(G.textMuted)
-                    .tracking(0.4)
+                    .kerning(0.4)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
                 if active {
@@ -1006,14 +995,11 @@ struct PlaylistRowView: View {
                     }
 
                     // BPM — .id forces view recreation when state changes (Track.== compares only id)
-                    BPMCell(track: track, isCurrent: isCurrent)
-                        .id(track.bpmAnalysisState)
-                        .padding(.horizontal, 4)
-
-                    TrackFlagDot(flag: track.flag) {
-                        state.cycleFlag(for: track.id)
+                    BPMCell(track: track, isCurrent: isCurrent) {
+                        state.reanalyzeBPMDeep(for: track.id)
                     }
-                    .padding(.trailing, 3)
+                    .id(track.bpmAnalysisState)
+                    .padding(.horizontal, 4)
 
                     // Duration
                     Text(fmtTime(track.duration))
@@ -1072,7 +1058,7 @@ struct PlaylistRowView: View {
             guard new == .analyzed else { return }
             showCompletion = true
             Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(450))
+                try? await Task.sleep(nanoseconds: 450_000_000)
                 withAnimation(.easeOut(duration: 0.35)) { showCompletion = false }
             }
         }
@@ -1319,7 +1305,7 @@ struct SplitToggleButton: View {
                     Text(state.splitPlaylistView ? "MERGE" : "SPLIT")
                         .font(G.mono(8))
                         .foregroundStyle(Color.white.opacity(0.40))
-                        .tracking(0.4)
+                        .kerning(0.4)
                         .transition(.opacity)
                 }
                 Image(systemName: "rectangle.split.2x1")
@@ -1348,6 +1334,7 @@ struct ClonePlayerButton: View {
 
     var body: some View {
         Button {
+            guard !split.isTransitioning else { return }
             Task { @MainActor in
                 if split.isActive {
                     split.deactivate()
@@ -1444,6 +1431,9 @@ struct MarqueeTextRow: View {
 struct BPMCell: View {
     let track: Track
     var isCurrent: Bool = false
+    var onDeepAnalyze: (() -> Void)? = nil
+
+    @State private var hovered = false
 
     var body: some View {
         Group {
@@ -1452,7 +1442,31 @@ struct BPMCell: View {
             } else {
                 switch track.bpmAnalysisState {
                 case .analyzed:
-                    cellText("\(Int(track.bpm.rounded()))", color: isCurrent ? Color.white : Color.white.opacity(0.85))
+                    Group {
+                        if hovered, let action = onDeepAnalyze {
+                            Button(action: action) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.counterclockwise")
+                                        .font(.system(size: 7, weight: .medium))
+                                    Text("\(Int(track.bpm.rounded()))")
+                                        .font(G.mono(10.5))
+                                        .monospacedDigit()
+                                }
+                                .foregroundStyle(Color.white.opacity(0.78))
+                                .padding(.horizontal, 3)
+                                .padding(.vertical, 1.5)
+                                .background(Color.white.opacity(0.10))
+                                .clipShape(RoundedRectangle(cornerRadius: G.rBadge))
+                            }
+                            .buttonStyle(.plain)
+                            .frame(width: 36, alignment: .trailing)
+                        } else {
+                            cellText("\(Int(track.bpm.rounded()))", color: isCurrent ? Color.white : Color.white.opacity(0.85))
+                        }
+                    }
+                    .onHover { hovered = $0 }
+                    .animation(.easeOut(duration: 0.10), value: hovered)
+                    .goneTooltip("Re-analyze BPM")
                 case .analyzing:
                     AnalyzingDots(phase: abs(track.id.hashValue) % 3)
                         .frame(width: 36, alignment: .center)
@@ -1507,6 +1521,7 @@ private struct TrackFlagDot: View {
 private struct AnalyzingDots: View {
     let phase: Int
     @State private var active: Int = 0
+    @State private var pulseTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 3) {
@@ -1517,13 +1532,16 @@ private struct AnalyzingDots: View {
                     .animation(.easeInOut(duration: 0.22), value: active)
             }
         }
-        .onAppear { active = phase }
-        .task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(380))
-                active = (active + 1) % 3
+        .onAppear {
+            active = phase
+            pulseTask = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 380_000_000)
+                    active = (active + 1) % 3
+                }
             }
         }
+        .onDisappear { pulseTask?.cancel() }
     }
 }
 

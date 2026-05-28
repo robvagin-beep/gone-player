@@ -51,6 +51,7 @@ struct TransportView: View {
                 HoldSeekBtn(icon: "backward.fill", forward: false, engine: state.audioEngine) {
                     state.selectPreviousTrack()
                 }
+                .goneTooltip("Previous track · Hold + drag to scrub backward")
                 // Primary play/pause
                 Button {
                     guard canPlayCurrentTrack else { return }
@@ -71,6 +72,7 @@ struct TransportView: View {
                 HoldSeekBtn(icon: "forward.fill", forward: true, engine: state.audioEngine) {
                     state.selectNextTrack()
                 }
+                .goneTooltip("Next track · Hold + drag to scrub forward")
                 RepeatBtn(mode: state.repeatMode) { state.cycleRepeatMode() }
             }
             .frame(maxWidth: .infinity, alignment: .center)
@@ -334,17 +336,24 @@ private struct HoldSeekBtn: View {
     @State private var hovered = false
     @State private var holding = false
     @State private var dragAccum: CGFloat = 0
+    @State private var fillRatio: CGFloat = 0
 
-    // Base: 1% at press (center). Quadratic curve so drag feels progressive:
-    // 60px → ~1.25%, 120px → ~1.9%, 180px → ~2.4%, 240px → ~3.2%, 360px → ~6%.
+    // Starts at 2.5% on press, reaches 30% at 200px drag.
+    // Power 0.75 curve: quick initial ramp, progressive resistance near max.
+    private static let maxAccum: CGFloat = 200
+    private static let minPct: Double = 2.5
+    private static let maxPct: Double = 30.0
+
     private func percentFromAccum(_ accum: CGFloat) -> Double {
-        let t = Double(max(0, accum)) / 360.0
-        return 1.0 + t * t * 5.0
+        let t = Double(max(0, accum)) / Double(Self.maxAccum)
+        return Self.minPct + (Self.maxPct - Self.minPct) * pow(t, 0.75)
     }
 
     private func panelLabel(percent: Double) -> String {
-        let pct = max(1, Int(percent.rounded()))
-        return forward ? String(format: "+%d%%", pct) : String(format: "-%d%%", pct)
+        let s = percent < 10
+            ? String(format: "%.1f%%", percent)
+            : String(format: "%d%%", Int(percent.rounded()))
+        return forward ? "+\(s)" : "-\(s)"
     }
 
     var body: some View {
@@ -353,8 +362,22 @@ private struct HoldSeekBtn: View {
             .foregroundStyle(holding ? .white : Color.white.opacity(0.50))
             .frame(width: 24, height: 24)
             .background(
-                RoundedRectangle(cornerRadius: G.rButton)
-                    .fill(holding ? Color.white.opacity(0.20) : (hovered ? Color.white.opacity(0.08) : .clear))
+                ZStack {
+                    RoundedRectangle(cornerRadius: G.rButton)
+                        .fill(holding
+                              ? Color.white.opacity(0.15)
+                              : (hovered ? Color.white.opacity(0.08) : .clear))
+                    if holding {
+                        GeometryReader { geo in
+                            Rectangle()
+                                .fill(Color.white.opacity(0.32))
+                                .frame(width: max(0, geo.size.width * fillRatio))
+                                .frame(maxWidth: .infinity, maxHeight: .infinity,
+                                       alignment: forward ? .leading : .trailing)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: G.rButton))
+                    }
+                }
             )
             .overlay(
                 PressDetector(
@@ -362,12 +385,14 @@ private struct HoldSeekBtn: View {
                     onHoldBegan: {
                         holding = true
                         dragAccum = 0
+                        fillRatio = 0
                         engine.startHoldSeek(forward: forward)
-                        DragValuePanel.shared.show(text: panelLabel(percent: 1.0))
+                        DragValuePanel.shared.show(text: panelLabel(percent: Self.minPct))
                     },
                     onHoldEnded: {
                         holding = false
                         dragAccum = 0
+                        fillRatio = 0
                         engine.stopHoldSeek()
                         DragValuePanel.shared.hide()
                     },
@@ -375,9 +400,9 @@ private struct HoldSeekBtn: View {
                         engine.stopHoldSeek()
                     },
                     onHoldDrag: { delta in
-                        // Forward: drag right = faster. Backward: drag left = slower (reverse).
                         let sign: CGFloat = forward ? 1 : -1
-                        dragAccum = max(0, min(360, dragAccum + delta * sign))
+                        dragAccum = max(0, min(Self.maxAccum, dragAccum + delta * sign))
+                        fillRatio = dragAccum / Self.maxAccum
                         let pct = percentFromAccum(dragAccum)
                         engine.setHoldSeekPercent(pct)
                         DragValuePanel.shared.show(text: panelLabel(percent: pct))

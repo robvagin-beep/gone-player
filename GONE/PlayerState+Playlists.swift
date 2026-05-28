@@ -245,7 +245,7 @@ extension PlayerState {
         await MainActor.run { isImporting = false }
 
         // Brief yield so SwiftUI can render the completed list before heavy analysis starts.
-        try? await Task.sleep(for: .milliseconds(150))
+        try? await Task.sleep(nanoseconds: 150_000_000)
 
         await MainActor.run {
             // analyzeBPMWithWaveform already decodes the waveform in the same AVAssetReader

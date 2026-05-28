@@ -2,9 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>com.apple.security.app-sandbox</key>
-    <true/>
-    <key>com.apple.security.files.user-selected.read-only</key>
-    <true/>
+    <!-- INTENTIONALLY EMPTY (2026-05-28).
+         App sandbox was removed so GONE can freely scan arbitrary music
+         folders. The sandbox + user-selected.read-only pair restricted the
+         folder-scanning workflow (had to re-grant access per folder).
+         Trade-off: this build cannot be sandboxed / Mac App Store distributed.
+         Fine for ad-hoc DMG distribution.
+
+         TO RESTORE SANDBOX — paste these two keys back inside <dict>:
+
+         <key>com.apple.security.app-sandbox</key>
+         <true/>
+         <key>com.apple.security.files.user-selected.read-only</key>
+         <true/>
+    -->
 </dict>
 </plist>

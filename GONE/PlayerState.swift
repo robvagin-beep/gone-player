@@ -90,6 +90,7 @@ final class PlayerState: ObservableObject {
 
     // MARK: — Settings
 
+    @Published var restoreLastSession: Bool = false
     @Published var autoPlayOnImport: Bool = false
     @Published var autoOpenPlaylistOnImport: Bool = true
     @Published var confirmBeforeDelete: Bool = false
@@ -412,6 +413,7 @@ final class PlayerState: ObservableObject {
         if !bpmAnalysisFloor.isFinite || bpmAnalysisFloor < 30 || bpmAnalysisFloor > 300 { bpmAnalysisFloor = 60 }
         if !bpmAnalysisCeiling.isFinite || bpmAnalysisCeiling < 60 || bpmAnalysisCeiling > 400 { bpmAnalysisCeiling = 200 }
         if bpmAnalysisCeiling <= bpmAnalysisFloor { bpmAnalysisCeiling = bpmAnalysisFloor + 30 }
+        if ud.object(forKey: "restoreLastSession")  != nil { restoreLastSession  = ud.bool(forKey: "restoreLastSession") }
         if ud.object(forKey: "autoPlay")            != nil { autoPlayOnImport    = ud.bool(forKey: "autoPlay") }
         if ud.object(forKey: "autoOpenPlaylist")    != nil { autoOpenPlaylistOnImport = ud.bool(forKey: "autoOpenPlaylist") }
         if ud.object(forKey: "confirmDelete")       != nil { confirmBeforeDelete  = ud.bool(forKey: "confirmDelete") }
@@ -444,6 +446,7 @@ final class PlayerState: ObservableObject {
         ud.set(autoBPMOnImport,         forKey: "autoBPMOnImport")
         ud.set(bpmAnalysisFloor,        forKey: "bpmFloor")
         ud.set(bpmAnalysisCeiling,      forKey: "bpmCeiling")
+        ud.set(restoreLastSession,      forKey: "restoreLastSession")
         ud.set(autoPlayOnImport,        forKey: "autoPlay")
         ud.set(autoOpenPlaylistOnImport, forKey: "autoOpenPlaylist")
         ud.set(confirmBeforeDelete,     forKey: "confirmDelete")

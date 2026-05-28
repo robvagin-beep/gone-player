@@ -965,12 +965,9 @@ final class LibraryScanner {
     }
 
     // Deep BPM re-analysis — called on explicit user request (refresh button).
-    // Differences from standard analyzeBPM:
-    //  • Wide search range 30–280 so half/double-tempo candidates are scored directly
-    //  • Longer analysis window (up to 60 s) for better signal quality
-    //  • Explicit half-tempo correction: if bestLag/2 scores ≥60% of best, prefer it
-    //    (fixes 62→124 BPM misdetection common in electronic/house tracks)
-    //  • Final result resolved back into the user's configured floor/ceiling
+    // Scans all 4 quarters of the track independently and votes on the result.
+    // Tracks with long silent/ambient intros are handled by analyzing later quarters too.
+    // No rush — this runs at user's explicit request with full CPU budget.
     func analyzeBPMDeep(url: URL, floor: Double = 60, ceiling: Double = 200, onProgress: ((Double) -> Void)? = nil) async -> Double {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
@@ -989,25 +986,63 @@ final class LibraryScanner {
         ]
 
         let totalSec = CMTimeGetSeconds((try? await asset.load(.duration)) ?? .zero)
-        // Longer window than standard analysis for better autocorrelation quality
-        let windowSec = totalSec > 0 ? min(60.0, totalSec) : 60.0
-        let startSec  = totalSec > 70 ? 10.0 : 0.0
+        guard totalSec > 8 else { return 0 }
 
-        var samples = await readBPMSamples(asset: asset, assetTrack: assetTrack,
-                                           settings: settings,
-                                           startSec: startSec,
-                                           windowSec: windowSec,
-                                           onProgress: onProgress.map { cb in { p in cb(p * 0.90) } })
-        if samples.count <= 11025 {
-            samples = await readBPMSamples(asset: asset, assetTrack: assetTrack,
-                                           settings: settings,
-                                           startSec: 0,
-                                           windowSec: windowSec,
-                                           onProgress: onProgress.map { cb in { p in cb(p * 0.90) } })
+        // Each quarter: up to 25 s of audio — enough for solid autocorrelation,
+        // short enough that even 4 passes decode quickly on old hardware.
+        let windowSec = min(25.0, max(8.0, totalSec / 4.0))
+
+        var candidates: [Double] = []
+        for q in 0..<4 {
+            guard !Task.isCancelled else { return 0 }
+            let startSec   = totalSec * Double(q) / 4.0
+            let actualWin  = min(windowSec, totalSec - startSec)
+            guard actualWin >= 6.0 else { continue }
+
+            let base = Double(q) / 4.0
+            let step = 1.0 / 4.0
+            let samples = await readBPMSamples(
+                asset: asset, assetTrack: assetTrack,
+                settings: settings,
+                startSec: startSec,
+                windowSec: actualWin,
+                onProgress: onProgress.map { cb in { p in cb(base + p * step * 0.9) } }
+            )
+            guard samples.count > 11025 else {
+                onProgress?(base + step)
+                continue
+            }
+
+            let bpm = bpmFromSamples(samples, floor: floor, ceiling: ceiling)
+            if bpm > 0 { candidates.append(bpm) }
+            onProgress?(base + step)
         }
-        guard samples.count > 11025 else { return 0 }
 
-        let hopSize   = 128
+        guard !candidates.isEmpty else { return 0 }
+        onProgress?(1.0)
+
+        // Vote: round each candidate to nearest 2 BPM bucket and find the plurality.
+        // If no bucket wins, fall back to median of all candidates.
+        let buckets = candidates.map { (($0 / 2.0).rounded() * 2.0) }
+        var freq: [Double: Int] = [:]
+        for b in buckets { freq[b, default: 0] += 1 }
+        let winner = freq.max(by: { $0.value < $1.value })!
+        let pool: [Double]
+        if winner.value > 1 {
+            pool = zip(candidates, buckets).filter { $0.1 == winner.key }.map { $0.0 }
+        } else {
+            pool = candidates
+        }
+        let sorted = pool.sorted()
+        return (sorted[sorted.count / 2] * 10).rounded() / 10
+    }
+
+    // Autocorrelation BPM from a pre-decoded mono sample buffer at 11025 Hz.
+    // hopSize=64 → fps≈172 → ~3 BPM/frame at 120-140 range (was 8 BPM/frame at hopSize=128).
+    // Parabolic interpolation refines to sub-frame precision (~1 BPM accuracy).
+    // Half-tempo correction compares raw correlations (not harmonic-weighted scores).
+    private func bpmFromSamples(_ samples: [Float], floor: Double, ceiling: Double) -> Double {
+        let hopSize    = 64
         let frameCount = samples.count / hopSize
         var energy = [Float](repeating: 0, count: frameCount)
         for i in 0..<frameCount {
@@ -1021,22 +1056,18 @@ final class LibraryScanner {
             energy[i] = rms / Float(end - start)
         }
         var onset = [Float](repeating: 0, count: frameCount)
-        for i in 1..<frameCount { onset[i] = max(0, energy[i] - energy[i-1]) }
+        for i in 1..<frameCount { onset[i] = max(0, energy[i] - energy[i - 1]) }
 
-        // Wide search: 30–280 BPM — both 62 BPM and 124 BPM are scored directly
         let fps     = 11025.0 / Double(hopSize)
         let wideMin = max(1, Int(fps * 60.0 / 280.0))
         let wideMax = Int(fps * 60.0 / 30.0)
         guard wideMin < wideMax, wideMax < frameCount else { return 0 }
 
-        // Use more of the signal than standard analysis
         let analysisLen = min(frameCount - wideMax, 8192)
-        let referenceOnset = onset[0..<analysisLen]
-
-        var corrValues = [Float](repeating: 0, count: wideMax + 1)
+        var corrValues  = [Float](repeating: 0, count: wideMax + 1)
         for lag in wideMin...wideMax {
             var corr: Float = 0
-            referenceOnset.withUnsafeBufferPointer { refBuf in
+            onset[0..<analysisLen].withUnsafeBufferPointer { refBuf in
                 onset.withUnsafeBufferPointer { onsBuf in
                     guard let rb = refBuf.baseAddress, let ob = onsBuf.baseAddress else { return }
                     vDSP_dotpr(rb, 1, ob.advanced(by: lag), 1, &corr, vDSP_Length(analysisLen))
@@ -1045,8 +1076,7 @@ final class LibraryScanner {
             corrValues[lag] = corr / Float(analysisLen)
         }
 
-        // Harmonic scoring (same as standard)
-        var bestLag  = wideMin
+        var bestLag   = wideMin
         var bestScore: Float = 0
         for lag in wideMin...wideMax {
             let c  = corrValues[lag]
@@ -1057,20 +1087,34 @@ final class LibraryScanner {
         }
         guard bestScore > 0 else { return 0 }
 
-        // Half-tempo correction: if bestLag/2 (double tempo) scores ≥60% of best,
-        // the double-tempo is a strong candidate — prefer it to avoid half-tempo output.
-        let halfLag = bestLag / 2
-        if halfLag >= wideMin,
-           corrValues[halfLag] >= bestScore * 0.60 {
-            bestLag = halfLag
+        // Prefer higher tempo: compare raw correlations (not weighted bestScore — different scales).
+        // 30% threshold: for dance music the true beat period always has meaningful raw correlation.
+        let rawBest = corrValues[bestLag]
+        for divisor in [2, 3] {
+            let candidate = bestLag / divisor
+            guard candidate >= wideMin else { break }
+            if corrValues[candidate] >= rawBest * 0.30 { bestLag = candidate; break }
         }
 
-        var bpm = 60.0 * fps / Double(bestLag)
-        // Resolve into user's configured range
+        // Parabolic interpolation: fit parabola through neighbours to get sub-frame peak.
+        // δ = (y₀ − y₂) / (2·(y₀ − 2·y₁ + y₂)); valid only when curvature is negative (peak).
+        var refinedLag = Double(bestLag)
+        if bestLag > wideMin && bestLag < wideMax {
+            let y0 = Double(corrValues[bestLag - 1])
+            let y1 = Double(corrValues[bestLag])
+            let y2 = Double(corrValues[bestLag + 1])
+            let denom = 2.0 * (y0 - 2.0 * y1 + y2)
+            if denom < -1e-10 {
+                let delta = (y0 - y2) / denom
+                if delta > -0.5 && delta < 0.5 { refinedLag = Double(bestLag) + delta }
+            }
+        }
+
+        var bpm = 60.0 * fps / refinedLag
         let lo = max(floor, 1); let hi = max(ceiling, lo + 1)
-        while bpm > 0 && bpm < lo  { bpm *= 2 }
+        while bpm > 0 && bpm < lo { bpm *= 2 }
         while bpm > hi { bpm /= 2 }
-        onProgress?(1.0)
-        return (bpm * 10).rounded() / 10
+        return bpm > 0 ? bpm : 0
     }
+
 }

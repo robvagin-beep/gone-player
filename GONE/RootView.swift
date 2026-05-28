@@ -277,6 +277,13 @@ struct WindowBorderDragOverlay: View {
                     .frame(width: headerWidth, height: 40)
                     .position(x: headerWidth / 2, y: 20)
 
+                // Artwork column drag zone — covers the art swatch below the 40px header strip.
+                // Width (76pt) = shellInsetX(6) + headerPad(12) + artwork(48) + hStackSpacing(10).
+                // Stops just before the center column where the BPM badge button lives.
+                WindowDragHandle()
+                    .frame(width: 76, height: 66)
+                    .position(x: 38, y: 33)
+
                 // Left side strip — always present
                 WindowDragHandle()
                     .frame(width: 14, height: geo.size.height)

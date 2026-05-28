@@ -333,7 +333,7 @@ private struct SHead: View {
         Text(text)
             .font(G.mono(7, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.20))
-            .tracking(0.8)
+            .kerning(0.8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.top, 14)
@@ -453,7 +453,7 @@ private struct SettingsSlider: View {
                 Text(label)
                     .font(G.mono(7, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.30))
-                    .tracking(0.6)
+                    .kerning(0.6)
             }
             GeometryReader { geo in
                 let fraction = CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))
@@ -560,6 +560,11 @@ private struct PlaybackSettingsTab: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            SHead(text: "SESSION")
+            SRow(label: "Restore on launch", sub: "reload last session's tracks on startup") {
+                MiniToggle(isOn: $state.restoreLastSession)
+            }
+
             SHead(text: "ON IMPORT")
             SRow(label: "Auto-play") { MiniToggle(isOn: $state.autoPlayOnImport) }
             SDivider()
@@ -690,7 +695,7 @@ private struct DisplaySettingsTab: View {
                         Text("PROXIMITY")
                             .font(G.mono(7, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.28))
-                            .tracking(0.7)
+                            .kerning(0.7)
                         Spacer()
                         Text("\(Int(state.magnifyProximity)) px")
                             .font(G.mono(10, weight: .semibold))
@@ -791,7 +796,7 @@ private struct SnapSettingsTab: View {
                     Text("VISIBLE PX")
                         .font(G.mono(7, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.28))
-                        .tracking(0.7)
+                        .kerning(0.7)
                     Spacer()
                     Text("\(Int(state.snapTabWidth)) px")
                         .font(G.mono(10, weight: .semibold))
@@ -826,7 +831,7 @@ private struct InfoSettingsTab: View {
                     Text("LAST ERROR")
                         .font(G.mono(7, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.20))
-                        .tracking(0.8)
+                        .kerning(0.8)
                     Text(state.lastError)
                         .font(G.mono(9))
                         .foregroundStyle(Color.white.opacity(0.50))
@@ -868,7 +873,7 @@ private struct InfoSettingsTab: View {
                     .lineSpacing(3)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    SInfoRow("VERSION", "0.4 BETA")
+                    SInfoRow("VERSION", "0.8 BETA")
                     SInfoRow("BUILD",   "MAY 2026")
                     SInfoRow("BY",      "HEARTBEAT STUDIO")
                 }

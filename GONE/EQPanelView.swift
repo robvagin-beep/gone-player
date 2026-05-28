@@ -124,7 +124,7 @@ struct EQToggleButton: View {
         Button(action: action) {
             Text("EQ \(on ? "ON" : "OFF")")
                 .font(G.sans(9, weight: .semibold))
-                .tracking(0.5)
+                .kerning(0.5)
                 .foregroundStyle(on ? G.textOnLight : Color.white.opacity(0.6))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
@@ -174,7 +174,7 @@ struct EQPresetPicker: View {
                     .font(.system(size: 6, weight: .bold))
                 Text(preset)
                     .font(G.sans(9, weight: .semibold))
-                    .tracking(0.5)
+                    .kerning(0.5)
                     .lineLimit(1)
             }
             .foregroundStyle(isActive ? G.textOnLight : Color.white.opacity(0.72))
@@ -200,7 +200,7 @@ struct EQFaderColumn: View {
             Text(label)
                 .font(G.mono(8, weight: .medium))
                 .foregroundStyle(Color.white.opacity(0.50))
-                .tracking(0.2)
+                .kerning(0.2)
                 .padding(.bottom, 5)
         }
         .frame(width: 26)
@@ -378,7 +378,7 @@ private struct ReverbPresetLabel: View {
                         .frame(width: 7)
                     Text(preset.uppercased())
                         .font(G.mono(6.5, weight: .bold))
-                        .tracking(0.4)
+                        .kerning(0.4)
                         .foregroundStyle(Color.white.opacity(hovered ? 0.75 : 0.50))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity)
@@ -475,7 +475,7 @@ struct EQMiniKnob: View {
             Text(label)
                 .font(G.mono(7, weight: .medium))
                 .foregroundStyle(value < 0.015 ? G.textTertiary : G.textSecondary)
-                .tracking(0.3)
+                .kerning(0.3)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .frame(width: 36)
@@ -819,7 +819,7 @@ struct EQCurveView: View {
             let steps = 11
             for i in 1...steps {
                 guard !Task.isCancelled else { return }
-                try? await Task.sleep(for: .milliseconds(16))
+                try? await Task.sleep(nanoseconds: 16_000_000)
                 guard !Task.isCancelled else { return }
                 let t    = Double(i) / Double(steps)
                 let ease = 1.0 - pow(1.0 - t, 3.0)
@@ -889,7 +889,7 @@ private struct XYAxisSelector: View {
                     .opacity(0.38)
                 Text(axisLabel)
                     .font(G.mono(7.5, weight: .medium))
-                    .tracking(0.5)
+                    .kerning(0.5)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 5.5, weight: .semibold))
                     .opacity(0.38)
@@ -914,7 +914,7 @@ private struct XYCtrlButton: View {
         Button(action: action) {
             Text(label)
                 .font(G.mono(7.5, weight: .medium))
-                .tracking(0.4)
+                .kerning(0.4)
                 .foregroundStyle(active ? G.textOnLight : Color.white.opacity(0.50))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(

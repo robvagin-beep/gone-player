@@ -8,7 +8,6 @@ final class BandHitTestView: NSView {
     var segA: NSPoint = .zero
     var segB: NSPoint = .zero
     let hitRadius: CGFloat = 60
-    var onScroll: (CGFloat) -> Void = { _ in }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Require endpoints to be meaningfully apart (> 4pt) before accepting hits.
@@ -18,17 +17,6 @@ final class BandHitTestView: NSView {
         return distanceToSegment(point) <= hitRadius ? super.hitTest(point) : nil
     }
 
-    // Scroll events bubble up from SwiftUI canvas (which doesn't consume them)
-    // through the responder chain to this root content view — handle them here.
-    override func scrollWheel(with event: NSEvent) {
-        guard event.momentumPhase == .stationary else { return }
-        let dx = event.scrollingDeltaX
-        let dy = event.scrollingDeltaY
-        let delta = abs(dx) >= abs(dy) ? dx : -dy
-        // Mouse wheel gives ~1.0 per detent; boost so ~15 notches spans full range.
-        let adjusted = event.hasPreciseScrollingDeltas ? delta : delta * 10.0
-        onScroll(adjusted)
-    }
 
     private func distanceToSegment(_ p: NSPoint) -> CGFloat {
         let dx = segB.x - segA.x, dy = segB.y - segA.y
@@ -50,6 +38,7 @@ final class CrossfaderGapWindow: NSPanel {
     private var observers: [NSObjectProtocol] = []
     private var hc: NSHostingController<CrossfaderBridgeView>?
     private weak var hitView: BandHitTestView?
+    private var scrollMonitor: Any?
 
     // Extra space around the centre-to-centre segment.
     // Coincidentally matches BandHitTestView.hitRadius (60) but serves a different purpose:
@@ -82,10 +71,6 @@ final class CrossfaderGapWindow: NSPanel {
         // Scroll events that bubble up from the SwiftUI canvas are handled here.
         let bv = BandHitTestView(frame: contentRect(forFrameRect: frame))
         bv.autoresizingMask = [.width, .height]
-        bv.onScroll = { [weak manager] delta in
-            guard let m = manager else { return }
-            m.setCrossfade(m.crossfade + Double(delta) * 0.006)
-        }
         contentView = bv
         hitView = bv
 
@@ -99,6 +84,32 @@ final class CrossfaderGapWindow: NSPanel {
         hc = controller
 
         updateGeometry()
+
+        // Scroll zone: transparent capture layer larger than the visual plaque.
+        // Captures scroll events when cursor is in the gap between the two windows.
+        // Excludes player-window areas to avoid hijacking playlist scrolling.
+        // Uses momentumPhase == [] because regular mouse + trackpad active scroll both
+        // arrive with momentumPhase == [] (not .stationary). Only post-lift inertia
+        // has a non-empty momentumPhase — that gets filtered out.
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak manager] event in
+            guard let self, let manager,
+                  event.momentumPhase == []
+            else { return event }
+            let loc = NSEvent.mouseLocation
+            guard self.frame.contains(loc),
+                  !(self.windowA?.frame.contains(loc) ?? false),
+                  !(self.windowB?.frame.contains(loc) ?? false)
+            else { return event }
+            let dx  = event.scrollingDeltaX
+            let dy  = event.scrollingDeltaY
+            // Vertical scroll dominant → map up/down to left/right (swipe up = toward B)
+            let raw  = abs(dy) >= abs(dx) ? -dy : dx
+            let step = event.hasPreciseScrollingDeltas
+                ? Double(raw) * 0.020   // trackpad: fine-grained
+                : Double(raw) * 0.070   // mouse wheel: ~14 notches full range
+            manager.setCrossfade(manager.crossfade + step)
+            return nil
+        }
 
         let refresh = { [weak self] (_: Notification) in
             guard let self,
@@ -137,6 +148,7 @@ final class CrossfaderGapWindow: NSPanel {
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers = []
+        if let m = scrollMonitor { NSEvent.removeMonitor(m); scrollMonitor = nil }
     }
 
     override func close() {
@@ -144,6 +156,7 @@ final class CrossfaderGapWindow: NSPanel {
             observers.forEach { NotificationCenter.default.removeObserver($0) }
             observers = []
         }
+        if let m = scrollMonitor { NSEvent.removeMonitor(m); scrollMonitor = nil }
         super.close()
     }
 
@@ -240,25 +253,16 @@ struct CrossfaderBridgeView: View {
                 let barRect  = CGRect(x: -halfLen, y: -barHW, width: 2*halfLen, height: 2*barHW)
                 let bar = Path(roundedRect: barRect, cornerRadius: barHW).applying(barXform)
 
-                ctx.fill(bar, with: .color(Color(white: 0.12).opacity(0.55)))
-                ctx.stroke(bar, with: .color(Color(white: 0.50).opacity(0.40)),
+                ctx.fill(bar, with: .color(Color(white: 0.40).opacity(0.80)))
+                ctx.stroke(bar, with: .color(Color(white: 0.72).opacity(0.52)),
                            style: StrokeStyle(lineWidth: 1.0))
 
-                if let label = bpmDeltaLabel {
-                    let text = Text(label)
-                        .font(G.mono(11, weight: .semibold))
-                        .foregroundColor(G.textSecondary)
-                    ctx.draw(
-                        text,
-                        at: CGPoint(x: midX + nx * (barHW + 18), y: midY + ny * (barHW + 18))
-                    )
-                }
 
                 // ── 2. Centre spine line ──────────────────────────────────────
                 var spine = Path()
                 spine.move(to: eA)
                 spine.addLine(to: eB)
-                ctx.stroke(spine, with: .color(Color(white: 0.65).opacity(0.80)),
+                ctx.stroke(spine, with: .color(Color(white: 0.05).opacity(0.92)),
                            style: StrokeStyle(lineWidth: 1.5))
 
                 // ── 3. Handle (thumb) — tall rounded knob ─────────────────────
@@ -274,15 +278,15 @@ struct CrossfaderBridgeView: View {
                 let localRect = CGRect(x: -tHL, y: -tHW, width: 2*tHL, height: 2*tHW)
                 let thumb = Path(roundedRect: localRect, cornerRadius: cornerR).applying(xform)
 
-                ctx.fill(thumb,  with: .color(Color(white: isDragging ? 0.72 : 0.58).opacity(isDragging ? 0.98 : 0.92)))
-                ctx.stroke(thumb, with: .color(Color(white: 0.18).opacity(0.90)),
+                ctx.fill(thumb,  with: .color(Color(white: isDragging ? 0.18 : 0.08).opacity(0.96)))
+                ctx.stroke(thumb, with: .color(Color(white: isDragging ? 0.78 : 0.55).opacity(0.72)),
                            style: StrokeStyle(lineWidth: 1.0))
 
                 // Centre divider tick
                 var div = Path()
                 div.move(to:    CGPoint(x: 0, y: -tHW + 6))
                 div.addLine(to: CGPoint(x: 0, y:  tHW - 6))
-                ctx.stroke(div.applying(xform), with: .color(Color(white: 0.18).opacity(0.55)),
+                ctx.stroke(div.applying(xform), with: .color(Color(white: 0.45).opacity(0.55)),
                            style: StrokeStyle(lineWidth: 1.0))
 
                 // A / B labels

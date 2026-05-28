@@ -6,7 +6,6 @@ struct TrackHeaderView: View {
     @EnvironmentObject var state: PlayerState
     @EnvironmentObject var analysisFeed: AnalysisProgressFeed
 
-    @State private var isBPMHovered = false
     @State private var feedCurrentTime: Double = 0
     @State private var timeLabelCache: String = "00:00 / 00:00"
     @State private var trackIndexCache: Int = 0
@@ -27,7 +26,7 @@ struct TrackHeaderView: View {
                     .font(G.sans(13, weight: .semibold))
                     .foregroundStyle(G.textPrimary)
                     .lineLimit(1)
-                    .tracking(-0.12)
+                    .kerning(-0.12)
 
                 Text(subtitleText)
                     .font(G.sans(11))
@@ -42,23 +41,11 @@ struct TrackHeaderView: View {
                             BadgeView(t.displayBitrate, style: .filled)
                         }
                         if t.bpm > 0 {
-                            let isAnalyzing = t.bpmAnalysisState == .analyzing
-                            Button {
-                                guard !isAnalyzing else { return }
-                                state.reanalyzeBPMDeep(for: t.id)
-                            } label: {
-                                if isAnalyzing {
-                                    BPMAnalyzingBadge()
-                                } else {
-                                    BadgeView(isBPMHovered ? "↺ REFRESH" : "\(Int(t.bpm.rounded())) BPM", style: .filled)
-                                        .allowsHitTesting(false)
-                                }
+                            if t.bpmAnalysisState == .analyzing {
+                                BPMAnalyzingBadge()
+                            } else {
+                                TapBPMBadge(trackId: t.id, currentBPM: t.bpm)
                             }
-                            .buttonStyle(.plain)
-                            .disabled(isAnalyzing)
-                            .onHover { isBPMHovered = isAnalyzing ? false : $0 }
-                            .cursor(isAnalyzing ? .arrow : .pointingHand)
-                            .goneTooltip(isAnalyzing ? "Analyzing…" : "Re-analyze BPM")
                         }
                         if state.pitch != 0, t.bpm > 0 {
                             BadgeView("\(Int((t.bpm * (1 + state.pitch / 100)).rounded())) BPM",
@@ -137,7 +124,7 @@ struct TrackHeaderView: View {
     }
 
     private var subtitleText: String {
-        guard let t = state.current else { return "version: 0.7 beta" }
+        guard let t = state.current else { return "version: 0.8 beta" }
         let artist = t.artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let album  = t.album.trimmingCharacters(in: .whitespacesAndNewlines)
         switch (artist.isEmpty, album.isEmpty) {
@@ -206,16 +193,19 @@ struct ArtSwatchView: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-        .task(id: artworkTaskId) {
-            guard hasArtwork, let id = trackId else { image = nil; return }
-            loadGeneration += 1
-            let generation = loadGeneration
-            DispatchQueue.global(qos: .userInitiated).async {
-                let resolved = ArtworkCache.shared.image(for: id)
-                DispatchQueue.main.async {
-                    guard loadGeneration == generation else { return }
-                    image = resolved
-                }
+        .onAppear { loadArtwork() }
+        .onChange(of: artworkTaskId) { _ in loadArtwork() }
+    }
+
+    private func loadArtwork() {
+        guard hasArtwork, let id = trackId else { image = nil; return }
+        loadGeneration += 1
+        let generation = loadGeneration
+        DispatchQueue.global(qos: .userInitiated).async {
+            let resolved = ArtworkCache.shared.image(for: id)
+            DispatchQueue.main.async {
+                guard loadGeneration == generation else { return }
+                image = resolved
             }
         }
     }
@@ -263,6 +253,42 @@ struct BadgeView: View {
         case .highlight: return G.textOnLight
         case .outline:   return G.textPrimary
         }
+    }
+}
+
+// ── BPM badge — shows current BPM, hover reveals re-analyze trigger ───────────
+private struct TapBPMBadge: View {
+    let trackId: UUID
+    let currentBPM: Double
+    @EnvironmentObject var state: PlayerState
+
+    @State private var hovered = false
+
+    var body: some View {
+        Button {
+            state.reanalyzeBPMDeep(for: trackId)
+        } label: {
+            HStack(spacing: 3) {
+                if hovered {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 7, weight: .semibold))
+                        .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                }
+                Text("\(Int(currentBPM.rounded())) BPM")
+                    .font(G.mono(8, weight: .semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(hovered ? G.textPrimary : G.textSecondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(Color.white.opacity(hovered ? 0.14 : 0.08))
+            .clipShape(RoundedRectangle(cornerRadius: G.rBadge))
+            .animation(.easeOut(duration: 0.12), value: hovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .cursor(.pointingHand)
+        .goneTooltip("Re-analyze BPM")
     }
 }
 

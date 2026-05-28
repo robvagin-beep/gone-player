@@ -47,8 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupNowPlayingObservation()
             setupSettingsPersistence()
             if playerState?.magnifyEnabled == true { installMagnifyMonitor() }
-            Task { @MainActor [weak self] in
-                await self?.playerState?.restoreSession()
+            if playerState?.restoreLastSession == true {
+                Task { @MainActor [weak self] in
+                    await self?.playerState?.restoreSession()
+                }
             }
             // Two-stage snap restore: preference was loaded above; arm WindowSnapManager
             // on the next tick once the window is fully configured.

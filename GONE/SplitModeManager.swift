@@ -8,6 +8,7 @@ final class SplitModeManager: ObservableObject {
     static let shared = SplitModeManager()
 
     @Published var isActive = false
+    @Published var isTransitioning = false   // true while activate/deactivate in flight — blocks re-entry
     @Published var crossfade: Double = 0.5   // 0.0 = all A · 1.0 = all B
     @Published var geometryVersion: Int = 0  // incremented on window move/resize → triggers Canvas redraw
 
@@ -37,12 +38,11 @@ final class SplitModeManager: ObservableObject {
     // MARK: — Activate / Deactivate
 
     func activate(primaryWindow: NSWindow, primaryState: PlayerState) {
-        guard !isActive else { return }
+        guard !isActive, !isTransitioning else { return }
+        isTransitioning = true
         self.primaryState = primaryState
         self.primaryWindow = primaryWindow
 
-        // Snap and Clone Mode are incompatible — disable snap (expands window if docked).
-        // Remember the state so deactivate() can restore it.
         snapWasEnabled = primaryState.snapEnabled
         if snapWasEnabled {
             WindowSnapManager.shared.disable(window: primaryWindow)
@@ -60,10 +60,17 @@ final class SplitModeManager: ObservableObject {
 
         updateCrossfade()
 
-        // Order matters: gap window first (goes behind), then players on top
         gap.orderFront(nil)
         win.orderFront(nil)
         primaryWindow.orderFront(nil)
+
+        // Hold isTransitioning for 300ms after activation.
+        // The audioOpQueue enqueues setOutputDevice + audio state ops that must
+        // complete before any deactivate() is safe. 300ms > typical device switch time.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
+            guard let self, self.isActive else { return }
+            self.isTransitioning = false
+        }
     }
 
     private func positionWindows(primary: NSWindow, secondary: NSWindow) {
@@ -85,32 +92,41 @@ final class SplitModeManager: ObservableObject {
     }
 
     func deactivate() {
-        guard isActive else { return }
+        guard isActive, !isTransitioning else { return }
+        isTransitioning = true
         isActive = false
+
+        // Step 1 — tear down observers and crossfader UI immediately.
         removeLifecycleObservers()
         crossfade = 0.5
         primaryState?.audioEngine.crossfadeGain = 1.0
-        // Clear callbacks BEFORE any teardown — prevents audio thread retaining [weak state]
-        // while main thread zeros it during dealloc
+
+        // Step 2 — sever all engine→UI callbacks before any teardown so no
+        // audio-thread dispatch can write into a partially-deallocated state.
         AudioEngineNext.secondary.onProgress = nil
         AudioEngineNext.secondary.onFinished = nil
         AudioEngineNext.secondary.onSpectrum = nil
         AudioEngineNext.secondary.onError    = nil
-        // Mark the engine as stopped on main before SwiftUI window teardown.
-        // This prevents handleEngineConfigurationChange (fired by setOutputDevice on audioOpQueue)
-        // from restarting playback after windows are closed.
-        // Must NOT call pause()/playerNode.pause() here — it contests Core Audio's IO lock
-        // with the concurrent setOutputDevice on audioOpQueue, causing a deadlock/freeze.
+
+        // Step 3 — mark stopped on main. Sets isUserPlaying=false so
+        // handleEngineConfigurationChange won't restart playback. Must NOT call
+        // playerNode.pause() here — Core Audio IO lock + audioOpQueue = deadlock.
         AudioEngineNext.secondary.markStopped()
-        // Stop any momentary audio modifiers on secondary before releasing it
         secondaryState?.stopAllMomentaryAudioModifiers()
+
+        // Step 4 — close gap window (has its own observer + scroll monitor cleanup).
         gapWindow?.close()
         gapWindow = nil
-        secondWindow?.close()
-        secondWindow = nil
-        primaryWindow = nil
+
+        // Step 5 — capture strong refs so they survive the async close below,
+        // then nil out manager properties immediately (decouples the manager).
+        let pendingWindow = secondWindow
+        let pendingState  = secondaryState
+        secondWindow   = nil
+        primaryWindow  = nil
         secondaryState = nil
-        // Restore snap if it was active before Clone Mode disabled it
+
+        // Step 6 — restore snap synchronously while we still have a resolved window.
         if snapWasEnabled,
            let delegate = AppDelegate.shared,
            let win = delegate.resolvedMainWindow() {
@@ -119,11 +135,41 @@ final class SplitModeManager: ObservableObject {
         } else {
             snapWasEnabled = false
         }
-        // Full stop + buffer flush off main thread; serialized with any subsequent
-        // setOutputDevice() from the next activate() via audioOpQueue
-        audioOpQueue.async {
+
+        // Step 7 — CRITICAL ORDER: stop engine first, THEN close window.
+        // suppressConfigChange=true before enqueueing stop() so that setOutputDevice()
+        // from a prior activate() cannot fire handleEngineConfigurationChange() →
+        // ensureEngineRunning() concurrently with playerNode.stop() → EXC_BAD_ACCESS.
+        // suppressConfigChange is also set on .shared (primary) to prevent it from reacting
+        // to any AVAudioEngineConfigurationChange that the secondary teardown may emit on
+        // a shared output device — such a reaction calls engine.start() + bufferQueue.sync
+        // (disk I/O) on the main thread, freezing the UI and starving the primary render thread.
+        AudioEngineNext.shared.suppressConfigChange = true
+        AudioEngineNext.secondary.suppressConfigChange = true
+        audioOpQueue.async { [weak self] in
+            // No drain: bumpToken() already cancelled in-flight scheduling.
+            // engine.stop() (below) is a full HAL disconnect and safely races with any
+            // remaining scheduleBuffer calls on bufferQueue — no sync barrier needed.
             AudioEngineNext.secondary.stop(resetProgress: false)
+            // Full engine shutdown: releases the shared hardware I/O slot so the secondary
+            // render thread cannot starve the primary engine or trigger spurious config-changes.
+            AudioEngineNext.secondary.stopEngine()
             AudioEngineNext.secondary.crossfadeGain = 1.0
+            // Re-enable primary config-change handler now that secondary is fully off HAL.
+            DispatchQueue.main.async {
+                AudioEngineNext.shared.suppressConfigChange = false
+            }
+            // isTransitioning = false at T+1.8s — cancels all SwiftUI repeatForever/TimelineView
+            // animations in the secondary window BEFORE close() releases the view hierarchy.
+            // The 0.2s gap gives SwiftUI one render cycle to tear down animations cleanly,
+            // preventing the EXC_BAD_ACCESS in objc_msgSend on a freed NSHostingController.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak self] in
+                self?.isTransitioning = false
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                pendingWindow?.close()
+                _ = pendingState       // keep state alive until after window close
+            }
         }
     }
 
@@ -137,7 +183,7 @@ final class SplitModeManager: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    guard let self, self.isActive else { return }
+                    guard let self, self.isActive, !self.isTransitioning else { return }
                     self.deactivate()
                 }
             }
@@ -218,7 +264,13 @@ final class SplitModeManager: ObservableObject {
         eng.onFinished = { [weak state] in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    state?.selectNextTrack()
+                    // Guard: skip if deactivate() already ran and nilled out secondaryState.
+                    // This closes the race where a buffer completion dispatch was queued
+                    // before onFinished = nil in deactivate(), then runs after the state
+                    // is torn down — causing selectNextTrack → play → engine.start()
+                    // concurrent with audioOpQueue stop() → EXC_BAD_ACCESS.
+                    guard let s = state, s === SplitModeManager.shared.secondaryState else { return }
+                    s.selectNextTrack()
                 }
             }
         }
@@ -240,6 +292,10 @@ final class SplitModeManager: ObservableObject {
         }
 
         // Snapshot A's full audio state into B engine.
+        // Re-enable config-change handler before any audio ops so the secondary engine
+        // can recover from graph resets normally once it's fully running again.
+        AudioEngineNext.secondary.suppressConfigChange = false
+
         // Enqueued on audioOpQueue so any pending stop() from a prior deactivation drains first.
         let primaryDeviceID = primaryState.audioEngine.currentOutputDeviceID()
         let snapVol     = primaryState.volume
