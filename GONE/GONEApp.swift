@@ -40,40 +40,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.loadPersistedSettings()
             bindAudioEngine()
             applyPlaybackSettings()
-
-            // Create FloatingPlayerPanel with a fresh NSHostingController.
-            // Using NSHostingController (not contentView transfer) avoids SwiftUI
-            // rendering failures when moving a hosting view between windows.
-            let panel = FloatingPlayerPanel(
-                contentRect: NSRect(origin: .zero, size: NSSize(width: G.windowWidth + 8, height: 190))
-            )
-            let hc = NSHostingController(rootView: RootView().environmentObject(state))
-            panel.contentViewController = hc
-            playerPanel = panel
-            mainWindow  = panel
-            applyPresencePolicy(to: panel)
-            panel.setContentSize(NSSize(width: G.windowWidth + 8, height: 190))
-            panel.center()
-            windowAnchorMaxY = panel.frame.maxY
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(windowResizeCorrection(_:)),
-                name: NSWindow.didResizeNotification, object: panel
-            )
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(windowMoveAnchorUpdate(_:)),
-                name: NSWindow.didMoveNotification, object: panel
-            )
-            panel.alphaValue = 0
-            panel.makeKeyAndOrderFront(nil)
-            DispatchQueue.main.async {
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration       = 0.20
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    panel.animator().alphaValue = 1
-                }
-            }
-            hideBootstrapWindows(except: panel)
-
             setupRemoteCommands()
             setupNowPlayingObservation()
             setupSettingsPersistence()
@@ -83,10 +49,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await self?.playerState?.restoreSession()
                 }
             }
-            // Two-stage snap restore: preference loaded above; arm WindowSnapManager
-            // on next tick once the panel is fully on screen.
-            if state.snapEnabled, state.tracks.isEmpty == false {
-                DispatchQueue.main.async { [weak self] in self?.setSnapEnabled(true) }
+
+            // Defer panel creation to the next run loop tick.
+            // We are inside SwiftUI's onAppear callback — creating NSHostingController
+            // and calling makeKeyAndOrderFront here causes a re-entrant layout crash.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let state = self.playerState else { return }
+                self.createFloatingPanel(state: state)
+                // Two-stage snap restore: preference loaded above; arm WindowSnapManager
+                // on next tick once the panel is on screen.
+                if state.snapEnabled, state.tracks.isEmpty == false {
+                    DispatchQueue.main.async { self.setSnapEnabled(true) }
+                }
+            }
+        }
+    }
+
+    private func createFloatingPanel(state: PlayerState) {
+        let panel = FloatingPlayerPanel(
+            contentRect: NSRect(origin: .zero, size: NSSize(width: G.windowWidth + 8, height: 190))
+        )
+        let hc = NSHostingController(rootView: RootView().environmentObject(state))
+        panel.contentViewController = hc
+        playerPanel = panel
+        mainWindow  = panel
+        applyPresencePolicy(to: panel)
+        panel.setContentSize(NSSize(width: G.windowWidth + 8, height: 190))
+        panel.center()
+        windowAnchorMaxY = panel.frame.maxY
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowResizeCorrection(_:)),
+            name: NSWindow.didResizeNotification, object: panel
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowMoveAnchorUpdate(_:)),
+            name: NSWindow.didMoveNotification, object: panel
+        )
+        panel.alphaValue = 0
+        panel.makeKeyAndOrderFront(nil)
+        hideBootstrapWindows(except: panel)
+        DispatchQueue.main.async {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration       = 0.20
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
             }
         }
     }
