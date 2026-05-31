@@ -117,8 +117,9 @@ extension PlayerState {
         // Mark all as .analyzing upfront so progress bars appear immediately.
         // Mutate a local copy and assign once → single objectWillChange broadcast.
         let pendingIds = Set(pending.map(\.id))
+        bpmBatchTask?.cancel()              // supersede any in-flight batch pass
         for id in pendingIds {
-            analysisTasksByTrack[id]?.cancel()
+            analysisTasksByTrack[id]?.cancel()   // supersede deep per-track tasks for these ids
         }
         var updated = tracks
         for i in updated.indices where pendingIds.contains(updated[i].id) { updated[i].bpmAnalysisState = .analyzing }
@@ -201,9 +202,9 @@ extension PlayerState {
                 self.finishBPMAnalysisTask(ids: pendingIds, reschedule: true)
             }
         }
-        for id in pendingIds {
-            analysisTasksByTrack[id] = task
-        }
+        // One handle for the whole batch: cancelling a single track (cancelAnalysisTask) no longer
+        // tears down the entire batch pass — only an explicit bpmBatchTask.cancel() does.
+        bpmBatchTask = task
     }
 
     private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
@@ -265,8 +266,8 @@ extension PlayerState {
     private func finishBPMAnalysisTask(ids: Set<UUID>, reschedule: Bool) {
         isAnalyzingBPM = false
         bpmPriorityId = nil
+        bpmBatchTask = nil
         for id in ids {
-            analysisTasksByTrack.removeValue(forKey: id)
             analysisFeed.progress.removeValue(forKey: id)
         }
         guard reschedule else { return }
@@ -294,7 +295,7 @@ extension PlayerState {
         isComputingWaveforms = true
         waveformPriorityId = nil
 
-        Task.detached(priority: .userInitiated) { [self] in
+        waveformTask = Task.detached(priority: .userInitiated) { [self] in
             // Lane 1: first track (current or head) — computed immediately.
             let first = pending[0]
             await Self.computeWaveformAndCommit(track: first, state: self)
@@ -302,6 +303,7 @@ extension PlayerState {
             // Lane 2: background — priority-aware, no artificial batching wall.
             var queue = Array(pending.dropFirst())
             while !queue.isEmpty {
+                guard !Task.isCancelled else { break }
                 let priorityId = await MainActor.run { self.waveformPriorityId ?? self.currentId }
                 if let pid = priorityId,
                    let idx = queue.firstIndex(where: { $0.id == pid }) {
@@ -330,6 +332,7 @@ extension PlayerState {
                 guard let self else { return }
                 self.isComputingWaveforms = false
                 self.waveformPriorityId = nil
+                self.waveformTask = nil
                 let hasMore = self.tracks.contains { !$0.isMissing && $0.waveform.isEmpty }
                 if hasMore { self.scheduleWaveformComputation() }
             }

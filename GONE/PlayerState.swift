@@ -141,7 +141,9 @@ final class PlayerState: ObservableObject {
     let analysisFeed = AnalysisProgressFeed()
     var bpmPriorityId: UUID? = nil
     var waveformPriorityId: UUID? = nil
-    var analysisTasksByTrack: [UUID: Task<Void, Never>] = [:]
+    var analysisTasksByTrack: [UUID: Task<Void, Never>] = [:]   // per-track tasks only (deep re-analysis)
+    var bpmBatchTask: Task<Void, Never>?      // the batch BPM pass; cancelled as a unit, not per-track
+    var waveformTask: Task<Void, Never>?      // the batch waveform pass; cancellable handle
     var isPresentingImportPanel = false
     var xyBridgeCancellables = Set<AnyCancellable>()
 
