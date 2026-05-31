@@ -873,7 +873,7 @@ private struct InfoSettingsTab: View {
                     .lineSpacing(3)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    SInfoRow("VERSION", "0.8 BETA")
+                    SInfoRow("VERSION", "0.9 BETA")
                     SInfoRow("BUILD",   "MAY 2026")
                     SInfoRow("BY",      "HEARTBEAT STUDIO")
                 }
