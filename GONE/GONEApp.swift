@@ -85,16 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(windowMoveAnchorUpdate(_:)),
             name: NSWindow.didMoveNotification, object: panel
         )
-        panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
         hideBootstrapWindows(except: panel)
-        DispatchQueue.main.async {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration       = 0.20
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                panel.animator().alphaValue = 1
-            }
-        }
     }
     private var playerPanel: FloatingPlayerPanel?    // strong ref — panel not retained by SwiftUI
     private(set) weak var mainWindow: NSWindow?
@@ -180,17 +172,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
-        // screenSaverWindow+1 (1001): above fullscreen apps and Space-transition layer.
-        // Unified with docked level so window stays above Chrome/fullscreen in all states.
         window.level = GWindowLevel.player
-        // .canJoinAllSpaces: enrolls window in every Space including new fullscreen Spaces.
-        // .fullScreenAuxiliary: required alongside canJoinAllSpaces for fullscreen Spaces
-        //   on macOS 11+ — both flags together are the load-bearing pair.
+        // .canJoinAllSpaces: keep the player available on normal desktop Spaces.
+        // Do not use .fullScreenAuxiliary here; it makes the panel attach above
+        // fullscreen apps and can cause launch/Space-transition instability.
         // .managed: window appears as a proper tile in Mission Control (not invisible).
         //   Toggled to .transient by WindowSnapManager when window is docked off-screen.
         // .fullScreenDisallowsTiling: never captured by Split View.
         // .ignoresCycle: excluded from ⌘` window ring.
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+        window.collectionBehavior = [.canJoinAllSpaces,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         window.hidesOnDeactivate = false
     }
