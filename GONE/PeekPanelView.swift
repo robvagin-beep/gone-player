@@ -532,21 +532,21 @@ private struct MarqueeText: View {
                 let duration = Double(overflow) / Double(speed)
                 while !Task.isCancelled {
                     withAnimation(.linear(duration: duration)) { offset = -overflow }
-                    try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                    try? await Task.sleep(for: .seconds(duration))
                     guard !Task.isCancelled else { break }
                     withAnimation(.none) { offset = 0 }
-                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    try? await Task.sleep(for: .milliseconds(50))
                 }
             } else {
                 let exitDist     = measured + 12
                 let exitDuration = Double(exitDist) / Double(speed)
                 while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    try? await Task.sleep(for: .milliseconds(800))
                     guard !Task.isCancelled else { break }
                     withAnimation(.linear(duration: exitDuration)) { offset = -exitDist }
-                    try? await Task.sleep(nanoseconds: UInt64(exitDuration * 1_000_000_000))
+                    try? await Task.sleep(for: .seconds(exitDuration))
                     guard !Task.isCancelled else { break }
-                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    try? await Task.sleep(for: .milliseconds(300))
                     guard !Task.isCancelled else { break }
                     withAnimation(.none) { offset = 0 }
                 }

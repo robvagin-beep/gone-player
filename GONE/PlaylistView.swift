@@ -1058,7 +1058,7 @@ struct PlaylistRowView: View {
             guard new == .analyzed else { return }
             showCompletion = true
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 450_000_000)
+                try? await Task.sleep(for: .milliseconds(450))
                 withAnimation(.easeOut(duration: 0.35)) { showCompletion = false }
             }
         }
@@ -1536,7 +1536,7 @@ private struct AnalyzingDots: View {
             active = phase
             pulseTask = Task {
                 while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 380_000_000)
+                    try? await Task.sleep(for: .milliseconds(380))
                     active = (active + 1) % 3
                 }
             }

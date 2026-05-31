@@ -91,10 +91,10 @@ struct EmptyOverlayView: View {
         "DRAG AND DROP TRACK HERE",
         "OR JUST CLICK, IT'S UP TO YOU",
     ]
-    private let charDelayNs:  UInt64 = 70_000_000
-    private let holdDelayNs:  UInt64 = 2_200_000_000
-    private let eraseDelayNs: UInt64 = 38_000_000
-    private let gapDelayNs:   UInt64 = 450_000_000
+    private let charDelay:  Duration = .milliseconds(70)
+    private let holdDelay:  Duration = .milliseconds(2200)
+    private let eraseDelay: Duration = .milliseconds(38)
+    private let gapDelay:   Duration = .milliseconds(450)
 
     var body: some View {
         Color.clear
@@ -134,14 +134,14 @@ struct EmptyOverlayView: View {
                 for char in msg {
                     guard !Task.isCancelled else { return }
                     displayText += String(char)
-                    try? await Task.sleep(nanoseconds: charDelayNs)
+                    try? await Task.sleep(for: charDelay)
                 }
-                try? await Task.sleep(nanoseconds: holdDelayNs)
+                try? await Task.sleep(for: holdDelay)
                 while !displayText.isEmpty && !Task.isCancelled {
                     displayText = String(displayText.dropLast())
-                    try? await Task.sleep(nanoseconds: eraseDelayNs)
+                    try? await Task.sleep(for: eraseDelay)
                 }
-                try? await Task.sleep(nanoseconds: gapDelayNs)
+                try? await Task.sleep(for: gapDelay)
                 idx += 1
             }
         }

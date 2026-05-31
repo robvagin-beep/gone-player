@@ -133,7 +133,7 @@ actor AnalysisCache {
     private func flushSoon() async {
         guard !flushPending else { return }
         flushPending = true
-        try? await Task.sleep(nanoseconds: 1500_000_000)
+        try? await Task.sleep(for: .milliseconds(1500))
         flushPending = false
         guard dirty else { return }
         dirty = false

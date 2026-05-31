@@ -131,7 +131,7 @@ extension PlayerState {
                     await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
                     return
                 }
-                try? await Task.sleep(nanoseconds: 300_000_000)
+                try? await Task.sleep(for: .milliseconds(300))
             }
             guard !Task.isCancelled else {
                 await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
@@ -151,7 +151,7 @@ extension PlayerState {
             // At 2 concurrent AVAssetReaders, seek + playback stutter is measurable.
             // This 1.5s gap costs nothing perceptible but keeps the first beat lag-free.
             if pending.count > 1 {
-                try? await Task.sleep(nanoseconds: 1500_000_000)
+                try? await Task.sleep(for: .milliseconds(1500))
             }
             guard !Task.isCancelled else {
                 await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
@@ -353,7 +353,7 @@ extension PlayerState {
         for attempt in 0..<3 {
             waveform = await LibraryScanner().computeWaveform(url: track.url, bars: 84)
             if !waveform.isEmpty { break }
-            if attempt < 2 { try? await Task.sleep(nanoseconds: 1500_000_000) }
+            if attempt < 2 { try? await Task.sleep(for: .milliseconds(1500)) }
         }
         if !waveform.isEmpty { await AnalysisCache.shared.putWaveform(url: track.url, waveform: waveform) }
         let committed = waveform.isEmpty ? Array(repeating: Float(0.04), count: 84) : waveform

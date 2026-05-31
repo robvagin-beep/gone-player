@@ -137,7 +137,7 @@ final class WindowSnapManager {
         savedFrame  = nil
         snapWindow  = nil
         Task { @MainActor [weak self, weak window] in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
             guard let self, let window else { return }
             // Set snapState = .off here, after restoreFromSnap() has settled, so that
             // windowMoveAnchorUpdate cannot fire while the window is still at the docked
@@ -327,7 +327,7 @@ final class WindowSnapManager {
                                              .fullScreenDisallowsTiling, .transient, .ignoresCycle]
             }
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 80_000_000)
+                try? await Task.sleep(for: .milliseconds(80))
                 self?.playerState?.prepareForSnap()
             }
         }
@@ -475,7 +475,7 @@ final class WindowSnapManager {
         // Delay panel restore so the window travels away from the edge before content expands.
         // isSnapping blocks updateWindowSize, so the frame is controlled by slideFrameTo only.
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
             self?.playerState?.restoreFromSnap()
         }
 
