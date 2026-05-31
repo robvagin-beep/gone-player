@@ -7,6 +7,13 @@ import CoreAudio
 /// the app is being refactored. The implementation stays intentionally simple:
 /// one player node, one time-pitch unit, one EQ, lightweight progress polling,
 /// and no heavy dependencies or modern-only UI/audio abstractions.
+// Threading contract:
+// - Public playback/control API (load/play/pause/stop/seek) is called from the main thread.
+// - bufferQueue owns disk decode / AVAudioFile chunk reads / schedulePCMChunk.
+// - The CoreAudio render tap must never allocate, block on a contended lock, or touch UI state.
+// - AVAudioPlayerNode completion callbacks hop to main before touching progress/UI state.
+// - playbackToken (guarded by tokenLock) is the cross-queue cancellation boundary; any work that
+//   crosses a queue re-checks token == playbackToken and no-ops on mismatch.
 final class AudioEngineNext {
     static let shared = AudioEngineNext()
     static let secondary = AudioEngineNext()
@@ -51,6 +58,9 @@ final class AudioEngineNext {
     private func bumpToken() -> UInt64 {
         tokenLock.withLock { _playbackToken &+= 1; return _playbackToken }
     }
+    // First-buffer state machine — main-thread owned. Transitions live in load/play/pause/stop/
+    // seek/handleEngineConfigurationChange and the scheduleFrom completion; all cancellation is
+    // gated by playbackToken so a stale completion can never start playback.
     private var isScheduled = false
     private var isPreparingFirstBuffer = false
     private var pendingPlayAfterPrepare = false
@@ -239,7 +249,12 @@ final class AudioEngineNext {
         // drain=true: called from deactivation on audioOpQueue. Blocks until any in-flight
         // schedulePCMChunk (which calls playerNode.scheduleBuffer) exits bufferQueue.
         // Without this, concurrent scheduleBuffer + stop() inside AVAudioPlayerNode deadlock.
-        if drain { bufferQueue.sync {} }
+        // drain=true is teardown-only (deactivation off-main). It must never run on bufferQueue
+        // itself — that would deadlock the sync barrier against the queue it is waiting on.
+        if drain {
+            dispatchPrecondition(condition: .notOnQueue(bufferQueue))
+            bufferQueue.sync {}
+        }
         playerNode.stop()               // safe: bufferQueue is drained when drain=true
         // Timer must be invalidated on the thread it was installed on (RunLoop.main).
         // Use async (not sync) — stop() may be called from Task.detached (Split Mode deactivate)
@@ -301,6 +316,10 @@ final class AudioEngineNext {
         emitProgress(currentFrame: targetFrame)
 
         if shouldResume {
+            // Make resume intent explicit: the scheduleFrom completion only starts playback when
+            // pendingPlayAfterPrepare && isUserPlaying. Without setting intent here, seek(autoplay:
+            // true) from a paused state would arm pending but never start (isUserPlaying == false).
+            isUserPlaying = true
             pendingPlayAfterPrepare = true
             if !isPreparingFirstBuffer {
                 startPreparedPlayback()
@@ -554,9 +573,11 @@ final class AudioEngineNext {
             let sampleRate = Float(buffer.format.sampleRate)
             self.spectrumQueue.async { [weak self] in
                 guard let self else { return }
+                // defer guarantees the ring slot is released even if processSpectrum gains an
+                // early return later — a leaked slot would permanently shrink the tap ring.
+                defer { self.releaseSpectrumTapBuffer(at: tapBuffer.index) }
                 let samples = UnsafeBufferPointer(start: tapBuffer.pointer, count: self.fftSize)
                 self.processSpectrum(samples: samples, sampleRate: sampleRate)
-                self.releaseSpectrumTapBuffer(at: tapBuffer.index)
             }
         }
 
