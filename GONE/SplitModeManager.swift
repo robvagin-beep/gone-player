@@ -144,8 +144,8 @@ final class SplitModeManager: ObservableObject {
         // to any AVAudioEngineConfigurationChange that the secondary teardown may emit on
         // a shared output device — such a reaction calls engine.start() + bufferQueue.sync
         // (disk I/O) on the main thread, freezing the UI and starving the primary render thread.
-        AudioEngineNext.shared.suppressConfigChange = true
-        AudioEngineNext.secondary.suppressConfigChange = true
+        AudioEngineNext.shared.setSuppressConfigChange(true)
+        AudioEngineNext.secondary.setSuppressConfigChange(true)
         audioOpQueue.async { [weak self] in
             // No drain: bumpToken() already cancelled in-flight scheduling.
             // engine.stop() (below) is a full HAL disconnect and safely races with any
@@ -157,7 +157,7 @@ final class SplitModeManager: ObservableObject {
             AudioEngineNext.secondary.crossfadeGain = 1.0
             // Re-enable primary config-change handler now that secondary is fully off HAL.
             DispatchQueue.main.async {
-                AudioEngineNext.shared.suppressConfigChange = false
+                AudioEngineNext.shared.setSuppressConfigChange(false)
             }
             // isTransitioning = false at T+1.8s — cancels all SwiftUI repeatForever/TimelineView
             // animations in the secondary window BEFORE close() releases the view hierarchy.
@@ -294,7 +294,7 @@ final class SplitModeManager: ObservableObject {
         // Snapshot A's full audio state into B engine.
         // Re-enable config-change handler before any audio ops so the secondary engine
         // can recover from graph resets normally once it's fully running again.
-        AudioEngineNext.secondary.suppressConfigChange = false
+        AudioEngineNext.secondary.setSuppressConfigChange(false)
 
         // Enqueued on audioOpQueue so any pending stop() from a prior deactivation drains first.
         let primaryDeviceID = primaryState.audioEngine.currentOutputDeviceID()

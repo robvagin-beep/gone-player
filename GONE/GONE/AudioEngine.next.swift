@@ -65,7 +65,10 @@ final class AudioEngineNext {
     private var isPreparingFirstBuffer = false
     private var pendingPlayAfterPrepare = false
     private var configChangeObserver: NSObjectProtocol?
-    var suppressConfigChange = false   // set by SplitModeManager during deactivate to prevent engine.start() racing with stop()
+    // Owner: main thread only. Read in handleEngineConfigurationChange (main); written only via
+    // setSuppressConfigChange() from SplitModeManager activate/deactivate (main). private(set)
+    // keeps a single mutation path so a future off-main write can't sneak in.
+    private(set) var suppressConfigChange = false
 
     private var pitchPercent: Double = 0       // Main-thread only
     private var masterTempo = true              // Main-thread only
@@ -237,6 +240,12 @@ final class AudioEngineNext {
         progressTimer = nil
         t?.invalidate()
         endAudioActivity()
+    }
+
+    // Main-thread only — the single mutation path for suppressConfigChange (see its declaration).
+    func setSuppressConfigChange(_ suppressed: Bool) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        suppressConfigChange = suppressed
     }
 
     func stop(resetProgress: Bool = true, drain: Bool = false) {
