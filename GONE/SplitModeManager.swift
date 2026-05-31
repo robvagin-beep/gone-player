@@ -326,19 +326,10 @@ final class SplitModeManager: ObservableObject {
 
         // Match primary's current size exactly (panels already open)
         let initSize = primary.frame.size
-        let win = NSWindow(
-            contentRect: CGRect(origin: .zero, size: initSize),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
+        // FloatingPlayerPanel — real NSPanel from construction, same as primary player.
+        // Required for reliable fullscreen-Space overlay on macOS.
+        let win = FloatingPlayerPanel(contentRect: CGRect(origin: .zero, size: initSize))
         win.contentViewController = hc
-        win.isOpaque = false
-        win.backgroundColor = .clear
-        win.hasShadow = false
-        win.isMovableByWindowBackground = false   // ClonePlayerShell has DragHandleNSView zones
-        win.acceptsMouseMovedEvents = true
-        win.appearance = NSAppearance(named: .darkAqua)
         // Clone player uses the same topmost level as the primary player.
         // Crossfader sits one level below both so window bodies hide its endpoints.
         win.level = GWindowLevel.player

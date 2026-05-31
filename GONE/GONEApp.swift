@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+    private var playerPanel: FloatingPlayerPanel?    // strong ref — panel not retained by SwiftUI
     private(set) weak var mainWindow: NSWindow?
     private var eventMonitor: Any?
     private var isUserResizing = false
@@ -87,41 +88,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             $0.hidesOnDeactivate = false
         }
         DispatchQueue.main.async {
-            guard let window = self.bestAvailableWindow() else { return }
-            window.alphaValue = 0          // safety net if window appeared after the sync call
-            self.configureWindow(window)
+            // Find the SwiftUI-created shell window (NSWindow, not NSPanel)
+            guard let swiftUIShell = NSApp.windows.first(where: { !($0 is NSPanel) }) else { return }
+            swiftUIShell.alphaValue = 0
+            self.configureWindow(swiftUIShell)    // creates FloatingPlayerPanel, hides shell
             // One extra tick for SwiftUI layout to settle, then fade in
             DispatchQueue.main.async {
+                guard let panel = self.mainWindow else { return }
+                panel.alphaValue = 0
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration      = 0.20
                     ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    window.animator().alphaValue = 1
+                    panel.animator().alphaValue = 1
                 }
             }
         }
     }
 
-    private func configureWindow(_ window: NSWindow) {
-        mainWindow = window
-        window.styleMask = [.borderless, .nonactivatingPanel]
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.isMovableByWindowBackground = false  // DragHandleNSView handles all window movement
-        window.acceptsMouseMovedEvents = true
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.isReleasedWhenClosed = false
-        applyPresencePolicy(to: window)
-        window.setContentSize(NSSize(width: G.windowWidth + 8, height: 190))
-        window.center()
-        windowAnchorMaxY = window.frame.maxY
+    private func configureWindow(_ swiftUIShell: NSWindow) {
+        // Transfer SwiftUI content into a FloatingPlayerPanel.
+        // The panel is a true NSPanel from construction, which gives reliable
+        // fullscreen-Space overlay semantics that patching styleMask on NSWindow does not.
+        guard let hostingView = swiftUIShell.contentView else { return }
+
+        let panel = FloatingPlayerPanel(
+            contentRect: NSRect(origin: .zero, size: NSSize(width: G.windowWidth + 8, height: 190))
+        )
+        panel.contentView = hostingView
+        swiftUIShell.orderOut(nil)  // hide shell; keep alive for SwiftUI state machine
+
+        playerPanel = panel         // strong ref — NSApp does not retain NSPanel instances
+        mainWindow  = panel
+        applyPresencePolicy(to: panel)
+        panel.center()
+        windowAnchorMaxY = panel.frame.maxY
         NotificationCenter.default.addObserver(
             self, selector: #selector(windowResizeCorrection(_:)),
-            name: NSWindow.didResizeNotification, object: window
+            name: NSWindow.didResizeNotification, object: panel
         )
         NotificationCenter.default.addObserver(
             self, selector: #selector(windowMoveAnchorUpdate(_:)),
-            name: NSWindow.didMoveNotification, object: window
+            name: NSWindow.didMoveNotification, object: panel
         )
     }
 
@@ -158,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func primaryPlayerWindows() -> [NSWindow] {
         let clone = SplitModeManager.shared.secondaryWindow
-        return NSApp.windows.filter { !($0 is NSPanel) && $0 !== clone }
+        return NSApp.windows.filter { $0 is FloatingPlayerPanel && $0 !== clone }
     }
 
     private func bestAvailableWindow() -> NSWindow? {
