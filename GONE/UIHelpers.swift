@@ -6,6 +6,12 @@ enum GWindowLevel {
     // fullscreen Spaces. screenSaver-level windows can make the panel unstable
     // during launch/Space transitions on some macOS setups.
     static let player = NSWindow.Level.floating
+    // Docked / peeking HUD: the minimal tab at the screen edge. Raised ABOVE
+    // everything (incl. other apps' fullscreen Spaces) on purpose — it is a
+    // low-interaction overlay, not a full window. Applied only while docked or
+    // peeking by WindowSnapManager; reverted to .player on expand/disable.
+    // screenSaverWindow + 1 (1001) — the pre-stabilization player level.
+    static let dockedHUD = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
     static let crossfader = NSWindow.Level(rawValue: player.rawValue - 1)
     static let floatingPanel = NSWindow.Level(rawValue: player.rawValue + 1)
     static let importPanel = NSWindow.Level(rawValue: player.rawValue + 2)

@@ -178,6 +178,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPresencePolicy(to window: NSWindow) {
+        // While docked/peeking, WindowSnapManager owns presence: the HUD tab is raised
+        // ABOVE everything (incl. fullscreen Spaces). Don't stomp it back to .floating —
+        // every caller (becomeActive, screen-param change, wake, alwaysOnTop, …) must respect it.
+        let snapState = WindowSnapManager.shared.snapState
+        if snapState == .docked || snapState == .peeking {
+            window.level = GWindowLevel.dockedHUD
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                         .fullScreenDisallowsTiling, .transient, .ignoresCycle]
+            window.hidesOnDeactivate = false
+            return
+        }
         // .floating: above normal app windows, stable across Space transitions.
         // Does not force the window above fullscreen apps (see UIHelpers.swift GWindowLevel).
         window.level = GWindowLevel.player

@@ -43,26 +43,16 @@ struct PeekPanelView: View {
 
     @ViewBuilder
     private var interactionSurface: some View {
-        if state.snapState == .docked {
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
-                .gesture(panelDragGesture)
-        } else {
-            ZStack {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
-
-                HStack(spacing: 0) {
-                    Color.clear
-                        .frame(width: 18)
-                        .contentShape(Rectangle())
-                        .gesture(panelDragGesture)
-                    Spacer(minLength: 0)
-                }
-            }
-        }
+        // Whole surface repositions on drag and expands on tap in BOTH docked and peeking
+        // (previously peek only allowed dragging on an 18px edge strip → felt like "edges only").
+        // minimumDistance in panelDragGesture separates a tap (expand) from a drag (reposition);
+        // peek transport buttons live in a sibling overlay above this and keep their own clicks.
+        // openHand cursor on hover signals the tab is draggable.
+        Color.clear
+            .contentShape(Rectangle())
+            .cursor(.openHand)
+            .onTapGesture { WindowSnapManager.shared.expandCurrentWindow() }
+            .gesture(panelDragGesture)
     }
 
     private var peekContent: some View {
@@ -175,6 +165,9 @@ struct PeekPanelView: View {
                     .opacity(isDocked ? 0 : 1)
             )
             .padding(.vertical, 6)
+            // Switch docked↔peek border/corner instantly. A Core-Animation crossfade here
+            // races the timer-driven window slide and visibly lags (the "slow-mo" bottom border).
+            .transaction { $0.animation = nil }
     }
 
     @ViewBuilder
@@ -232,25 +225,27 @@ struct PeekPanelView: View {
         // Uses NSEvent.mouseLocation (screen-space) to avoid the SwiftUI .local coordinate space
         // feedback loop: when we move the window, the view moves with it, causing translation to
         // partially cancel the movement → stuttering "прыг-прыг" effect.
-        // minimumDistance: 8 keeps simple taps as expand events and leaves transport buttons
-        // out of the drag path because the gesture now lives on the base surface only.
-        DragGesture(minimumDistance: 8)
+        // minimumDistance: 6 separates a reposition-drag from a tap-to-expand without adding a
+        // second deadzone. Repositioning is delegated to WindowSnapManager.dragSnappedWindowVertically
+        // so docked and peeking share ONE drag path (live savedDockedY, X locked to snapX, shared clamp).
+        DragGesture(minimumDistance: 6)
             .onChanged { _ in
-                guard let window = WindowSnapManager.shared.currentWindow else { return }
+                let mgr = WindowSnapManager.shared
+                guard let window = mgr.currentWindow else { return }
                 if dragStartWindowOrigin == nil {
-                    WindowSnapManager.shared.isDragging = true
-                    WindowSnapManager.shared.cancelSlide()
+                    mgr.isDragging = true
+                    mgr.cancelSlide()
                     dragStartWindowOrigin = window.frame.origin
                     dragStartMouseY = NSEvent.mouseLocation.y
                 }
-                let deltaY = NSEvent.mouseLocation.y - dragStartMouseY
-                guard abs(deltaY) > 6,
-                      let start = dragStartWindowOrigin,
-                      let screen = window.screen ?? NSScreen.main else { return }
+                guard let start = dragStartWindowOrigin else { return }
                 hasDraggedBeyondThreshold = true
-                let newY = start.y + deltaY
-                let clamped = max(screen.frame.minY, min(screen.frame.maxY - window.frame.height, newY))
-                window.setFrameOrigin(NSPoint(x: start.x, y: clamped))
+                mgr.dragSnappedWindowVertically(
+                    window: window,
+                    startOrigin: start,
+                    startMouse: NSPoint(x: 0, y: dragStartMouseY),
+                    currentMouse: NSPoint(x: 0, y: NSEvent.mouseLocation.y)
+                )
             }
             .onEnded { _ in
                 let moved = hasDraggedBeyondThreshold
@@ -313,7 +308,7 @@ struct PeekPanelView: View {
 
 // MARK: – BPM progress bar
 
-private struct PeekBPMBar: View {
+struct PeekBPMBar: View {
     let label: String
     let progress: Double
 
@@ -336,7 +331,7 @@ private struct PeekBPMBar: View {
 
 // MARK: – Pixel-grid spectrum (for artwork placeholder) — mirrors main SpectrumView logic
 
-private struct PixelSpectrumView: View {
+struct PixelSpectrumView: View {
     @ObservedObject var feed: SpectrumFeed
     let isPlaying: Bool
 
@@ -476,7 +471,7 @@ private struct PixelSpectrumView: View {
 
 // MARK: – Marquee text
 
-private struct MarqueeText: View {
+struct MarqueeText: View {
     let text: String
     var fontSize: CGFloat = 9
     var colorOpacity: Double = 1.0
@@ -557,7 +552,7 @@ private struct MarqueeText: View {
 
 // MARK: – Spring press button style
 
-private struct PeekSpringButton: ButtonStyle {
+struct PeekSpringButton: ButtonStyle {
     var scale: CGFloat = 0.82
 
     func makeBody(configuration: Configuration) -> some View {

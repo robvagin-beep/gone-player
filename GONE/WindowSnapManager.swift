@@ -117,8 +117,12 @@ final class WindowSnapManager {
         // In .expanded, restoreFromSnap() already ran inside expand() — calling it again here
         // would overwrite whatever the user changed manually in the expanded state.
         let needsRestore = snapState == .docked || snapState == .peeking
-        // Restore to expanded presence level.
+        // Restore to expanded presence level — drop the docked HUD elevation and any
+        // .fullScreenAuxiliary so the full window doesn't linger above fullscreen Spaces.
         window.level = GWindowLevel.player
+        window.collectionBehavior = [.canJoinAllSpaces,
+                                     .fullScreenDisallowsTiling, .managed, .ignoresCycle]
+        FullscreenCompanionManager.shared.disarm()
         // Cancel any in-flight dockToEdge completion — prevents a pending completion from
         // overwriting snapState/.docked and re-locking the frame after we've disabled snap.
         dockToken &+= 1
@@ -233,7 +237,7 @@ final class WindowSnapManager {
     // MARK: – Space Change Observer
     // The docked window extends beyond screen.maxX. The Space-transition compositor
     // can briefly reveal the off-screen body during swipes. Two defences:
-    // (1) player level puts the tab above the transition layer.
+    // (1) dockedHUD level puts the tab above the transition layer.
     // (2) This observer corrects any frame drift and kills visible artifacts
     //     the instant the transition completes.
 
@@ -319,9 +323,12 @@ final class WindowSnapManager {
                 self.savedWindowWidth = window.frame.width
                 let f = window.frame
                 window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
-                window.level = GWindowLevel.player
-                window.collectionBehavior = [.canJoinAllSpaces,
+                // Docked tab is a low-interaction HUD → raise above everything (incl. fullscreen).
+                window.level = GWindowLevel.dockedHUD
+                window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                              .fullScreenDisallowsTiling, .transient, .ignoresCycle]
+                // Fullscreen proxy: this NSWindow can't overlay another app's fullscreen Space.
+                FullscreenCompanionManager.shared.arm(state: self.playerState)
             }
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(80))
@@ -433,9 +440,12 @@ final class WindowSnapManager {
             window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
             self.lockFrame(window: window, x: snapX)
             // Keep isSnapping = true — window stays at tabVisible width.
-            window.level = GWindowLevel.player
-            window.collectionBehavior = [.canJoinAllSpaces,
+            // Docked tab is a low-interaction HUD → raise above everything (incl. fullscreen).
+            window.level = GWindowLevel.dockedHUD
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                          .fullScreenDisallowsTiling, .transient, .ignoresCycle]
+            // Fullscreen proxy: this NSWindow can't overlay another app's fullscreen Space.
+            FullscreenCompanionManager.shared.arm(state: self.playerState)
         }
     }
 
@@ -468,6 +478,8 @@ final class WindowSnapManager {
         window.level = GWindowLevel.player
         window.collectionBehavior = [.canJoinAllSpaces,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
+        // Back on a real, on-screen window → drop the fullscreen proxy.
+        FullscreenCompanionManager.shared.disarm()
 
         // Delay panel restore so the window travels away from the edge before content expands.
         // isSnapping blocks updateWindowSize, so the frame is controlled by slideFrameTo only.
