@@ -63,7 +63,7 @@ final class CrossfaderGapWindow: NSPanel {
         // both so they render on top and hide the line endpoints where the bar enters
         // each window. Interactive only in the gap where no player window covers it.
         level              = GWindowLevel.crossfader
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+        collectionBehavior = [.canJoinAllSpaces,
                               .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         hidesOnDeactivate  = false
 

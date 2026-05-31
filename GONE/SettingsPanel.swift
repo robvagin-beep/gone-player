@@ -99,7 +99,7 @@ final class SettingsPanel {
             p.backgroundColor    = .clear
             p.hasShadow          = true
             p.level              = GWindowLevel.floatingPanel
-            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+            p.collectionBehavior = [.canJoinAllSpaces,
                                      .fullScreenDisallowsTiling, .ignoresCycle]
             p.hidesOnDeactivate  = false
             p.ignoresMouseEvents = false

@@ -2,9 +2,10 @@ import SwiftUI
 import AppKit
 
 enum GWindowLevel {
-    // screenSaverWindow is 1000 on macOS. Player uses +1 so it stays above
-    // fullscreen/Space transition layers in both expanded and docked states.
-    static let player = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 1)
+    // Keep the player above normal app windows, but do not force it above
+    // fullscreen Spaces. screenSaver-level windows can make the panel unstable
+    // during launch/Space transitions on some macOS setups.
+    static let player = NSWindow.Level.floating
     static let crossfader = NSWindow.Level(rawValue: player.rawValue - 1)
     static let floatingPanel = NSWindow.Level(rawValue: player.rawValue + 1)
     static let importPanel = NSWindow.Level(rawValue: player.rawValue + 2)

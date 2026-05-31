@@ -117,7 +117,7 @@ final class WindowSnapManager {
         // In .expanded, restoreFromSnap() already ran inside expand() — calling it again here
         // would overwrite whatever the user changed manually in the expanded state.
         let needsRestore = snapState == .docked || snapState == .peeking
-        // Restore to expanded presence level — player level keeps window above fullscreen apps.
+        // Restore to expanded presence level.
         window.level = GWindowLevel.player
         // Cancel any in-flight dockToEdge completion — prevents a pending completion from
         // overwriting snapState/.docked and re-locking the frame after we've disabled snap.
@@ -319,11 +319,8 @@ final class WindowSnapManager {
                 self.savedWindowWidth = window.frame.width
                 let f = window.frame
                 window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
-                // screenSaverWindow+1 (1001) puts the tab above the Space transition
-                // animation layer — prevents body from appearing during desktop swipe
-                // and ensures the tab is visible over fullscreen app Spaces.
                 window.level = GWindowLevel.player
-                window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                window.collectionBehavior = [.canJoinAllSpaces,
                                              .fullScreenDisallowsTiling, .transient, .ignoresCycle]
             }
             Task { @MainActor [weak self] in
@@ -437,7 +434,7 @@ final class WindowSnapManager {
             self.lockFrame(window: window, x: snapX)
             // Keep isSnapping = true — window stays at tabVisible width.
             window.level = GWindowLevel.player
-            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+            window.collectionBehavior = [.canJoinAllSpaces,
                                          .fullScreenDisallowsTiling, .transient, .ignoresCycle]
         }
     }
@@ -469,7 +466,7 @@ final class WindowSnapManager {
         snapState = .expanded
         playerState?.isSnapping = true
         window.level = GWindowLevel.player
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+        window.collectionBehavior = [.canJoinAllSpaces,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
 
         // Delay panel restore so the window travels away from the edge before content expands.

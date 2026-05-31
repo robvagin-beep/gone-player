@@ -52,6 +52,8 @@ final class AudioEngineNext {
         tokenLock.withLock { _playbackToken &+= 1; return _playbackToken }
     }
     private var isScheduled = false
+    private var isPreparingFirstBuffer = false
+    private var pendingPlayAfterPrepare = false
     private var configChangeObserver: NSObjectProtocol?
     var suppressConfigChange = false   // set by SplitModeManager during deactivate to prevent engine.start() racing with stop()
 
@@ -99,10 +101,11 @@ final class AudioEngineNext {
     private var fftImag: [Float]
     private var fftMagnitudes: [Float]
     private var fftBars: [Float]
-    // Pre-allocated PCM staging buffer for the tap callback.
-    // The tap runs on the CoreAudio render thread — no heap allocation is allowed there.
-    // The tap memcpy's samples into this buffer; spectrumQueue then copies it off-thread.
-    private var tapSampleBuffer: [Float]
+    // Pre-allocated PCM ring for the tap callback.
+    // The tap runs on the CoreAudio render thread — no heap allocation and no blocking wait.
+    private let spectrumBufferLock = NSLock()
+    private var spectrumTapBuffers: [UnsafeMutablePointer<Float>] = []
+    private var spectrumTapBufferInUse: [Bool] = []
 
     private let spectrumQueue = DispatchQueue(label: "gone.spectrum", qos: .utility)
     private var audioActivity: NSObjectProtocol?
@@ -117,7 +120,12 @@ final class AudioEngineNext {
         fftMagnitudes = Array(repeating: 0, count: fftSize / 2)
         fftBars = Array(repeating: 0, count: spectrumBars)
         fftSetup = vDSP_create_fftsetup(fftLog2n, FFTRadix(FFT_RADIX2))
-        tapSampleBuffer = [Float](repeating: 0, count: 1 << 10)  // must match fftSize
+        spectrumTapBuffers = (0..<3).map { _ in
+            let pointer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
+            pointer.initialize(repeating: 0, count: fftSize)
+            return pointer
+        }
+        spectrumTapBufferInUse = Array(repeating: false, count: spectrumTapBuffers.count)
 
         setupGraph()
         setupEQBands()
@@ -134,6 +142,10 @@ final class AudioEngineNext {
         if let obs = configChangeObserver { NotificationCenter.default.removeObserver(obs) }
         if let fftSetup {
             vDSP_destroy_fftsetup(fftSetup)
+        }
+        for pointer in spectrumTapBuffers {
+            pointer.deinitialize(count: fftSize)
+            pointer.deallocate()
         }
     }
 
@@ -184,15 +196,19 @@ final class AudioEngineNext {
             scheduleFrom(frame: pausedFrameOffset, token: token)
         }
 
-        playerNode.play()
-        startProgressTimer()
-        beginAudioActivity()
+        if isPreparingFirstBuffer {
+            pendingPlayAfterPrepare = true
+            return
+        }
+
+        startPreparedPlayback()
     }
 
     func pause() {
         guard audioFile != nil else { return }
 
         isUserPlaying = false
+        pendingPlayAfterPrepare = false
         pausedFrameOffset = currentPlaybackFrame()
         playerNode.pause()
         progressTimer?.invalidate()
@@ -218,6 +234,8 @@ final class AudioEngineNext {
         // Ensure any stuck hold-seek rate override is cleared before stopping.
         stopHoldSeek()
         bumpToken()             // cancels pending scheduling (checked in schedulePCMChunk)
+        isPreparingFirstBuffer = false
+        pendingPlayAfterPrepare = false
         // drain=true: called from deactivation on audioOpQueue. Blocks until any in-flight
         // schedulePCMChunk (which calls playerNode.scheduleBuffer) exits bufferQueue.
         // Without this, concurrent scheduleBuffer + stop() inside AVAudioPlayerNode deadlock.
@@ -283,9 +301,10 @@ final class AudioEngineNext {
         emitProgress(currentFrame: targetFrame)
 
         if shouldResume {
-            ensureEngineRunning()
-            playerNode.play()
-            startProgressTimer()
+            pendingPlayAfterPrepare = true
+            if !isPreparingFirstBuffer {
+                startPreparedPlayback()
+            }
         }
     }
 
@@ -530,20 +549,14 @@ final class AudioEngineNext {
             guard let channelData = buffer.floatChannelData?[0] else { return }
             let frameCount = Int(buffer.frameLength)
             guard frameCount >= self.fftSize else { return }
-            // Memcpy into pre-allocated staging buffer — no Array allocation on render thread.
-            let n = self.fftSize
-            self.tapSampleBuffer.withUnsafeMutableBufferPointer { dst in
-                dst.baseAddress!.initialize(from: channelData, count: n)
-            }
+            guard let tapBuffer = self.acquireSpectrumTapBuffer() else { return }
+            tapBuffer.pointer.update(from: channelData, count: self.fftSize)
             let sampleRate = Float(buffer.format.sampleRate)
-            // The Array value-copy below happens inside the async closure, which executes
-            // on spectrumQueue — NOT on the render thread. The render thread only pays for
-            // the DispatchQueue.async enqueue (a single lock + pointer write).
             self.spectrumQueue.async { [weak self] in
                 guard let self else { return }
-                // Copy from staging buffer on spectrumQueue thread (not render thread).
-                let samples = self.tapSampleBuffer
+                let samples = UnsafeBufferPointer(start: tapBuffer.pointer, count: self.fftSize)
                 self.processSpectrum(samples: samples, sampleRate: sampleRate)
+                self.releaseSpectrumTapBuffer(at: tapBuffer.index)
             }
         }
 
@@ -566,6 +579,8 @@ final class AudioEngineNext {
         progressTimer?.invalidate()
         progressTimer = nil
         isScheduled = false
+        isPreparingFirstBuffer = false
+        pendingPlayAfterPrepare = false
         let token = bumpToken()          // cancels pending scheduling (checked in schedulePCMChunk)
         playerNode.stop()                // flush queued buffers
 
@@ -576,9 +591,10 @@ final class AudioEngineNext {
             scheduleFrom(frame: frame, token: token)
         }
         if wasPlaying {
-            playerNode.play()
-            startProgressTimer()
-            beginAudioActivity()
+            pendingPlayAfterPrepare = true
+            if !isPreparingFirstBuffer {
+                startPreparedPlayback()
+            }
         }
     }
 
@@ -621,6 +637,15 @@ final class AudioEngineNext {
         }
     }
 
+    private func startPreparedPlayback() {
+        ensureEngineRunning()
+        guard !playerNode.isPlaying else { return }
+        pendingPlayAfterPrepare = false
+        playerNode.play()
+        startProgressTimer()
+        beginAudioActivity()
+    }
+
     private func beginAudioActivity() {
         guard audioActivity == nil else { return }
         audioActivity = ProcessInfo.processInfo.beginActivity(
@@ -640,6 +665,22 @@ final class AudioEngineNext {
     // and preventing the secondary render thread from interfering with the primary engine.
     func stopEngine() {
         engine.stop()
+    }
+
+    private func acquireSpectrumTapBuffer() -> (index: Int, pointer: UnsafeMutablePointer<Float>)? {
+        guard spectrumBufferLock.try() else { return nil }
+        defer { spectrumBufferLock.unlock() }
+        guard let index = spectrumTapBufferInUse.firstIndex(of: false) else { return nil }
+        spectrumTapBufferInUse[index] = true
+        return (index, spectrumTapBuffers[index])
+    }
+
+    private func releaseSpectrumTapBuffer(at index: Int) {
+        spectrumBufferLock.lock()
+        if spectrumTapBufferInUse.indices.contains(index) {
+            spectrumTapBufferInUse[index] = false
+        }
+        spectrumBufferLock.unlock()
     }
 
     // MARK: - Scheduling and progress
@@ -668,10 +709,29 @@ final class AudioEngineNext {
         let chunkFrames = AVAudioFrameCount(prefetchChunkSeconds * fileSampleRate)
         let fmt = file.processingFormat
 
-        // First chunk synchronously — PCM must be in RAM before playerNode.play()
-        bufferQueue.sync {
-            schedulePCMChunk(url: url, format: fmt, startFrame: startFrame,
-                             chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
+        isPreparingFirstBuffer = true
+
+        // First chunk asynchronously — avoids disk/decode work on the main thread.
+        // play() records intent and starts the player after this first buffer is queued.
+        bufferQueue.async { [weak self] in
+            guard let self, token == self.playbackToken else { return }
+            let didSchedule = self.schedulePCMChunk(url: url, format: fmt, startFrame: startFrame,
+                                                    chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, token == self.playbackToken else { return }
+                self.isPreparingFirstBuffer = false
+                guard didSchedule else {
+                    self.isScheduled = false
+                    self.pendingPlayAfterPrepare = false
+                    if self.isUserPlaying {
+                        self.onError?("schedule failed: no audio buffer queued")
+                    }
+                    return
+                }
+                if self.pendingPlayAfterPrepare && self.isUserPlaying {
+                    self.startPreparedPlayback()
+                }
+            }
         }
 
         // Pre-fill remaining prefetchDepth-1 chunks in the background
@@ -689,29 +749,30 @@ final class AudioEngineNext {
     // Reads one PCM chunk from disk and hands it to playerNode.scheduleBuffer.
     // Called on bufferQueue — never on the render thread. Each call opens its
     // own AVAudioFile so framePosition cursors never collide.
+    @discardableResult
     private func schedulePCMChunk(url: URL, format: AVAudioFormat,
-                                   startFrame: AVAudioFramePosition,
-                                   chunkFrames: AVAudioFrameCount,
-                                   totalFrames: AVAudioFramePosition,
-                                   token: UInt64) {
-        guard token == playbackToken else { return }
+                                  startFrame: AVAudioFramePosition,
+                                  chunkFrames: AVAudioFrameCount,
+                                  totalFrames: AVAudioFramePosition,
+                                  token: UInt64) -> Bool {
+        guard token == playbackToken else { return false }
 
         let remaining = totalFrames - startFrame
-        guard remaining > 0 else { return }
+        guard remaining > 0 else { return false }
 
         let framesToRead = AVAudioFrameCount(min(AVAudioFramePosition(chunkFrames), remaining))
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRead) else { return }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRead) else { return false }
 
         do {
             let chunkFile = try AVAudioFile(forReading: url)
             chunkFile.framePosition = startFrame
             try chunkFile.read(into: buffer, frameCount: framesToRead)
         } catch {
-            return
+            return false
         }
 
         // Second check after disk I/O: token may have changed while reading
-        guard token == playbackToken else { return }
+        guard token == playbackToken else { return false }
 
         let nextStart = startFrame + AVAudioFramePosition(framesToRead)
         let isLastChunk = nextStart >= totalFrames
@@ -740,6 +801,7 @@ final class AudioEngineNext {
                 }
             }
         }
+        return true
     }
 
     private func startProgressTimer() {
@@ -824,10 +886,11 @@ final class AudioEngineNext {
 
     // MARK: - Spectrum
 
-    private func processSpectrum(samples: [Float], sampleRate: Float) {
+    private func processSpectrum(samples: UnsafeBufferPointer<Float>, sampleRate: Float) {
         guard let fftSetup else { return }
+        guard let sampleBase = samples.baseAddress, samples.count >= fftSize else { return }
 
-        vDSP_vmul(samples, 1, hannWindow, 1, &fftWindowed, 1, vDSP_Length(fftSize))
+        vDSP_vmul(sampleBase, 1, hannWindow, 1, &fftWindowed, 1, vDSP_Length(fftSize))
 
         fftReal.withUnsafeMutableBufferPointer { realBuffer in
             fftImag.withUnsafeMutableBufferPointer { imagBuffer in

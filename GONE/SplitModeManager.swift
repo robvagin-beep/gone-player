@@ -330,10 +330,10 @@ final class SplitModeManager: ObservableObject {
         // Required for reliable fullscreen-Space overlay on macOS.
         let win = FloatingPlayerPanel(contentRect: CGRect(origin: .zero, size: initSize))
         win.contentViewController = hc
-        // Clone player uses the same topmost level as the primary player.
+        // Clone player uses the same presence policy as the primary player.
         // Crossfader sits one level below both so window bodies hide its endpoints.
         win.level = GWindowLevel.player
-        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+        win.collectionBehavior = [.canJoinAllSpaces,
                                   .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         win.hidesOnDeactivate = false
 
