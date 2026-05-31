@@ -514,7 +514,7 @@ private struct AudioSettingsTab: View {
                     let isHov = hoveredID == device.id
                     Button {
                         currentID = device.id
-                        AudioEngineNext.shared.setOutputDevice(device.id)
+                        state.audioEngine.setOutputDevice(device.id)
                         if SplitModeManager.shared.isActive {
                             AudioEngineNext.secondary.setOutputDevice(device.id)
                         }
@@ -548,7 +548,7 @@ private struct AudioSettingsTab: View {
         }
         .onAppear {
             devices = AudioDeviceHelper.outputDevices()
-            currentID = AudioEngineNext.shared.currentOutputDeviceID()
+            currentID = state.audioEngine.currentOutputDeviceID()
         }
     }
 }

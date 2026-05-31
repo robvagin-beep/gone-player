@@ -313,13 +313,15 @@ final class ClickNSView: NSView {
         pendingCount += 1
         pendingTimer?.invalidate()
         let captured = pendingCount
-        pendingTimer = Timer.scheduledTimer(withTimeInterval: threshold, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: threshold, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.pendingCount == captured else { return }
                 if captured >= 2 { self.onDoubleClick?() } else { self.onSingleClick?() }
                 self.pendingCount = 0
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        pendingTimer = timer
     }
 }
 
