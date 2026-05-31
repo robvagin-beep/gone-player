@@ -9,12 +9,13 @@ struct GONEApp: App {
     @StateObject private var state = PlayerState()
 
     var body: some Scene {
-        // WindowGroup renders an invisible placeholder solely to trigger onAppear →
+        // WindowGroup renders a tiny placeholder solely to trigger onAppear →
         // playerState = state. The actual UI lives in FloatingPlayerPanel created in
         // AppDelegate.playerState.didSet once state is available.
         WindowGroup {
-            Color.clear
-                .frame(width: 0, height: 0)
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 1, height: 1)
                 .onAppear { appDelegate.playerState = state }
         }
         .windowResizability(.automatic)
@@ -71,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     panel.animator().alphaValue = 1
                 }
             }
+            hideBootstrapWindows(except: panel)
 
             setupRemoteCommands()
             setupNowPlayingObservation()
@@ -106,10 +108,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(systemDidWake),
             name: NSWorkspace.didWakeNotification, object: nil
         )
-        // Hide SwiftUI shell immediately — real UI is FloatingPlayerPanel
-        // created in playerState.didSet once SwiftUI state is available.
-        DispatchQueue.main.async {
-            NSApp.windows.forEach { $0.alphaValue = 0; $0.orderOut(nil) }
+        // Do not hide the SwiftUI bootstrap window here. Its onAppear is what
+        // provides the @StateObject PlayerState used to create FloatingPlayerPanel.
+        // It is hidden after the panel exists.
+    }
+
+    private func hideBootstrapWindows(except panel: NSWindow) {
+        NSApp.windows.forEach { window in
+            guard window !== panel, !(window is FloatingPlayerPanel) else { return }
+            window.alphaValue = 0
+            window.orderOut(nil)
         }
     }
 
