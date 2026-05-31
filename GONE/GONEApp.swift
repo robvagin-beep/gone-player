@@ -92,10 +92,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let swiftUIShell = NSApp.windows.first(where: { !($0 is NSPanel) }) else { return }
             swiftUIShell.alphaValue = 0
             self.configureWindow(swiftUIShell)    // creates FloatingPlayerPanel, hides shell
-            // One extra tick for SwiftUI layout to settle, then fade in
+            // One extra tick for SwiftUI layout to settle, then show + fade in
             DispatchQueue.main.async {
                 guard let panel = self.mainWindow else { return }
                 panel.alphaValue = 0
+                panel.makeKeyAndOrderFront(nil)
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration      = 0.20
                     ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
