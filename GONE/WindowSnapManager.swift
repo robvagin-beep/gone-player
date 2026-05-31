@@ -406,9 +406,11 @@ final class WindowSnapManager {
 
     private func peek(window: NSWindow) {
         guard let screen = screen(for: window) else { return }
-        withAnimation(.easeInOut(duration: peekAnimDuration)) {
-            snapState = .peeking  // set before animation so poll can't re-trigger
-        }
+        // No withAnimation: the window slide (slideTo, 60fps timer) is the only motion. Animating
+        // snapState-driven geometry here raced that timer, so the semi-transparent plate/border
+        // lagged the window edge ("отстает"). peekContent keeps its own opacity .animation, so the
+        // controls still fade in.
+        snapState = .peeking  // set before the slide so the proximity poll can't re-trigger
         // Restore full width instantly before sliding — window is at screen edge so the
         // resize is off-screen and invisible. Avoids per-frame resize during slide animation
         // which causes macOS shadow/border compositor artifacts.
@@ -432,9 +434,8 @@ final class WindowSnapManager {
         // so 0.12s looks crisper than 0.18s (macOS deprioritises going-off-screen windows).
         slideOffScreen(window: window, to: NSPoint(x: snapX, y: y), duration: 0.12 * animMul) { [weak self, weak window] in
             guard let self, let window, self.dockToken == capturedToken else { return }
-            withAnimation(.easeInOut(duration: 0.08 * self.animMul)) {
-                self.snapState = .docked
-            }
+            // No withAnimation — keep geometry instant, the slide is the motion (matches peek()).
+            self.snapState = .docked
             self.savedWindowWidth = window.frame.width
             let f = window.frame
             window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
