@@ -783,7 +783,7 @@ private struct SnapSettingsTab: View {
 
             SHead(text: "DOCK SIDE")
             HStack(spacing: 4) {
-                ForEach([("RIGHT", false), ("LEFT", true)], id: \.0) { label, left in
+                ForEach([("LEFT", true), ("RIGHT", false)], id: \.0) { label, left in
                     Button { state.snapDockLeft = left } label: {
                         let active = state.snapDockLeft == left
                         Text(label)

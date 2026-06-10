@@ -138,7 +138,10 @@ struct PeekPanelView: View {
                 }
             }
             .frame(width: 78)
-            .offset(x: -5)
+            // Compensates the panel's off-screen bleed (12pt past the edge): right dock
+            // is clipped on the right → nudge left; left dock is clipped on the LEFT →
+            // mirror the nudge right, otherwise the previous-button gets eaten.
+            .offset(x: state.snapDockLeft ? 5 : -5)
 
             Spacer(minLength: 0)
         }
