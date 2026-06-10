@@ -19,6 +19,20 @@ struct GONEApp: App {
     }
 }
 
+// Aligns the fixed-size player content inside the hosting view. When the snapped
+// window is narrower than the content (docked tab / peek), the visible slice must
+// contain the peek panel: right dock shows the LEADING slice, left dock shows the
+// TRAILING slice — so the tab is pixel-identical on both edges (panel against the
+// screen edge, 6pt glass gap toward the interior).
+private struct HostingRoot: View {
+    @EnvironmentObject var state: PlayerState
+    var body: some View {
+        RootView()
+            .frame(maxWidth: .infinity, maxHeight: .infinity,
+                   alignment: state.snapDockLeft ? .topTrailing : .topLeading)
+    }
+}
+
 // ── App Delegate — configures the chromeless window ──────────────────────────
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -95,11 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // sizingOptions=[] does not disable that path. A plain NSView container in
             // between breaks the mechanism. topLeading alignment keeps the left content
             // slice (the peek tab) visible when the window is narrower than the content.
-            let hosting = NSHostingView(
-                rootView: RootView()
-                    .environmentObject(state)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            )
+            let hosting = NSHostingView(rootView: HostingRoot().environmentObject(state))
             hosting.sizingOptions = []
             let container = NSView()
             panel.contentView = container

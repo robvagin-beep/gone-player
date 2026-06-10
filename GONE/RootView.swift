@@ -144,11 +144,13 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.12), value: isDropTarget)
-        // Peek panel — visible when snapped to right edge
-        .overlay(alignment: .leading) {
+        // Peek panel — visible when snapped to an edge. Mirrors with the dock side:
+        // right dock = leading slice of the content, left dock = trailing slice
+        // (see HostingRoot), so the panel hugs the screen edge identically on both.
+        .overlay(alignment: state.snapDockLeft ? .trailing : .leading) {
             if state.snapState == .docked || state.snapState == .peeking {
                 PeekPanelView(isDropTarget: $isDropTarget, onFileDrop: handleDrop)
-                    .offset(x: 6)
+                    .offset(x: state.snapDockLeft ? -6 : 6)
             }
         }
         .onAppear {
