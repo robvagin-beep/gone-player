@@ -19,10 +19,17 @@ struct GONEApp: App {
     }
 }
 
-// The window always matches the content size (snapped windows keep full width and
-// simply slide past the screen edge), so the hosted root needs no slice alignment.
+// Reproduces the old WindowGroup placement: the fixed-size RootView is CENTERED in
+// the hosting area. The display-scale math depends on this — scaleEffect shrinks the
+// content around the view center, and updateWindowSize sizes the window to the scaled
+// shell, so center-in-center makes the visual fill the window exactly. A top-leading
+// placement made scaled content sit in the window's corner and the magnify spring
+// jump/clip. Snapped windows keep full width, so no slice alignment is needed.
 private struct HostingRoot: View {
-    var body: some View { RootView() }
+    var body: some View {
+        RootView()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
 }
 
 // Keeps the hosted SwiftUI view exactly the size of the window content area.
