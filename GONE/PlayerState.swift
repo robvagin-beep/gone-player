@@ -252,9 +252,12 @@ final class PlayerState: ObservableObject {
                 guard let self, self.xyPad.active, self.xyPad.effectAxis == .bpmChop else {
                     self?.stopBPMChop(); return
                 }
-                guard let bpm = self.current?.bpm, bpm > 0 else { return }
+                guard let bpm = self.current?.bpm, bpm > 0 else {
+                    self.audioEngine.setLPF(cutoff: 0)   // neutral — don't freeze a mid-sweep filter
+                    return
+                }
 
-                let subdivIdx = Int(Double(self.xyPad.point.x) * 3.99)  // 0–3
+                let subdivIdx = min(3, max(0, Int(Double(self.xyPad.point.x) * 3.99)))  // clamp: pad overshoot must not yield 32Hz gates
                 let subdivMult = pow(2.0, Double(subdivIdx))               // 1, 2, 4, 8
                 let gateHz = bpm / 60.0 * subdivMult
 
@@ -286,9 +289,12 @@ final class PlayerState: ObservableObject {
                 guard let self, self.xyPad.active, self.xyPad.effectAxis == .slicer else {
                     self?.stopSlicer(); return
                 }
-                guard let bpm = self.current?.bpm, bpm > 0 else { return }
+                guard let bpm = self.current?.bpm, bpm > 0 else {
+                    self.audioEngine.setGateVolume(1.0)   // neutral — don't hold the gate shut
+                    return
+                }
 
-                let subdivIdx = Int(Double(self.xyPad.point.x) * 3.99)  // 0–3
+                let subdivIdx = min(3, max(0, Int(Double(self.xyPad.point.x) * 3.99)))  // clamp: pad overshoot must not yield 32Hz gates
                 let subdivMult = pow(2.0, Double(subdivIdx))               // 1, 2, 4, 8
                 let gateHz = bpm / 60.0 * subdivMult
 
@@ -411,7 +417,9 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "pitchRange")          != nil { pitchRange          = ud.integer(forKey: "pitchRange") }
         if ud.object(forKey: "masterTempo")         != nil { masterTempo         = ud.bool(forKey: "masterTempo") }
         if ud.object(forKey: "repeatMode")          != nil { repeatMode          = RepeatMode(rawValue: ud.integer(forKey: "repeatMode")) ?? .all }
-        if ud.object(forKey: "windowScale")         != nil { windowScale         = ud.double(forKey: "windowScale") }
+        // Clamp inline — assigning the raw value first would briefly publish an
+        // invalid scale to observers before the validation block below runs.
+        if ud.object(forKey: "windowScale")         != nil { windowScale         = max(0.5, min(2.0, ud.double(forKey: "windowScale"))) }
         if ud.object(forKey: "gradientMapHue")      != nil { gradientMapHue      = ud.double(forKey: "gradientMapHue") }
         if ud.object(forKey: "gradientMapSat")      != nil { gradientMapSaturation = ud.double(forKey: "gradientMapSat") }
         if ud.object(forKey: "autoBPMOnImport")     != nil { autoBPMOnImport     = ud.bool(forKey: "autoBPMOnImport") }

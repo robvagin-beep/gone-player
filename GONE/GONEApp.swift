@@ -417,7 +417,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleHotCue(index: Int, for state: PlayerState) {
-        guard state.currentId != nil else { return }
+        // isLoaded too: in the gap between currentId assignment and engine load,
+        // a cue tap would silently store ratio 0 ("start of track").
+        guard state.currentId != nil, state.audioEngine.snapshot().isLoaded else { return }
         if let cue = state.hotCues[index] {
             state.audioEngine.seek(ratio: cue)
         } else {

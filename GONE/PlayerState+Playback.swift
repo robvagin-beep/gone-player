@@ -81,7 +81,7 @@ extension PlayerState {
               let b = loopB,
               let current,
               current.duration > 0,
-              b > a,
+              b - a >= 0.05,   // min 50ms gap — a near-zero loop thrash-seeks every progress tick
               time >= b else { return }
 
         let ratio = max(0, min(1, a / current.duration))

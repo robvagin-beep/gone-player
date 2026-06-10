@@ -596,6 +596,9 @@ final class LibraryScanner {
                 }
             }
             allSamples.append(contentsOf: converted)
+            // Hard cap at 30 min of decoded audio: a 2h file would hold ~316MB resident
+            // (× batchConcurrency). 30 min is far more than BPM/waveform need.
+            if allSamples.count > Int(decodedSR * 1800) { break }
             if let onProgress {
                 let pct = min(0.88, Double(allSamples.count) / Double(max(1, expectedSamples)))
                 if pct - lastReportedPct >= 0.08 { lastReportedPct = pct; onProgress(pct) }
