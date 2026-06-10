@@ -87,9 +87,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let panel = FloatingPlayerPanel(
                 contentRect: NSRect(x: 0, y: 0, width: G.windowWidth + 8, height: 190)
             )
-            panel.contentViewController = NSHostingController(
-                rootView: RootView().environmentObject(state)
+            // Window frame is owned by updateWindowSize + WindowSnapManager — the hosting
+            // layer must NOT drive it. When NSHostingView IS the window's contentView,
+            // NSHostingView.updateAnimatedWindowSize (from windowDidLayout) re-sizes the
+            // window to the SwiftUI ideal size on every layout, fighting the snap
+            // shrink-to-tab in an endless 21↔472 setFrame war (stack-traced 2026-06-10);
+            // sizingOptions=[] does not disable that path. A plain NSView container in
+            // between breaks the mechanism. topLeading alignment keeps the left content
+            // slice (the peek tab) visible when the window is narrower than the content.
+            let hosting = NSHostingView(
+                rootView: RootView()
+                    .environmentObject(state)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             )
+            hosting.sizingOptions = []
+            let container = NSView()
+            panel.contentView = container
+            hosting.frame = container.bounds
+            hosting.autoresizingMask = [.width, .height]
+            container.addSubview(hosting)
             playerPanel = panel
             configureWindow(panel)
             panel.makeKeyAndOrderFront(nil)
@@ -555,6 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.$confirmBeforeDelete.map { _ in () }.eraseToAnyPublisher(),
             state.$hideMissingTracks.map { _ in () }.eraseToAnyPublisher(),
             state.$snapInactivityDelay.map { _ in () }.eraseToAnyPublisher(),
+            state.$snapDockLeft.map { _ in () }.eraseToAnyPublisher(),
             state.$snapAnimSpeed.map { _ in () }.eraseToAnyPublisher(),
             state.$snapTabWidth.map { _ in () }.eraseToAnyPublisher(),
             state.$debugMode.map { _ in () }.eraseToAnyPublisher(),

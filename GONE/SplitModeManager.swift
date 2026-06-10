@@ -323,6 +323,7 @@ final class SplitModeManager: ObservableObject {
             .environmentObject(state)
 
         let hc = NSHostingController(rootView: content)
+        hc.sizingOptions = []   // clone frame is owned by ClonePlayerShell.resizeWindow
 
         // Match primary's current size exactly (panels already open)
         let initSize = primary.frame.size

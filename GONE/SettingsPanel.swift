@@ -781,6 +781,28 @@ private struct SnapSettingsTab: View {
 
             SDivider()
 
+            SHead(text: "DOCK SIDE")
+            HStack(spacing: 4) {
+                ForEach([("RIGHT", false), ("LEFT", true)], id: \.0) { label, left in
+                    Button { state.snapDockLeft = left } label: {
+                        let active = state.snapDockLeft == left
+                        Text(label)
+                            .font(G.mono(10, weight: active ? .semibold : .regular))
+                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(active ? 0.12 : 0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 14)
+
+            SDivider()
+
             SHead(text: "ANIMATION")
             HStack(spacing: 4) {
                 ForEach(speedOptions, id: \.0) { label, val in

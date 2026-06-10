@@ -114,9 +114,10 @@ final class PlayerState: ObservableObject {
     var isSnapping = false  // blocks updateWindowSize during snap animation
 
     // MARK: — Snap tuning (exposed to Settings)
-    @Published var snapInactivityDelay: Double = 5.0   // seconds idle before auto-dock (3/5/10/20)
+    @Published var snapInactivityDelay: Double = 5.0   // seconds idle before auto-dock (2/3/5/10/20)
     @Published var snapAnimSpeed: Double = 1.0          // multiplier: <1 faster, >1 slower
     @Published var snapTabWidth: Double = 19            // px of player visible when docked (8–36)
+    @Published var snapDockLeft = false                  // dock side: false = right (default), true = left
 
     // MARK: — Debug
     @Published var debugMode: Bool = false
@@ -435,6 +436,7 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "snapInactivityDelay") != nil { snapInactivityDelay = ud.double(forKey: "snapInactivityDelay") }
         if ud.object(forKey: "snapAnimSpeed")       != nil { snapAnimSpeed       = ud.double(forKey: "snapAnimSpeed") }
         if ud.object(forKey: "snapTabWidth")        != nil { snapTabWidth        = ud.double(forKey: "snapTabWidth") }
+        if ud.object(forKey: "snapDockLeft")        != nil { snapDockLeft        = ud.bool(forKey: "snapDockLeft") }
         if ud.object(forKey: "debugMode")           != nil { debugMode           = ud.bool(forKey: "debugMode") }
         if !windowScale.isFinite || windowScale < 0.5 || windowScale > 2.0 { windowScale = 1.0 }
         if !magnifyProximity.isFinite || magnifyProximity <= 0 { magnifyProximity = 120 }
@@ -463,6 +465,7 @@ final class PlayerState: ObservableObject {
         ud.set(snapInactivityDelay,     forKey: "snapInactivityDelay")
         ud.set(snapAnimSpeed,           forKey: "snapAnimSpeed")
         ud.set(snapTabWidth,            forKey: "snapTabWidth")
+        ud.set(snapDockLeft,            forKey: "snapDockLeft")
         ud.set(debugMode,              forKey: "debugMode")
         ud.set(alwaysOnTop,             forKey: "alwaysOnTop")
         ud.set(invisibleMode,           forKey: "invisibleMode")

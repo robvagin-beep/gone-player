@@ -12,6 +12,28 @@ final class WindowSnapManager {
         didSet { playerState?.setSnapState(snapState) }
     }
 
+    // Which screen edge the window docks to — a user SETTING (Settings → Snap →
+    // Dock side), right by default. Tester: "прячется только в одну сторону и мешает".
+    // All geometry below derives from this.
+    enum DockEdge { case left, right }
+    var dockEdge: DockEdge { (playerState?.snapDockLeft ?? false) ? .left : .right }
+
+    // Left edge uses visibleFrame.minX, not frame.minX: with the macOS Dock on the
+    // left, frame.minX would park the tab UNDER the Dock. visibleFrame collapses to
+    // frame when the Dock is hidden or elsewhere, so right stays on frame.maxX.
+    // Docked: window is shrunk to tabVisible width, fully against the edge.
+    private func dockedX(_ screen: NSScreen) -> CGFloat {
+        dockEdge == .right ? screen.frame.maxX - tabVisible : screen.visibleFrame.minX
+    }
+    // Peeking: window is peekVisible+14 wide; the 14pt panel bleed hangs off-screen.
+    private func peekX(_ screen: NSScreen) -> CGFloat {
+        dockEdge == .right ? screen.frame.maxX - peekVisible : screen.visibleFrame.minX - 14
+    }
+    // Cursor distance to the docked edge (for the proximity poll).
+    private func edgeDistance(_ screen: NSScreen, mouseX: CGFloat) -> CGFloat {
+        dockEdge == .right ? screen.frame.maxX - mouseX : mouseX - screen.visibleFrame.minX
+    }
+
     weak var playerState: PlayerState?
 
     // tabVisible, inactivityDelay, and anim durations are driven by PlayerState settings.
@@ -42,8 +64,11 @@ final class WindowSnapManager {
     // Captured at enable(), used for the full lifecycle.
     private weak var snapWindow: NSWindow?
 
-    // Frame lock — enforces snap X position even when SwiftUI calls setFrame internally.
+    // Frame lock — enforces snap X position AND tab width even when the SwiftUI
+    // content layer resizes the window internally (panel-collapse animations keep
+    // re-expanding the docked window to full width — resize trace 2026-06-10).
     private var frameLockObserver: Any?
+    private var frameLockResizeObserver: Any?
     private var frameLockX: CGFloat? = nil
 
     private var mainWindow: NSWindow? {
@@ -109,6 +134,18 @@ final class WindowSnapManager {
                     self.constrainCurrentWindow()
                 }
                 .store(in: &settingsCancellables)
+
+            // Dock side changed while docked/peeking → jump to the other edge.
+            // receive(on:) defers one tick so dockEdge reads the committed value.
+            ps.$snapDockLeft
+                .dropFirst()
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in
+                    guard let self,
+                          self.snapState == .docked || self.snapState == .peeking else { return }
+                    self.constrainCurrentWindow()
+                }
+                .store(in: &settingsCancellables)
         }
     }
 
@@ -156,25 +193,31 @@ final class WindowSnapManager {
     private func lockFrame(window: NSWindow, x: CGFloat) {
         unlockFrame()
         frameLockX = x
-        frameLockObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification,
-            object: window,
-            queue: .main
-        ) { [weak self, weak window] _ in
+        let enforce: (Notification) -> Void = { [weak self, weak window] _ in
             guard let self, let window else { return }
             MainActor.assumeIsolated {
                 guard let lockX = self.frameLockX else { return }
-                if abs(window.frame.origin.x - lockX) > 0.5 {
-                    window.setFrameOrigin(NSPoint(x: lockX, y: window.frame.origin.y))
-                }
+                var f = window.frame
+                var dirty = false
+                if abs(f.origin.x - lockX) > 0.5 { f.origin.x = lockX; dirty = true }
+                if abs(f.size.width - self.tabVisible) > 0.5 { f.size.width = self.tabVisible; dirty = true }
+                if dirty { window.setFrame(f, display: true) }
             }
         }
+        frameLockObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification, object: window, queue: .main, using: enforce)
+        frameLockResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification, object: window, queue: .main, using: enforce)
     }
 
     private func unlockFrame() {
         if let obs = frameLockObserver {
             NotificationCenter.default.removeObserver(obs)
             frameLockObserver = nil
+        }
+        if let obs = frameLockResizeObserver {
+            NotificationCenter.default.removeObserver(obs)
+            frameLockResizeObserver = nil
         }
         frameLockX = nil
     }
@@ -281,7 +324,7 @@ final class WindowSnapManager {
         guard let screen = screen(for: window) else { return }
         removeGlobalClickMonitor()
 
-        let snapX = screen.frame.maxX - tabVisible
+        let snapX = dockedX(screen)
 
         // Slide starts first, panel collapse follows ~80ms later so the horizontal
         // motion is clearly perceived before the window shrinks.
@@ -418,12 +461,12 @@ final class WindowSnapManager {
             let f = window.frame
             window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: peekWindowWidth, height: f.height), display: true)
         }
-        slideTo(window: window, x: screen.frame.maxX - peekVisible)
+        slideTo(window: window, x: peekX(screen))
     }
 
     private func dockFromProximity(window: NSWindow) {
         guard let screen = screen(for: window) else { return }
-        let snapX = screen.frame.maxX - tabVisible
+        let snapX = dockedX(screen)
         let y = savedDockedY ?? clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
         dockToken &+= 1
         let capturedToken = dockToken
@@ -502,9 +545,7 @@ final class WindowSnapManager {
               snapState == .peeking || snapState == .docked else { return }
         let newY = clampY(window.frame.origin.y, height: window.frame.height, screen: screen)
         savedDockedY = newY
-        let snapX = snapState == .peeking
-            ? screen.frame.maxX - peekVisible
-            : screen.frame.maxX - tabVisible
+        let snapX = snapState == .peeking ? peekX(screen) : dockedX(screen)
         if snapState == .docked {
             frameLockX = snapX
             // Enforce tabVisible width — prevents full-width body flash during Space transition.
@@ -543,9 +584,7 @@ final class WindowSnapManager {
               let screen = screen(for: window),
               snapState == .docked || snapState == .peeking else { return }
 
-        let snapX = snapState == .peeking
-            ? screen.frame.maxX - peekVisible
-            : screen.frame.maxX - tabVisible
+        let snapX = snapState == .peeking ? peekX(screen) : dockedX(screen)
         let newY = clampY(startOrigin.y + currentMouse.y - startMouse.y, height: window.frame.height, screen: screen)
         savedDockedY = newY
         frameLockX = snapX
@@ -592,7 +631,7 @@ final class WindowSnapManager {
               let screen = screen(for: window)
         else { return }
 
-        let dist = screen.frame.maxX - NSEvent.mouseLocation.x
+        let dist = edgeDistance(screen, mouseX: NSEvent.mouseLocation.x)
         if snapState == .docked,  dist <= proximityZone {
             unlockFrame()  // allow peek slide
             peek(window: window)

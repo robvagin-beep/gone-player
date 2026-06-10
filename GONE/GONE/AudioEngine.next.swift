@@ -949,7 +949,7 @@ final class AudioEngineNext {
             let lowerFrequency = pow(10, logMin + (logMax - logMin) * Float(barIndex) / Float(spectrumBars))
             let upperFrequency = pow(10, logMin + (logMax - logMin) * Float(barIndex + 1) / Float(spectrumBars))
             let lowerIndex = max(0, Int(lowerFrequency / binWidth))
-            let upperIndex = min(fftMagnitudes.count - 1, Int(upperFrequency / binWidth))
+             let upperIndex = min(fftMagnitudes.count - 1, Int(upperFrequency / binWidth))
             guard lowerIndex <= upperIndex else { continue }
             var peak: Float = 0
             fftMagnitudes.withUnsafeBufferPointer { magnitudesBuffer in
