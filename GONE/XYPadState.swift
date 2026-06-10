@@ -89,6 +89,12 @@ extension PlayerState {
         startXYSpring()
     }
 
+    // Perceptual wet curve. The ear hears the first few percent of reverb/delay/crush
+    // loudest, so a linear pad mapping made 0.1 sound already "fully on" (tester
+    // feedback). Quadratic keeps the top end intact and turns the lower third of the
+    // pad into a fine-control zone. Frequencies and feedback stay linear.
+    private func wetCurve(_ v: Float) -> Float { v * v }
+
     private func applyXYEffect(_ point: CGPoint) {
         let x = Float(point.x)
         let y = Float(point.y)
@@ -133,25 +139,25 @@ extension PlayerState {
             audioEngine.setLPF(cutoff: 0)
             startSlicer()
         case .reverb:
-            audioEngine.setReverb(amount: x)
+            audioEngine.setReverb(amount: wetCurve(x))
         case .filtVerb:
             audioEngine.setHPF(cutoff: 0)
             audioEngine.setLPF(cutoff: x * 0.7)
             audioEngine.setLPFResonance(1.0)
-            audioEngine.setReverb(amount: y)
+            audioEngine.setReverb(amount: wetCurve(y))
         case .simpleDelay:
             let time     = Double(x) * 1.0
             let feedback = y * 0.75
-            let wet      = min(1.0, y * 1.5)
+            let wet      = min(1.0, wetCurve(y) * 1.5)
             audioEngine.setDelay(time: time, feedback: feedback, wet: wet)
         case .dubDelay:
             let time      = Double(x) * 0.75
             let feedback  = y * 0.65
-            let wet       = min(1.0, y * 1.2)
+            let wet       = min(1.0, wetCurve(y) * 1.2)
             let darkness  = Float(max(200, 22050.0 * pow(0.005, Double(y))))
             audioEngine.setDelay(time: time, feedback: feedback, wet: wet, lowPassCutoff: darkness)
         case .lofi:
-            audioEngine.setLoFi(wet: x * y)
+            audioEngine.setLoFi(wet: wetCurve(x * y))
         }
     }
 }

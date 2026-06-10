@@ -751,7 +751,7 @@ private struct SnapSettingsTab: View {
     @ObservedObject var state: PlayerState
 
     private let delayOptions: [(String, Double)] = [
-        ("3 s", 3), ("5 s", 5), ("10 s", 10), ("20 s", 20)
+        ("2 s", 2), ("3 s", 3), ("5 s", 5), ("10 s", 10), ("20 s", 20)
     ]
     private let speedOptions: [(String, Double)] = [
         ("SLOW", 1.8), ("MED", 1.0), ("FAST", 0.5)

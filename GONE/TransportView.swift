@@ -29,7 +29,7 @@ struct TransportView: View {
                         }
                     }
                 )
-                .goneTooltip("Snap to edge — slides off, reappears on hover")
+                .goneTooltip("Snap to edge — slides off, reappears on hover · timing in Settings → Snap")
                 IconBtn(icon: "list.bullet", active: state.playlistOpen) {
                     state.playlistOpen.toggle()
                 }
