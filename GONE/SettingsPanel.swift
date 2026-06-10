@@ -583,8 +583,35 @@ private struct PlaybackSettingsTab: View {
             SRow(label: "Auto-scan on import") { MiniToggle(isOn: $state.autoBPMOnImport) }
 
             SHead(text: "DETECTION RANGE")
+            // Genre presets — the Rekordbox approach: octave/half-tempo ambiguity is
+            // resolved by constraining the search range, not by the algorithm alone.
+            // Bench: breaks tagged 133-136 detected at 2/3 tempo on 60-200, perfectly
+            // within 110-160.
+            HStack(spacing: 4) {
+                ForEach([("OPEN", 60.0, 200.0), ("HIP-HOP", 70.0, 115.0), ("CLUB", 90.0, 180.0),
+                         ("BREAKS", 110.0, 160.0), ("D&B", 160.0, 195.0)], id: \.0) { label, lo, hi in
+                    Button {
+                        state.bpmAnalysisFloor = lo
+                        state.bpmAnalysisCeiling = hi
+                    } label: {
+                        let active = abs(state.bpmAnalysisFloor - lo) < 0.5 && abs(state.bpmAnalysisCeiling - hi) < 0.5
+                        Text(label)
+                            .font(G.mono(8, weight: active ? .semibold : .regular))
+                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(active ? 0.12 : 0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+
             SRow(label: "Min BPM") {
-                NumStepper(value: $state.bpmAnalysisFloor, range: 30...150, step: 5)
+                NumStepper(value: $state.bpmAnalysisFloor, range: 30...190, step: 5)
             }
             SDivider()
             SRow(label: "Max BPM") {
