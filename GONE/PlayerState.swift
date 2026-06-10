@@ -425,7 +425,9 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "magnifyEnabled")      != nil { magnifyEnabled      = ud.bool(forKey: "magnifyEnabled") }
         if ud.object(forKey: "magnifyProximity")    != nil { magnifyProximity    = ud.double(forKey: "magnifyProximity") }
         if ud.object(forKey: "magnifySpeed")        != nil { magnifySpeed        = ud.double(forKey: "magnifySpeed") }
-        if ud.object(forKey: "snapEnabled")         != nil { snapEnabled         = ud.bool(forKey: "snapEnabled") }
+        // snapEnabled is intentionally NOT restored: snap always starts OFF.
+        // A restored "on" bolt looked active but wasn't armed (empty library guard),
+        // and an armed one hid the window right after launch. User enables it per session.
         if ud.object(forKey: "snapInactivityDelay") != nil { snapInactivityDelay = ud.double(forKey: "snapInactivityDelay") }
         if ud.object(forKey: "snapAnimSpeed")       != nil { snapAnimSpeed       = ud.double(forKey: "snapAnimSpeed") }
         if ud.object(forKey: "snapTabWidth")        != nil { snapTabWidth        = ud.double(forKey: "snapTabWidth") }
@@ -454,7 +456,6 @@ final class PlayerState: ObservableObject {
         ud.set(autoOpenPlaylistOnImport, forKey: "autoOpenPlaylist")
         ud.set(confirmBeforeDelete,     forKey: "confirmDelete")
         ud.set(hideMissingTracks,       forKey: "hideMissing")
-        ud.set(snapEnabled,             forKey: "snapEnabled")
         ud.set(snapInactivityDelay,     forKey: "snapInactivityDelay")
         ud.set(snapAnimSpeed,           forKey: "snapAnimSpeed")
         ud.set(snapTabWidth,            forKey: "snapTabWidth")
