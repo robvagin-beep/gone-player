@@ -207,7 +207,10 @@ extension PlayerState {
         bpmBatchTask = task
     }
 
-    private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
+    // nonisolated: with the project's MainActor-by-default isolation this method body —
+    // including the awaited analyzer calls — ran ON the main thread. All PlayerState
+    // access inside already goes through MainActor.run, so the body itself is main-free.
+    nonisolated private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
         guard !Task.isCancelled else { return }
         // Cache hit: skip decode + analysis entirely. Saves ~300-500 ms per track.
         if let hit = await AnalysisCache.shared.get(for: track.url),

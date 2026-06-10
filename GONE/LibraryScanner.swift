@@ -5,7 +5,12 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-final class LibraryScanner {
+// nonisolated: the project default is MainActor isolation (SWIFT_DEFAULT_ACTOR_ISOLATION),
+// which silently pinned ALL decode/DSP work — BPM autocorrelation, waveform computation,
+// AVAssetReader loops — to the MAIN THREAD. Profiled during a 1191-track import: the main
+// thread spent 3.5s of a 5s sample inside computeWaveformFromSamples → 2s UI hangs.
+// This class touches no UI state; everything here must run on background executors.
+nonisolated final class LibraryScanner {
 
     static let supportedExtensions: Set<String> = ["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac"]
 
