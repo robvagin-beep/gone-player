@@ -607,12 +607,17 @@ final class LibraryScanner {
         let effectiveSec = totalSec > 0 ? totalSec : Double(allSamples.count) / decodedSR
         let waveform = computeWaveformFromSamples(allSamples, totalSec: effectiveSec, bars: waveformBars)
 
+        // Multi-window vote. The old single window (15–45s) sat in the intro of nearly
+        // every club track — sparse/ambient beats produced wildly wrong initial BPM
+        // (tester report). The full track is already decoded; three 30s windows across
+        // the body cost ~ms each and outvote any one weird section.
         let windowSec = min(30.0, effectiveSec)
         let startSec  = effectiveSec > 50 ? 15.0 : 0.0
         let startIdx  = Int(startSec * decodedSR)
         let endIdx    = min(allSamples.count, startIdx + Int(windowSec * decodedSR))
         let bpmSlice  = startIdx < endIdx ? Array(allSamples[startIdx..<endIdx]) : allSamples
-        let bpm = computeBPMFromSamples(bpmSlice, floor: floor, ceiling: ceiling)
+        let bpm = voteBPM(samples: allSamples, durationSec: effectiveSec,
+                          sampleRate: decodedSR, floor: floor, ceiling: ceiling)
 
         var beatGridOffset: Double = 0
         var gridConfidence: Double = 0
@@ -634,6 +639,62 @@ final class LibraryScanner {
 
         onProgress?(1.0)
         return (bpm, waveform, beatGridOffset, gridConfidence)
+    }
+
+    // Three 30s windows at 25% / 50% / 75% of the track body, median vote.
+    // If any two windows agree within 2%, their mean wins (the third was an outlier
+    // section — breakdown, ambient bridge, outro). Short tracks fall back to the
+    // single-window path.
+    private func voteBPM(samples: [Float], durationSec: Double, sampleRate: Double,
+                         floor: Double, ceiling: Double) -> Double {
+        let windowSec = 30.0
+        guard durationSec > 70 else {
+            let start = durationSec > 50 ? 15.0 : 0.0
+            let s = Int(start * sampleRate)
+            let e = min(samples.count, s + Int(min(windowSec, durationSec) * sampleRate))
+            return windowVote(s < e ? Array(samples[s..<e]) : samples,
+                              floor: floor, ceiling: ceiling)
+        }
+        var votes: [Double] = []
+        for anchor in [0.25, 0.5, 0.75] {
+            let start = max(0, durationSec * anchor - windowSec / 2)
+            let s = Int(start * sampleRate)
+            let e = min(samples.count, s + Int(windowSec * sampleRate))
+            guard s < e else { continue }
+            let v = windowVote(Array(samples[s..<e]), floor: floor, ceiling: ceiling)
+            if v > 0 { votes.append(v) }
+        }
+        guard !votes.isEmpty else { return 0 }
+        let sorted = votes.sorted()
+        if sorted.count >= 2 {
+            for i in 0..<(sorted.count - 1) where sorted[i + 1] - sorted[i] <= sorted[i] * 0.02 {
+                return (((sorted[i] + sorted[i + 1]) / 2) * 10).rounded() / 10
+            }
+        }
+        return (sorted[sorted.count / 2] * 10).rounded() / 10
+    }
+
+    // Breaks rescue. On breakbeat material the syncopated snare period (1.5T or 1.33T)
+    // out-correlates the true beat period, and the wide default range lets that false
+    // period win: bench showed 135 BPM breaks detected as 90.7 (= 2/3) on the full
+    // 60-200 range, but perfectly (136.0) when the search was confined to 110-180.
+    // So: cross-check each window with a narrow club-band pass; when the wide result
+    // relates to the narrow one as 2:3 or 3:4, the wide pass locked onto the syncopa —
+    // trust the narrow. Applies only when the user range fully covers 110-180.
+    private func windowVote(_ slice: [Float], floor: Double, ceiling: Double) -> Double {
+        let wide = computeBPMFromSamples(slice, floor: floor, ceiling: ceiling)
+        guard floor <= 110, ceiling >= 180, wide > 0 else { return wide }
+        // Only rescue when the wide result landed OUTSIDE the club band: a wide result
+        // already inside 110-180 is presumed honest — cross-checking it produced false
+        // swaps (bench: honest 129.2 replaced by its 4:3 neighbour 172.3).
+        guard wide < 110 || wide > 180 else { return wide }
+        let narrow = computeBPMFromSamples(slice, floor: 110, ceiling: 180)
+        guard narrow > 0 else { return wide }
+        let ratio = narrow / wide
+        for target in [1.5, 4.0 / 3.0] where abs(ratio - target) < 0.04 {
+            return narrow
+        }
+        return wide
     }
 
     private func computeBPMFromSamples(_ samples: [Float], floor: Double, ceiling: Double) -> Double {
@@ -690,7 +751,7 @@ final class LibraryScanner {
         // Rational-lag sanity: 4:3 / 3:4 confusions (bench: 133 BPM detected as 178).
         // The harmonic-weighted score can prefer a lag whose 2×/3× harmonics are strong;
         // if a rational neighbour has clearly stronger RAW correlation, it is the true period.
-        for (num, den) in [(4, 3), (3, 4)] {
+        for (num, den) in [(4, 3), (3, 4), (2, 3), (3, 2)] {
             let cand = bestLag * num / den
             if cand >= minLag, cand <= maxLag, corrValues[cand] > corrValues[bestLag] * 1.08 {
                 bestLag = cand
@@ -880,7 +941,7 @@ final class LibraryScanner {
         }
 
         // Rational-lag sanity: 4:3 / 3:4 confusions — see analyzeBPMWithWaveform.
-        for (num, den) in [(4, 3), (3, 4)] {
+        for (num, den) in [(4, 3), (3, 4), (2, 3), (3, 2)] {
             let cand = bestLag * num / den
             if cand >= minLag, cand <= maxLag, corrValues[cand] > corrValues[bestLag] * 1.08 {
                 bestLag = cand
