@@ -82,6 +82,9 @@ final class PlayerState: ObservableObject {
     @Published var playlistPanelHeight: CGFloat = 244
     @Published var cueExportEnabled = false   // prefix filenames 001_, 002_… on drag-to-Finder
     @Published var alwaysOnTop = true
+    // Invisible mode: player fades to a ghost when the cursor is away, hover reveals.
+    // Independent of snap — works while the window floats anywhere on screen.
+    @Published var invisibleMode = false
 
     // MARK: — Hot Cues (session-only, 4 slots, reset on track change)
     @Published var hotCues: [Double?] = [nil, nil, nil, nil]
@@ -422,6 +425,7 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "confirmDelete")       != nil { confirmBeforeDelete  = ud.bool(forKey: "confirmDelete") }
         if ud.object(forKey: "hideMissing")         != nil { hideMissingTracks   = ud.bool(forKey: "hideMissing") }
         if ud.object(forKey: "alwaysOnTop")         != nil { alwaysOnTop         = ud.bool(forKey: "alwaysOnTop") }
+        if ud.object(forKey: "invisibleMode")       != nil { invisibleMode       = ud.bool(forKey: "invisibleMode") }
         if ud.object(forKey: "magnifyEnabled")      != nil { magnifyEnabled      = ud.bool(forKey: "magnifyEnabled") }
         if ud.object(forKey: "magnifyProximity")    != nil { magnifyProximity    = ud.double(forKey: "magnifyProximity") }
         if ud.object(forKey: "magnifySpeed")        != nil { magnifySpeed        = ud.double(forKey: "magnifySpeed") }
@@ -461,6 +465,7 @@ final class PlayerState: ObservableObject {
         ud.set(snapTabWidth,            forKey: "snapTabWidth")
         ud.set(debugMode,              forKey: "debugMode")
         ud.set(alwaysOnTop,             forKey: "alwaysOnTop")
+        ud.set(invisibleMode,           forKey: "invisibleMode")
         // Save base scale (not magnified override) so user preference is preserved
         ud.set(isMagnified ? magnifyBaseScale : windowScale, forKey: "windowScale")
         ud.set(magnifyEnabled,          forKey: "magnifyEnabled")

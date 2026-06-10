@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupNowPlayingObservation()
             setupSettingsPersistence()
             if playerState?.magnifyEnabled == true { installMagnifyMonitor() }
+            if playerState?.invisibleMode == true { installInvisibleMonitor() }
             // Snap is never armed automatically: snapEnabled always starts false
             // (not restored from UserDefaults) and is enabled per session via the bolt.
             if playerState?.restoreLastSession == true {
@@ -65,6 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isCorrectingFrame = false
     private var magnifyTimer: Timer? = nil
     private var magnifyBaseFrame: CGRect = .zero
+    private var invisibleTimer: Timer? = nil
+    private var isGhosted = false
+    private var lastMouseInsidePlayer = Date()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
@@ -555,12 +559,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.$snapTabWidth.map { _ in () }.eraseToAnyPublisher(),
             state.$debugMode.map { _ in () }.eraseToAnyPublisher(),
             state.$alwaysOnTop.map { _ in () }.eraseToAnyPublisher(),
+            state.$invisibleMode.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifyEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifyProximity.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifySpeed.map { _ in () }.eraseToAnyPublisher(),
         ]
         Publishers.MergeMany(settingsA + settingsB)
             .sink { debouncedSave.send() }
+            .store(in: &settingsCancellables)
+
+        // Invisible mode toggle: install/remove the ghost monitor, restore alpha on disable.
+        state.$invisibleMode
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                if enabled {
+                    self.lastMouseInsidePlayer = Date()   // grace period before first fade
+                    self.installInvisibleMonitor()
+                } else {
+                    self.removeInvisibleMonitor()
+                    if let w = self.resolvedMainWindow() { self.setPlayerGhosted(false, window: w) }
+                }
+            }
             .store(in: &settingsCancellables)
 
         // Always-on-top toggle: re-apply presence policy live.
@@ -593,6 +614,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &settingsCancellables)
+    }
+
+    // MARK: — Invisible mode (ghost opacity, hover to reveal)
+
+    private let ghostAlpha: CGFloat = 0.18
+    private let ghostFadeOutDelay: TimeInterval = 0.7   // hysteresis — no flicker when skimming past
+
+    private func installInvisibleMonitor() {
+        removeInvisibleMonitor()
+        let timer = Timer(timeInterval: 1.0 / 10.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkInvisibleFade() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        invisibleTimer = timer
+    }
+
+    private func removeInvisibleMonitor() {
+        invisibleTimer?.invalidate()
+        invisibleTimer = nil
+    }
+
+    private func checkInvisibleFade() {
+        guard let state = playerState, state.invisibleMode, !state.isSnapping,
+              let window = resolvedMainWindow() else { return }
+        // Docked/peeking presence belongs to WindowSnapManager — never ghost the tab.
+        guard state.snapState == .off || state.snapState == .waiting || state.snapState == .expanded else {
+            setPlayerGhosted(false, window: window)
+            return
+        }
+        // Stay visible while the user is in Settings or dragging the window.
+        if SettingsPanel.shared.currentPanel?.isVisible == true || WindowSnapManager.shared.isDragging {
+            setPlayerGhosted(false, window: window)
+            return
+        }
+        let inside = window.frame.insetBy(dx: -8, dy: -8).contains(NSEvent.mouseLocation)
+        if inside {
+            lastMouseInsidePlayer = Date()
+            setPlayerGhosted(false, window: window)
+        } else if Date().timeIntervalSince(lastMouseInsidePlayer) > ghostFadeOutDelay {
+            setPlayerGhosted(true, window: window)
+        }
+    }
+
+    private func setPlayerGhosted(_ ghosted: Bool, window: NSWindow) {
+        guard ghosted != isGhosted else { return }
+        isGhosted = ghosted
+        NSAnimationContext.runAnimationGroup { [ghostAlpha] ctx in
+            ctx.duration = ghosted ? 0.45 : 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().alphaValue = ghosted ? ghostAlpha : 1.0
+        }
     }
 
     // MARK: — Magnify proximity monitor
