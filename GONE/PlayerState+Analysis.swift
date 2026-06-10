@@ -232,7 +232,7 @@ extension PlayerState {
         let floor   = await MainActor.run { state.bpmAnalysisFloor }
         let ceiling = await MainActor.run { state.bpmAnalysisCeiling }
         // Single decode: BPM + waveform + beat grid offset from one AVAssetReader pass.
-        let (bpm, waveform, beatGridOffset, gridConfidence) = await LibraryScanner().analyzeBPMWithWaveform(
+        var (bpm, waveform, beatGridOffset, gridConfidence) = await LibraryScanner().analyzeBPMWithWaveform(
             url: track.url, floor: floor, ceiling: ceiling, waveformBars: 84
         ) { progress in
             Task { @MainActor [weak state] in
@@ -240,6 +240,34 @@ extension PlayerState {
             }
         }
         guard !Task.isCancelled else { return }
+
+        // Dance-floor sanity: in a DJ tool a first-pass result below 80 or above 145 BPM
+        // is suspect — auto-verify with the deep full-track pass and let its verdict win.
+        // Applies only on a wide/open detection range; a user-narrowed preset
+        // (D&B 160-195, HIP-HOP 70-115) makes such values expected and skips this.
+        if bpm > 0, floor < 80, ceiling > 160, bpm < 95 || bpm > 145 {
+            let deep = await LibraryScanner().analyzeBPMDeep(url: track.url, floor: floor, ceiling: ceiling)
+            guard !Task.isCancelled else { return }
+            if deep > 0 {
+                // The deep pass has no octave folding — it returns the raw period, often
+                // the lower octave (bench: 127 came back as 63.4, 135 as 67.6). Fold into
+                // 85-175 within the user range before comparing.
+                var d = deep
+                let prefLo = Swift.max(floor, 85.0)
+                let prefHi = Swift.min(ceiling, 175.0)
+                if prefLo < prefHi {
+                    while d < prefLo, d * 2 <= ceiling { d *= 2 }
+                    while d > prefHi, d / 2 >= floor { d /= 2 }
+                }
+                if abs(d - bpm) > 0.5 {
+                    bpm = (d * 10).rounded() / 10
+                    // The beat-grid phase was estimated for the discarded tempo — invalidate.
+                    beatGridOffset = 0
+                    gridConfidence = 0
+                }
+            }
+        }
+
         if bpm > 0 {
             await AnalysisCache.shared.putBPMAndWaveform(url: track.url, bpm: bpm, waveform: waveform,
                                                          beatGridOffset: beatGridOffset, beatGridConfidence: gridConfidence)
