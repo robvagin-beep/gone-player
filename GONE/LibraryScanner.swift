@@ -687,11 +687,36 @@ final class LibraryScanner {
             bestLag = halfLag
         }
 
+        // Rational-lag sanity: 4:3 / 3:4 confusions (bench: 133 BPM detected as 178).
+        // The harmonic-weighted score can prefer a lag whose 2×/3× harmonics are strong;
+        // if a rational neighbour has clearly stronger RAW correlation, it is the true period.
+        for (num, den) in [(4, 3), (3, 4)] {
+            let cand = bestLag * num / den
+            if cand >= minLag, cand <= maxLag, corrValues[cand] > corrValues[bestLag] * 1.08 {
+                bestLag = cand
+            }
+        }
+
         var bpm = 60.0 * fps / Double(bestLag)
         let lo = max(floor, 1); let hi = max(ceiling, lo + 1)
         while bpm > 0 && bpm < lo { bpm *= 2 }
         while bpm > hi { bpm /= 2 }
+        bpm = foldIntoPreferredRange(bpm, lo: lo, hi: hi)
         return (bpm * 10).rounded() / 10
+    }
+
+    // Octave folding into the typical DJ range 85–175: a detector octave error
+    // (64, 191, …) is far more likely than real sub-85 / over-175 material.
+    // Folds only within the user's floor/ceiling so custom ranges (dub, dnb)
+    // stay authoritative.
+    private func foldIntoPreferredRange(_ value: Double, lo: Double, hi: Double) -> Double {
+        var bpm = value
+        let prefLo = Swift.max(lo, 85.0)
+        let prefHi = Swift.min(hi, 175.0)
+        guard prefLo < prefHi, bpm > 0 else { return bpm }
+        while bpm < prefLo, bpm * 2 <= hi { bpm *= 2 }
+        while bpm > prefHi, bpm / 2 >= lo { bpm /= 2 }
+        return bpm
     }
 
     private func computeWaveformFromSamples(_ samples: [Float], totalSec: Double, bars: Int) -> [Float] {
@@ -854,10 +879,19 @@ final class LibraryScanner {
             bestLag = halfLag
         }
 
+        // Rational-lag sanity: 4:3 / 3:4 confusions — see analyzeBPMWithWaveform.
+        for (num, den) in [(4, 3), (3, 4)] {
+            let cand = bestLag * num / den
+            if cand >= minLag, cand <= maxLag, corrValues[cand] > corrValues[bestLag] * 1.08 {
+                bestLag = cand
+            }
+        }
+
         var bpm = 60.0 * fps / Double(bestLag)
         let lo = max(floor, 1); let hi = max(ceiling, lo + 1)
         while bpm > 0 && bpm < lo { bpm *= 2 }
         while bpm > hi { bpm /= 2 }
+        bpm = foldIntoPreferredRange(bpm, lo: lo, hi: hi)
         onProgress?(1.0)
         return (bpm * 10).rounded() / 10
     }
