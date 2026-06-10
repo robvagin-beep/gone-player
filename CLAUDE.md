@@ -122,9 +122,24 @@ The most delicate subsystem. Do NOT modify without reading the full state machin
 - Call `lockFrame()` before `slideOffScreen` completion
 - Remove `isSnapping` guard in `updateWindowSize`
 
-### 8. Window Architecture (`GONEApp.swift`)
+### 8. Window Architecture (`GONEApp.swift` + `FloatingPlayerPanel.swift`)
 
-- `windowResizability` = `.automatic` — NEVER change (`.contentSize` breaks snap)
+- Primary player is a `FloatingPlayerPanel` — a true NSPanel created with
+  `.nonactivatingPanel` in `applicationDidFinishLaunching` (variant D bootstrap,
+  landed 2026-06-10). The only SwiftUI scene is `Settings { EmptyView() }`.
+  Do NOT reintroduce a WindowGroup for the player: an NSWindow with a patched
+  styleMask cannot overlay other apps' fullscreen Spaces, a real panel can.
+- `PlayerState` is owned (strong) by `AppDelegate`; assigned AFTER the panel is
+  ordered front so `didSet` setup runs against a live window.
+- No alpha tricks at launch — a 0-alpha "fade in later" once kept the panel
+  invisible forever (commit 852d603).
+- `.fullScreenAuxiliary` is part of every presence-policy path (expanded, docked,
+  clone) — it works because the windows are real panels.
+- `alwaysOnTop` maps to window level in `applyPresencePolicy` (.floating/.normal);
+  live re-apply via Combine in `setupSettingsPersistence`.
+- Snap countdown lives on `state.snapTimerFeed` (isolated ObservableObject) —
+  NEVER re-add a @Published countdown to PlayerState: it gets rewritten at
+  mouse-move rate and re-renders the whole tree.
 - `isMovableByWindowBackground = false` — NEVER set to true (breaks vertical drag controls)
 - `updateWindowSize` called only from `RootView.onChange` — do NOT duplicate
 - All timers: `RunLoop.main.add(timer, forMode: .common)` — not `.default`
@@ -188,7 +203,7 @@ Key rules:
 - `updateWindowSize` logic in `RootView.swift`
 - Audio graph node order in `AudioEngine.next.swift`
 - `isMovableByWindowBackground` setting (must stay `false`)
-- `windowResizability(.automatic)` in `GONEApp.swift`
+- FloatingPlayerPanel bootstrap in `applicationDidFinishLaunching` (no WindowGroup, no alpha tricks)
 - `RunLoop.main.add(timer, forMode: .common)` patterns
 - Direct calls to `AudioEngineNext.shared` from inside PlayerState extensions or Views (use `self.audioEngine` / `state.audioEngine`)
 - `PlaybackProgressFeed.shared.reset()` from extension code — use `self.progressFeed.reset()`
@@ -222,7 +237,9 @@ UI               → SwiftUI views, AppKit only where SwiftUI falls short
 
 ```
 GONE/GONE/
-  GONEApp.swift                — app entry, AppDelegate, key monitor, hot cues, magnify
+  GONEApp.swift                — app entry, AppDelegate, panel bootstrap, key monitor, hot cues, magnify
+  FloatingPlayerPanel.swift    — NSPanel subclass for primary + clone player windows
+  SnapTimerFeed.swift          — isolated snap countdown feed (observed only by SnapTimerBtn)
   PlayerState.swift            — single source of truth; XY/LFO/Slicer timers; magnify state
   PlayerState+Playback.swift   — load/play/prev/next/delete; hot cue reset
   PlayerState+Analysis.swift   — BPM (concurrency=2) + waveform async
