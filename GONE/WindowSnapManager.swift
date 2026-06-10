@@ -408,12 +408,15 @@ final class WindowSnapManager {
         // lagged the window edge ("отстает"). peekContent keeps its own opacity .animation, so the
         // controls still fade in.
         snapState = .peeking  // set before the slide so the proximity poll can't re-trigger
-        // Restore full width instantly before sliding — window is at screen edge so the
-        // resize is off-screen and invisible. Avoids per-frame resize during slide animation
-        // which causes macOS shadow/border compositor artifacts.
-        if let fullWidth = savedWindowWidth, window.frame.width < fullWidth {
+        // Window width = just the peek panel (panel offset 6 + panelWidth 96 + corner bleed),
+        // NOT the full player width. A full-width window keeps the entire player body hanging
+        // past screen.maxX, and the Space-swipe compositor renders that off-screen body as a
+        // floating fragment between desktops. Same principle as the docked tabVisible shrink.
+        // The resize happens while the window sits at the screen edge → off-screen, invisible.
+        let peekWindowWidth = peekVisible + 14
+        if abs(window.frame.width - peekWindowWidth) > 0.5 {
             let f = window.frame
-            window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: fullWidth, height: f.height), display: true)
+            window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: peekWindowWidth, height: f.height), display: true)
         }
         slideTo(window: window, x: screen.frame.maxX - peekVisible)
     }
@@ -433,7 +436,9 @@ final class WindowSnapManager {
             guard let self, let window, self.dockToken == capturedToken else { return }
             // No withAnimation — keep geometry instant, the slide is the motion (matches peek()).
             self.snapState = .docked
-            self.savedWindowWidth = window.frame.width
+            // Window arrives from peek at peekWindowWidth, not full width — keep the widest
+            // known width so expand() restores the real frame, never the peek sliver.
+            self.savedWindowWidth = max(self.savedWindowWidth ?? 0, window.frame.width)
             let f = window.frame
             window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: self.tabVisible, height: f.height), display: true)
             self.lockFrame(window: window, x: snapX)
