@@ -6,19 +6,16 @@ import Combine
 @main
 struct GONEApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var state = PlayerState()
 
     var body: some Scene {
-        WindowGroup {
-            RootView()
-                .environmentObject(state)
-                .onAppear { appDelegate.playerState = state }
-        }
-        .windowResizability(.automatic)
-        .defaultSize(width: G.windowWidth + 8, height: 190)
-        .commands {
-            CommandGroup(replacing: .newItem) {}
-        }
+        // The player UI lives in a FloatingPlayerPanel created by AppDelegate.
+        // A true NSPanel (created .nonactivatingPanel) can overlay other apps'
+        // fullscreen Spaces; a WindowGroup NSWindow with a patched styleMask cannot.
+        // Settings is the only SwiftUI scene — it never shows a window on launch.
+        Settings { EmptyView() }
+            .commands {
+                CommandGroup(replacing: .newItem) {}
+            }
     }
 }
 
@@ -30,13 +27,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // with @NSApplicationDelegateAdaptor on some macOS/SwiftUI configurations.
     static private(set) weak var shared: AppDelegate?
 
-    weak var playerState: PlayerState? {
+    // Strong: AppDelegate owns the player state for the app's lifetime
+    // (it used to be owned by a @StateObject in the WindowGroup scene).
+    var playerState: PlayerState? {
         didSet {
             playerState?.loadPersistedSettings()
             bindAudioEngine()
             applyPlaybackSettings()
-            // By the time playerState is set, onAppear has fired → window definitely exists.
-            // Cache it now so resolvedMainWindow() is reliable from this point on.
+            // playerState is assigned after the panel is created and ordered front,
+            // so resolvedMainWindow() is reliable from this point on.
             if mainWindow == nil || !(mainWindow?.isVisible ?? false) {
                 mainWindow = bestAvailableWindow()
             }
@@ -60,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     private(set) weak var mainWindow: NSWindow?
+    private var playerPanel: FloatingPlayerPanel?   // strong ref — keeps the primary panel alive
     private var eventMonitor: Any?
     private var isUserResizing = false
     private var nowPlayingCancellables = Set<AnyCancellable>()
@@ -76,41 +76,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(systemDidWake),
             name: NSWorkspace.didWakeNotification, object: nil
         )
-        // .floating: above normal app windows, stable across Space transitions.
-        // Same level used by WindowSnapManager in docked state.
-        // Player does not force itself above fullscreen apps (see UIHelpers.swift GWindowLevel).
-        NSApp.windows.forEach {
-            $0.alphaValue = 0
-            $0.level = GWindowLevel.player
-            $0.collectionBehavior = [.canJoinAllSpaces,
-                                     .fullScreenDisallowsTiling, .managed, .ignoresCycle]
-            $0.hidesOnDeactivate = false
-        }
-        DispatchQueue.main.async {
-            guard let window = self.bestAvailableWindow() else { return }
-            window.alphaValue = 0          // safety net if window appeared after the sync call
-            self.configureWindow(window)
-            // One extra tick for SwiftUI layout to settle, then fade in
-            DispatchQueue.main.async {
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration      = 0.20
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    window.animator().alphaValue = 1
-                }
-            }
+        // Variant D bootstrap: build the panel directly, no WindowGroup placeholder,
+        // no onAppear dependency, no alpha tricks (a 0-alpha "fade in later" once kept
+        // the panel invisible forever — see commit 852d603).
+        // PlayerState is created here and owned by AppDelegate; the panel hosts RootView
+        // via NSHostingController — the exact construction the clone window already uses.
+        MainActor.assumeIsolated {
+            let state = PlayerState()
+            let panel = FloatingPlayerPanel(
+                contentRect: NSRect(x: 0, y: 0, width: G.windowWidth + 8, height: 190)
+            )
+            panel.contentViewController = NSHostingController(
+                rootView: RootView().environmentObject(state)
+            )
+            playerPanel = panel
+            configureWindow(panel)
+            panel.makeKeyAndOrderFront(nil)
+            playerState = state   // didSet runs full setup against the live panel
         }
     }
 
     private func configureWindow(_ window: NSWindow) {
+        // Visual/behavioral properties (borderless, clear, non-movable, darkAqua,
+        // hidesOnDeactivate=false) are set in FloatingPlayerPanel.init.
         mainWindow = window
-        window.styleMask = [.borderless, .nonactivatingPanel]
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.isMovableByWindowBackground = false  // DragHandleNSView handles all window movement
-        window.acceptsMouseMovedEvents = true
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.isReleasedWhenClosed = false
         applyPresencePolicy(to: window)
         window.setContentSize(NSSize(width: G.windowWidth + 8, height: 190))
         window.center()
@@ -157,11 +146,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func primaryPlayerWindows() -> [NSWindow] {
+        // Primary is now a FloatingPlayerPanel itself; exclude the clone window.
+        // Other NSPanels (crossfader, tooltips, settings) are not FloatingPlayerPanel.
         let clone = SplitModeManager.shared.secondaryWindow
-        return NSApp.windows.filter { !($0 is NSPanel) && $0 !== clone }
+        return NSApp.windows.filter { $0 is FloatingPlayerPanel && $0 !== clone }
     }
 
     private func bestAvailableWindow() -> NSWindow? {
+        // The owned panel is authoritative — NSApp.windows scanning is the fallback.
+        if let playerPanel { return playerPanel }
         let windows = primaryPlayerWindows()
         if let keyWindow = NSApp.keyWindow,
            windows.contains(where: { $0 === keyWindow && keyWindow.isVisible && !keyWindow.isMiniaturized }) {
@@ -190,14 +183,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // .floating: above normal app windows, stable across Space transitions.
-        // Does not force the window above fullscreen apps (see UIHelpers.swift GWindowLevel).
         window.level = GWindowLevel.player
         // .canJoinAllSpaces: enrolls window in every Space including new fullscreen Spaces.
+        // .fullScreenAuxiliary: shows over other apps' fullscreen Spaces — works now that
+        //   the primary is a true FloatingPlayerPanel (NSPanel), not a patched NSWindow.
         // .managed: window appears as a proper tile in Mission Control (not invisible).
         //   Toggled to .transient by WindowSnapManager when window is docked off-screen.
         // .fullScreenDisallowsTiling: never captured by Split View.
         // .ignoresCycle: excluded from ⌘` window ring.
-        window.collectionBehavior = [.canJoinAllSpaces,
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         window.hidesOnDeactivate = false
     }

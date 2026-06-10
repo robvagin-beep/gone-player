@@ -22,6 +22,8 @@ final class FloatingPlayerPanel: NSPanel {
         acceptsMouseMovedEvents = true
         appearance = NSAppearance(named: .darkAqua)
         isReleasedWhenClosed = false
+        // NSPanel hides itself on app deactivate by default — the player must stay up.
+        hidesOnDeactivate = false
     }
 
     override var canBecomeKey: Bool { true }

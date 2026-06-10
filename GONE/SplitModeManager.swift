@@ -333,7 +333,7 @@ final class SplitModeManager: ObservableObject {
         // Clone player uses the same presence policy as the primary player.
         // Crossfader sits one level below both so window bodies hide its endpoints.
         win.level = GWindowLevel.player
-        win.collectionBehavior = [.canJoinAllSpaces,
+        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                   .fullScreenDisallowsTiling, .managed, .ignoresCycle]
         win.hidesOnDeactivate = false
 

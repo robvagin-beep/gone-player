@@ -33,7 +33,6 @@ final class WindowSnapManager {
     private var globalClickMon:   Any?
     private var activityMon:      Any?
     private var spaceChangeObs:   NSObjectProtocol?
-    private var spaceAlphaTimer:  Timer?            // tracks the 80ms alpha-restore timer
     private var savedOrigin:      NSPoint?
     private var savedFrame:       NSRect?
     private var savedDockedY:     CGFloat?
@@ -117,12 +116,10 @@ final class WindowSnapManager {
         // In .expanded, restoreFromSnap() already ran inside expand() — calling it again here
         // would overwrite whatever the user changed manually in the expanded state.
         let needsRestore = snapState == .docked || snapState == .peeking
-        // Restore to expanded presence level — drop the docked HUD elevation and any
-        // .fullScreenAuxiliary so the full window doesn't linger above fullscreen Spaces.
+        // Restore to expanded presence level — drop the docked HUD elevation.
         window.level = GWindowLevel.player
-        window.collectionBehavior = [.canJoinAllSpaces,
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
-        FullscreenCompanionManager.shared.disarm()
         // Cancel any in-flight dockToEdge completion — prevents a pending completion from
         // overwriting snapState/.docked and re-locking the frame after we've disabled snap.
         dockToken &+= 1
@@ -260,25 +257,14 @@ final class WindowSnapManager {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
             spaceChangeObs = nil
         }
-        spaceAlphaTimer?.invalidate()
-        spaceAlphaTimer = nil
     }
 
     private func handleSpaceChange(window: NSWindow) {
         guard snapState == .docked || snapState == .peeking || playerState?.isSnapping == true else { return }
-        // Flash invisible to erase any residual body artifact, then re-anchor.
-        // Cancel any in-flight restore timer so rapid Space swipes don't stack.
-        spaceAlphaTimer?.invalidate()
-        window.alphaValue = 0
+        // Re-anchor only. The old 80ms alpha-flash hid a body artifact of the patched
+        // NSWindow during Space transitions; the docked window is now a true panel
+        // shrunk to tabVisible width, so there is no off-screen body to flash away.
         constrainSnapPosition(window: window)
-        let timer = Timer(timeInterval: 0.08, repeats: false) { [weak self, weak window] _ in
-            MainActor.assumeIsolated {
-                window?.alphaValue = 1
-                self?.spaceAlphaTimer = nil
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        spaceAlphaTimer = timer
     }
 
     // MARK: – State Transitions
@@ -327,8 +313,6 @@ final class WindowSnapManager {
                 window.level = GWindowLevel.dockedHUD
                 window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                              .fullScreenDisallowsTiling, .transient, .ignoresCycle]
-                // Fullscreen proxy: this NSWindow can't overlay another app's fullscreen Space.
-                FullscreenCompanionManager.shared.arm(state: self.playerState)
             }
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(80))
@@ -445,8 +429,6 @@ final class WindowSnapManager {
             window.level = GWindowLevel.dockedHUD
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                          .fullScreenDisallowsTiling, .transient, .ignoresCycle]
-            // Fullscreen proxy: this NSWindow can't overlay another app's fullscreen Space.
-            FullscreenCompanionManager.shared.arm(state: self.playerState)
         }
     }
 
@@ -477,10 +459,8 @@ final class WindowSnapManager {
         snapState = .expanded
         playerState?.isSnapping = true
         window.level = GWindowLevel.player
-        window.collectionBehavior = [.canJoinAllSpaces,
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
                                      .fullScreenDisallowsTiling, .managed, .ignoresCycle]
-        // Back on a real, on-screen window → drop the fullscreen proxy.
-        FullscreenCompanionManager.shared.disarm()
 
         // Delay panel restore so the window travels away from the edge before content expands.
         // isSnapping blocks updateWindowSize, so the frame is controlled by slideFrameTo only.
