@@ -19,18 +19,10 @@ struct GONEApp: App {
     }
 }
 
-// Aligns the fixed-size player content inside the hosting view. When the snapped
-// window is narrower than the content (docked tab / peek), the visible slice must
-// contain the peek panel: right dock shows the LEADING slice, left dock shows the
-// TRAILING slice — so the tab is pixel-identical on both edges (panel against the
-// screen edge, 6pt glass gap toward the interior).
+// The window always matches the content size (snapped windows keep full width and
+// simply slide past the screen edge), so the hosted root needs no slice alignment.
 private struct HostingRoot: View {
-    @EnvironmentObject var state: PlayerState
-    var body: some View {
-        RootView()
-            .frame(maxWidth: .infinity, maxHeight: .infinity,
-                   alignment: state.snapDockLeft ? .topTrailing : .topLeading)
-    }
+    var body: some View { RootView() }
 }
 
 // Keeps the hosted SwiftUI view exactly the size of the window content area.

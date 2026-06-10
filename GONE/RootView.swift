@@ -185,11 +185,13 @@ struct RootView: View {
 
         switch state.snapState {
         case .docked, .peeking:
-            // Anchor the screen-edge side: right-dock keeps maxX, left-dock keeps minX.
+            // Full-width snapped window: the visible sliver sits at the screen edge.
+            // Right dock → body extends right, keep the LEFT window edge (minX).
+            // Left dock → body extends left, keep the RIGHT window edge (maxX).
             if WindowSnapManager.shared.dockEdge == .left {
-                targetFrame.origin.x = currentFrame.minX
-            } else {
                 targetFrame.origin.x = currentFrame.maxX - targetFrame.width
+            } else {
+                targetFrame.origin.x = currentFrame.minX
             }
             targetFrame.origin.y = currentFrame.minY
         case .off, .waiting, .expanded:
