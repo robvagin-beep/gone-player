@@ -510,7 +510,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    // MUST stay false: the player lives in a FloatingPlayerPanel, and AppKit does not
+    // count NSPanels as windows for this check. With `true`, closing ANY transient
+    // regular window (NSOpenPanel after picking folders, a future about box, …) reads
+    // as "last window closed" and cleanly terminates the app mid-import. Quit is ⌘Q.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
         if let eventMonitor {
