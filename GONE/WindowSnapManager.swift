@@ -72,7 +72,7 @@ final class WindowSnapManager {
     func enable(window: NSWindow) {
         guard playerState?.tracks.isEmpty != true else {
             playerState?.snapEnabled = false
-            playerState?.snapTimerStart = nil
+            playerState?.snapTimerFeed.set(nil)
             snapState = .off
             return
         }
@@ -135,7 +135,7 @@ final class WindowSnapManager {
         }
         playerState?.snapEnabled = false
         savedDockedY = nil
-        playerState?.snapTimerStart = nil
+        playerState?.snapTimerFeed.set(nil)
         if needsRestore { playerState?.restoreFromSnap() }
         let target = savedOrigin ?? centeredOrigin(for: window)
         savedFrame  = nil
@@ -189,11 +189,11 @@ final class WindowSnapManager {
         guard SettingsPanel.shared.currentPanel?.isVisible != true else {
             inactivityTimer?.invalidate()
             inactivityTimer = nil
-            playerState?.snapTimerStart = nil
+            playerState?.snapTimerFeed.set(nil)
             return
         }
         inactivityTimer?.invalidate()
-        playerState?.snapTimerStart = Date()
+        playerState?.snapTimerFeed.set(Date())
         let timer = Timer(timeInterval: inactivityDelay, repeats: false) { [weak self, weak window] _ in
             MainActor.assumeIsolated {
                 guard let self,
@@ -288,7 +288,7 @@ final class WindowSnapManager {
             inactivityTimer?.invalidate()
             inactivityTimer = nil
             playerState?.snapEnabled = false
-            playerState?.snapTimerStart = nil
+            playerState?.snapTimerFeed.set(nil)
             snapState = .off
             return
         }
@@ -530,7 +530,7 @@ final class WindowSnapManager {
     func snapNow() {
         inactivityTimer?.invalidate()
         inactivityTimer = nil
-        playerState?.snapTimerStart = nil
+        playerState?.snapTimerFeed.set(nil)
         guard snapState == .waiting || snapState == .expanded,
               let window = snapWindow ?? mainWindow else { return }
         dockToEdge(window: window)

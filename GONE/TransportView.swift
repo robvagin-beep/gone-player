@@ -19,7 +19,7 @@ struct TransportView: View {
                 SnapTimerBtn(
                     snapEnabled: state.snapEnabled,
                     snapState: state.snapState,
-                    timerStart: state.snapTimerStart,
+                    timerFeed: state.snapTimerFeed,
                     action: { toggleSnapMode() },
                     snapNow: {
                         if SplitModeManager.shared.isActive {
@@ -235,7 +235,7 @@ struct IconBtn: View {
 private struct SnapTimerBtn: View {
     let snapEnabled: Bool
     let snapState: PlayerState.SnapMode
-    let timerStart: Date?
+    @ObservedObject var timerFeed: SnapTimerFeed
     let action: () -> Void
     let snapNow: () -> Void
 
@@ -244,13 +244,13 @@ private struct SnapTimerBtn: View {
     private let size: CGFloat = 24
 
     private var showFill: Bool {
-        (snapState == .waiting || snapState == .expanded) && timerStart != nil
+        (snapState == .waiting || snapState == .expanded) && timerFeed.start != nil
     }
 
     var body: some View {
         ZStack(alignment: .leading) {
             // Sweep fill — grows left→right over inactivityDelay seconds
-            if showFill, let start = timerStart {
+            if showFill, let start = timerFeed.start {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { ctx in
                     let elapsed = ctx.date.timeIntervalSince(start)
                     let p = CGFloat(min(1.0, max(0.0, elapsed / delay)))

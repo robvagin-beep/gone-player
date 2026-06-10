@@ -236,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if enabled {
             guard !playerState.tracks.isEmpty else {
                 playerState.snapEnabled = false
-                playerState.snapTimerStart = nil
+                playerState.snapTimerFeed.set(nil)
                 return
             }
             // Always re-arm — repairs stale runtime even if snapEnabled is already true.

@@ -106,7 +106,8 @@ final class PlayerState: ObservableObject {
     @Published var bpmCacheFolder: String = ""
     @Published var snapEnabled = false
     @Published private(set) var snapState: SnapMode = .off
-    @Published var snapTimerStart: Date? = nil
+    // Countdown start lives on an isolated feed — see SnapTimerFeed.swift.
+    let snapTimerFeed = SnapTimerFeed()
     var isSnapping = false  // blocks updateWindowSize during snap animation
 
     // MARK: — Snap tuning (exposed to Settings)
