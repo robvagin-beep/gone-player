@@ -183,7 +183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // .floating: above normal app windows, stable across Space transitions.
-        window.level = GWindowLevel.player
+        // alwaysOnTop=false drops the player to .normal so other apps can cover it —
+        // this setting was persisted but never read before (dead pin button).
+        window.level = (playerState?.alwaysOnTop ?? true) ? GWindowLevel.player : .normal
         // .canJoinAllSpaces: enrolls window in every Space including new fullscreen Spaces.
         // .fullScreenAuxiliary: shows over other apps' fullscreen Spaces — works now that
         //   the primary is a true FloatingPlayerPanel (NSPanel), not a patched NSWindow.
@@ -559,6 +561,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ]
         Publishers.MergeMany(settingsA + settingsB)
             .sink { debouncedSave.send() }
+            .store(in: &settingsCancellables)
+
+        // Always-on-top toggle: re-apply presence policy live.
+        // receive(on:) defers one tick so the @Published value is committed before we read it.
+        state.$alwaysOnTop
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, let window = self.resolvedMainWindow() else { return }
+                self.applyPresencePolicy(to: window)
+            }
             .store(in: &settingsCancellables)
 
         // Magnify toggle: install/remove proximity monitor

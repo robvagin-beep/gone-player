@@ -682,6 +682,13 @@ private struct DisplaySettingsTab: View {
 
             Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
 
+            SHead(text: "WINDOW")
+            SRow(label: "Always on top", sub: "keep the player above other apps' windows") {
+                MiniToggle(isOn: $state.alwaysOnTop)
+            }
+
+            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
+
             SHead(text: "MAGNIFY")
             SRow(label: "Proximity zoom", sub: "scale-up when cursor approaches window") {
                 MiniToggle(isOn: $state.magnifyEnabled)
@@ -873,8 +880,8 @@ private struct InfoSettingsTab: View {
                     .lineSpacing(3)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    SInfoRow("VERSION", "0.9 BETA")
-                    SInfoRow("BUILD",   "MAY 2026")
+                    SInfoRow("VERSION", "1.0 BETA")
+                    SInfoRow("BUILD",   "JUN 2026")
                     SInfoRow("BY",      "HEARTBEAT STUDIO")
                 }
             }

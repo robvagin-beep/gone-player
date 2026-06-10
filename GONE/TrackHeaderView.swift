@@ -124,7 +124,7 @@ struct TrackHeaderView: View {
     }
 
     private var subtitleText: String {
-        guard let t = state.current else { return "version: 0.9 beta" }
+        guard let t = state.current else { return "version: 1.0 beta" }
         let artist = t.artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let album  = t.album.trimmingCharacters(in: .whitespacesAndNewlines)
         switch (artist.isEmpty, album.isEmpty) {

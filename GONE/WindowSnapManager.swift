@@ -358,18 +358,31 @@ final class WindowSnapManager {
         slideTimer = nil
         let startFrame = window.frame
         let startTime = Date()
+        // Width/height are normally restored instantly before this is called (expand()),
+        // so the animation is usually a pure move. setFrame(display: true) forces a full
+        // SwiftUI layout + redraw every tick at 60fps on the main thread — only pay that
+        // when the size actually animates.
+        let sizeAnimates = abs(target.width  - startFrame.width)  > 0.5 ||
+                           abs(target.height - startFrame.height) > 0.5
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self, weak window] _ in
             MainActor.assumeIsolated {
                 guard let self, let window else { return }
                 let rawT = min(1.0, max(0.0, -startTime.timeIntervalSinceNow / duration))
                 let t = CGFloat(1.0 - pow(1.0 - rawT, 3.0))
-                let newFrame = NSRect(
-                    x:      startFrame.minX   + (target.minX   - startFrame.minX)   * t,
-                    y:      startFrame.minY   + (target.minY   - startFrame.minY)   * t,
-                    width:  startFrame.width  + (target.width  - startFrame.width)  * t,
-                    height: startFrame.height + (target.height - startFrame.height) * t
-                )
-                window.setFrame(newFrame, display: true)
+                if sizeAnimates {
+                    let newFrame = NSRect(
+                        x:      startFrame.minX   + (target.minX   - startFrame.minX)   * t,
+                        y:      startFrame.minY   + (target.minY   - startFrame.minY)   * t,
+                        width:  startFrame.width  + (target.width  - startFrame.width)  * t,
+                        height: startFrame.height + (target.height - startFrame.height) * t
+                    )
+                    window.setFrame(newFrame, display: true)
+                } else {
+                    window.setFrameOrigin(NSPoint(
+                        x: startFrame.minX + (target.minX - startFrame.minX) * t,
+                        y: startFrame.minY + (target.minY - startFrame.minY) * t
+                    ))
+                }
                 if rawT >= 1.0 {
                     window.setFrame(target, display: true)
                     self.slideTimer?.invalidate()
