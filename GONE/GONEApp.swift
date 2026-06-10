@@ -33,6 +33,14 @@ private struct HostingRoot: View {
     }
 }
 
+// Keeps the hosted SwiftUI view exactly the size of the window content area.
+private final class HostingFillContainer: NSView {
+    override func layout() {
+        super.layout()
+        subviews.first?.frame = bounds
+    }
+}
+
 // ── App Delegate — configures the chromeless window ──────────────────────────
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -111,11 +119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // slice (the peek tab) visible when the window is narrower than the content.
             let hosting = NSHostingView(rootView: HostingRoot().environmentObject(state))
             hosting.sizingOptions = []
-            let container = NSView()
-            panel.contentView = container
-            hosting.frame = container.bounds
-            hosting.autoresizingMask = [.width, .height]
+            // HostingFillContainer pins hosting.frame = bounds in layout() — deterministic,
+            // unlike autoresizing masks whose deltas from a zero-sized initial frame
+            // produced garbage offsets (player showed a mid-content crop when docked).
+            let container = HostingFillContainer()
             container.addSubview(hosting)
+            panel.contentView = container
             playerPanel = panel
             configureWindow(panel)
             panel.makeKeyAndOrderFront(nil)
