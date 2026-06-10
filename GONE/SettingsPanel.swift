@@ -693,6 +693,27 @@ private struct DisplaySettingsTab: View {
                 MiniToggle(isOn: $state.invisibleMode)
             }
 
+            if state.invisibleMode {
+                SDivider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("GHOST OPACITY")
+                            .font(G.mono(7, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.28))
+                            .kerning(0.7)
+                        Spacer()
+                        Text("\(Int(state.invisibleOpacity)) %")
+                            .font(G.mono(10, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                            .monospacedDigit()
+                    }
+                    SettingsSlider(label: "", value: $state.invisibleOpacity, range: 18...100)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            }
+
             Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
 
             SHead(text: "MAGNIFY")

@@ -590,6 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.$debugMode.map { _ in () }.eraseToAnyPublisher(),
             state.$alwaysOnTop.map { _ in () }.eraseToAnyPublisher(),
             state.$invisibleMode.map { _ in () }.eraseToAnyPublisher(),
+            state.$invisibleOpacity.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifyEnabled.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifyProximity.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifySpeed.map { _ in () }.eraseToAnyPublisher(),
@@ -648,7 +649,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: — Invisible mode (ghost opacity, hover to reveal)
 
-    private let ghostAlpha: CGFloat = 0.18
+    // Ghost opacity comes from Settings (18–100%); 0.18 is the floor and the default.
+    private var ghostAlpha: CGFloat { CGFloat(max(18, min(100, playerState?.invisibleOpacity ?? 18)) / 100) }
     private let ghostFadeOutDelay: TimeInterval = 0.7   // hysteresis — no flicker when skimming past
 
     private func installInvisibleMonitor() {
@@ -688,12 +690,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setPlayerGhosted(_ ghosted: Bool, window: NSWindow) {
-        guard ghosted != isGhosted else { return }
+        let target: CGFloat = ghosted ? ghostAlpha : 1.0
+        // Re-animate when the ghost level itself changed (opacity slider while ghosted).
+        guard ghosted != isGhosted || abs(window.alphaValue - target) > 0.01 else { return }
         isGhosted = ghosted
-        NSAnimationContext.runAnimationGroup { [ghostAlpha] ctx in
+        NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = ghosted ? 0.45 : 0.16
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            window.animator().alphaValue = ghosted ? ghostAlpha : 1.0
+            window.animator().alphaValue = target
         }
     }
 

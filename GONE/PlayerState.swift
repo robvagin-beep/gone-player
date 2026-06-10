@@ -85,6 +85,7 @@ final class PlayerState: ObservableObject {
     // Invisible mode: player fades to a ghost when the cursor is away, hover reveals.
     // Independent of snap — works while the window floats anywhere on screen.
     @Published var invisibleMode = false
+    @Published var invisibleOpacity: Double = 18   // ghost opacity in percent, 18–100
 
     // MARK: — Hot Cues (session-only, 4 slots, reset on track change)
     @Published var hotCues: [Double?] = [nil, nil, nil, nil]
@@ -435,6 +436,8 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "hideMissing")         != nil { hideMissingTracks   = ud.bool(forKey: "hideMissing") }
         if ud.object(forKey: "alwaysOnTop")         != nil { alwaysOnTop         = ud.bool(forKey: "alwaysOnTop") }
         if ud.object(forKey: "invisibleMode")       != nil { invisibleMode       = ud.bool(forKey: "invisibleMode") }
+        if ud.object(forKey: "invisibleOpacity")    != nil { invisibleOpacity    = max(18, min(100, ud.double(forKey: "invisibleOpacity"))) }
+        if !invisibleOpacity.isFinite || invisibleOpacity < 18 || invisibleOpacity > 100 { invisibleOpacity = 18 }
         if ud.object(forKey: "magnifyEnabled")      != nil { magnifyEnabled      = ud.bool(forKey: "magnifyEnabled") }
         if ud.object(forKey: "magnifyProximity")    != nil { magnifyProximity    = ud.double(forKey: "magnifyProximity") }
         if ud.object(forKey: "magnifySpeed")        != nil { magnifySpeed        = ud.double(forKey: "magnifySpeed") }
@@ -477,6 +480,7 @@ final class PlayerState: ObservableObject {
         ud.set(debugMode,              forKey: "debugMode")
         ud.set(alwaysOnTop,             forKey: "alwaysOnTop")
         ud.set(invisibleMode,           forKey: "invisibleMode")
+        ud.set(invisibleOpacity,        forKey: "invisibleOpacity")
         // Save base scale (not magnified override) so user preference is preserved
         ud.set(isMagnified ? magnifyBaseScale : windowScale, forKey: "windowScale")
         ud.set(magnifyEnabled,          forKey: "magnifyEnabled")
