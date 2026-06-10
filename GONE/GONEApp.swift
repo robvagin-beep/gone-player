@@ -49,11 +49,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if playerState?.restoreLastSession == true {
                 Task { @MainActor [weak self] in
                     await self?.playerState?.restoreSession()
+                    // Arm snap only AFTER the session is restored. Arming in parallel hit
+                    // setSnapEnabled's empty-tracks guard (restore is async), which turned
+                    // snapEnabled off and persisted false — the bolt died on every launch
+                    // when restore-on-launch was enabled.
+                    if self?.playerState?.snapEnabled == true, self?.playerState?.tracks.isEmpty == false {
+                        self?.setSnapEnabled(true)
+                    }
                 }
-            }
-            // Two-stage snap restore: preference was loaded above; arm WindowSnapManager
-            // on the next tick once the window is fully configured.
-            if playerState?.snapEnabled == true, playerState?.tracks.isEmpty == false {
+            } else if playerState?.snapEnabled == true, playerState?.tracks.isEmpty == false {
+                // Two-stage snap restore: preference was loaded above; arm WindowSnapManager
+                // on the next tick once the window is fully configured.
                 DispatchQueue.main.async { [weak self] in self?.setSnapEnabled(true) }
             }
         }
