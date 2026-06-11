@@ -203,8 +203,10 @@ struct ProgressRuler: View {
                 let bar = Path(CGRect(x: x, y: baseline - a, width: barW, height: a))
                 if x + barW / 2 <= playheadX { played.addPath(bar) } else { rest.addPath(bar) }
             }
-            ctx.fill(rest,   with: .color(.white.opacity(0.11)))
-            ctx.fill(played, with: .color(.white.opacity(0.30)))
+            // Played vs unplayed: a strong split — played reads almost solid, the
+            // remainder is a faint 5% ghost so the playhead position pops instantly.
+            ctx.fill(rest,   with: .color(.white.opacity(0.05)))
+            ctx.fill(played, with: .color(.white.opacity(0.45)))
         }
 
         // ── 2. Compute tick positions ────────────────────────────────────────────
@@ -262,7 +264,10 @@ struct ProgressRuler: View {
         // the coordinate and paint half-pixels on both sides (blurry on any display);
         // hierarchy is expressed by opacity only, never by width.
         func tick(_ x: CGFloat, _ h: CGFloat, _ alpha: Double) {
-            ctx.fill(Path(CGRect(x: x.rounded(), y: baseline - h, width: 1, height: h)),
+            // Clamp inside the canvas: the 100% tick used to land at x == width and
+            // its 1pt rect was clipped away entirely (the "missing fifth divider").
+            let xx = min(x.rounded(), size.width - 1)
+            ctx.fill(Path(CGRect(x: xx, y: baseline - h, width: 1, height: h)),
                      with: .color(.white.opacity(alpha)))
         }
 
@@ -278,8 +283,8 @@ struct ProgressRuler: View {
         // Uniform 1px everywhere; dividers outrank the lattice by OPACITY alone.
         for t in musicalTicks {
             switch t.type {
-            case .fourBar: tick(CGFloat(t.ratio) * size.width, quarterH, 0.34)
-            case .bar:     tick(CGFloat(t.ratio) * size.width, subDivH,  0.20)
+            case .fourBar: tick(CGFloat(t.ratio) * size.width, quarterH, 0.50)
+            case .bar:     tick(CGFloat(t.ratio) * size.width, subDivH,  0.24)
             case .beat:    tick(CGFloat(t.ratio) * size.width, tinyH,    0.07)
             }
         }
@@ -292,9 +297,10 @@ struct ProgressRuler: View {
 
             let frac = CGFloat(i) / CGFloat(totalTicks - 1)
             if isMajor {
-                tick(frac * size.width, quarterH, 0.30)
+                // The always-present structural anchors — bright, play-button territory.
+                tick(frac * size.width, quarterH, 0.60)
             } else if isSubMajor {
-                tick(frac * size.width, subDivH, 0.17)
+                tick(frac * size.width, subDivH, 0.26)
             } else { continue }
         }
 
