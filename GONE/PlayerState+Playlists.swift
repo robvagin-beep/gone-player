@@ -292,14 +292,20 @@ extension PlayerState {
             Task { @MainActor [weak self] in guard let self else { return }; await self.importURLs(urls, intoPlaylistTabId: destinationTabId) }
         }
 
+        // Activate BEFORE begin(): when the import is triggered from another app's
+        // fullscreen Space (the player panel rides there via .fullScreenAuxiliary),
+        // the open dialog would appear back on the player's desktop — invisible, the
+        // user has to hunt for it. Activating a regular app from inside a foreign
+        // fullscreen Space makes macOS SWITCH to the desktop where the app lives,
+        // so the dialog opens right in front of the user.
+        NSApp.activate(ignoringOtherApps: true)
         panel.begin(completionHandler: handleSelection)
         // The open panel lives in a separate XPC service (openAndSavePanelService).
         // With our non-activating key player panel around it occasionally comes up
         // WITHOUT key focus — clicks then don't select files and the confirm button
-        // returns the enclosing folder. Force activation + key explicitly one tick
-        // after begin() so the file list always receives clicks.
+        // returns the enclosing folder. Force key explicitly one tick after begin()
+        // so the file list always receives clicks.
         DispatchQueue.main.async {
-            NSApp.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
         }
     }
