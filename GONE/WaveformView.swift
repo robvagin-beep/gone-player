@@ -177,8 +177,10 @@ struct ProgressRuler: View {
         // vertical bars with a gap, plus a gamma curve (^1.45) so quiet sections sink
         // and drops stand out — the relief reads as track structure at a glance.
         if !waveform.isEmpty {
-            let barW: CGFloat = 2
-            let gap:  CGFloat = 1.5
+            // Dense 1px lattice: hairline strips on a 2px pitch — the track body reads
+            // as fine texture, structural dividers (2px, below) stay visually superior.
+            let barW: CGFloat = 1
+            let gap:  CGFloat = 1
             let step = barW + gap
             let slots = max(1, Int(size.width / step))
 
@@ -189,8 +191,8 @@ struct ProgressRuler: View {
                 let lerp = pos - CGFloat(ci0)
                 let v    = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
                 let norm = max(0, min(1, (v - waveMin) / waveRange))
-                let shaped = pow(norm, 1.45)
-                return max(1.5, shaped * maxWaveH)   // floor keeps the strip texture in silence
+                let shaped = pow(norm, 1.8)   // hard relief: quiet parts sink, drops spike
+                return max(1.0, shaped * maxWaveH)
             }
 
             var played = Path()
@@ -198,12 +200,11 @@ struct ProgressRuler: View {
             for s in 0..<slots {
                 let x = CGFloat(s) * step
                 let a = amp(atFrac: (x + barW / 2) / size.width)
-                let bar = Path(roundedRect: CGRect(x: x, y: baseline - a, width: barW, height: a),
-                               cornerRadius: 0.75)
+                let bar = Path(CGRect(x: x, y: baseline - a, width: barW, height: a))
                 if x + barW / 2 <= playheadX { played.addPath(bar) } else { rest.addPath(bar) }
             }
-            ctx.fill(rest,   with: .color(.white.opacity(0.10)))
-            ctx.fill(played, with: .color(.white.opacity(0.28)))
+            ctx.fill(rest,   with: .color(.white.opacity(0.11)))
+            ctx.fill(played, with: .color(.white.opacity(0.30)))
         }
 
         // ── 2. Compute tick positions ────────────────────────────────────────────
@@ -276,25 +277,31 @@ struct ProgressRuler: View {
         for tick in musicalTicks {
             let x = (CGFloat(tick.ratio) * size.width * 2).rounded() / 2
 
+            // Dividers outrank the 1px track lattice — SoundCloud-style hierarchy:
+            // structural marks are 2px, the waveform body stays hairline.
             let tickH: CGFloat
             let alpha: Double
+            let width: CGFloat
             switch tick.type {
             case .fourBar:
                 tickH = quarterH
-                alpha = 0.20
+                alpha = 0.22
+                width = 2.0
             case .bar:
                 tickH = subDivH
-                alpha = 0.13
+                alpha = 0.14
+                width = 2.0
             case .beat:
                 tickH = tinyH
                 alpha = 0.07
+                width = 1.0
             }
 
             var path = Path()
             path.move(to: CGPoint(x: x, y: baseline))
             path.addLine(to: CGPoint(x: x, y: baseline - tickH))
             ctx.stroke(path, with: .color(.white.opacity(alpha)),
-                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+                       style: StrokeStyle(lineWidth: width, lineCap: .butt))
         }
 
         // ── 5. Render stable structural tick lines ───────────────────────────────
@@ -311,17 +318,17 @@ struct ProgressRuler: View {
 
             if isMajor {
                 tickH = quarterH
-                alpha = 0.18
+                alpha = 0.20
             } else if isSubMajor {
                 tickH = subDivH
-                alpha = 0.11
+                alpha = 0.13
             } else { continue }
 
             var path = Path()
             path.move(to:    CGPoint(x: x, y: baseline))
             path.addLine(to: CGPoint(x: x, y: baseline - tickH))
             ctx.stroke(path, with: .color(.white.opacity(alpha)),
-                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+                       style: StrokeStyle(lineWidth: 2.0, lineCap: .butt))
         }
 
         // ── 6. A-B loop markers ──────────────────────────────────────────────────
