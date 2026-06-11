@@ -277,10 +277,10 @@ struct ProgressRuler: View {
         func tick(_ x: CGFloat, _ h: CGFloat, _ alpha: Double) {
             ctx.fill(tickRect(x, h), with: .color(.white.opacity(alpha)))
         }
-        // DIVIDERS: solid #D3D3D3, no translucency — alpha stacking over the lattice
-        // produced a zoo of in-between shades, and pure play-button white was too
-        // contrasty. Rank reads from height.
-        let dividerColor = Color(hex: "#D3D3D3")
+        // DIVIDERS: solid #AAAAAA, no translucency — alpha stacking over the lattice
+        // produced a zoo of in-between shades, and brighter greys were too contrasty.
+        // Rank reads from height.
+        let dividerColor = Color(hex: "#AAAAAA")
         func divider(_ x: CGFloat, _ h: CGFloat) {
             ctx.fill(tickRect(x, h), with: .color(dividerColor))
         }
