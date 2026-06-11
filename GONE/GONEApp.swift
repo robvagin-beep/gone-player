@@ -103,7 +103,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the panel invisible forever — see commit 852d603).
         // PlayerState is created here and owned by AppDelegate; the panel hosts RootView
         // via NSHostingController — the exact construction the clone window already uses.
-        MainActor.assumeIsolated {
+        // Deferred one main-loop tick: building the panel synchronously inside
+        // didFinishLaunching raced app startup in RELEASE builds — the optimized start
+        // was fast enough that the ordered panel intermittently never appeared (launch
+        // via Finder/open showed zero windows; adding an NSLog "fixed" it by slowing
+        // the path). One tick later NSApp/scene setup is complete and the order sticks.
+        DispatchQueue.main.async { MainActor.assumeIsolated {
             let state = PlayerState()
             let panel = FloatingPlayerPanel(
                 contentRect: NSRect(x: 0, y: 0, width: G.windowWidth + 8, height: 190)
@@ -124,11 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let container = HostingFillContainer()
             container.addSubview(hosting)
             panel.contentView = container
-            playerPanel = panel
-            configureWindow(panel)
+            self.playerPanel = panel
+            self.configureWindow(panel)
             panel.makeKeyAndOrderFront(nil)
-            playerState = state   // didSet runs full setup against the live panel
-        }
+            self.playerState = state   // didSet runs full setup against the live panel
+        } }
     }
 
     private func configureWindow(_ window: NSWindow) {
