@@ -774,6 +774,24 @@ nonisolated final class LibraryScanner {
         return (bpm * 10).rounded() / 10
     }
 
+    // THE single normalization rule for any BPM that reaches the UI — quick pass,
+    // auto deep verification, and the manual re-analyze button all go through this.
+    // A dance-music player showing 60-ish BPM (one beat per second) is almost always
+    // a detector octave error, not reality.
+    static func normalizeDanceBPM(_ value: Double, floor: Double, ceiling: Double) -> Double {
+        guard value > 0 else { return value }
+        let lo = Swift.max(floor, 1)
+        let hi = Swift.max(ceiling, lo + 1)
+        var bpm = value
+        let prefLo = Swift.max(lo, 85.0)
+        let prefHi = Swift.min(hi, 175.0)
+        if prefLo < prefHi {
+            while bpm < prefLo, bpm * 2 <= hi { bpm *= 2 }
+            while bpm > prefHi, bpm / 2 >= lo { bpm /= 2 }
+        }
+        return (bpm * 10).rounded() / 10
+    }
+
     // Octave folding into the typical DJ range 85–175: a detector octave error
     // (64, 191, …) is far more likely than real sub-85 / over-175 material.
     // Folds only within the user's floor/ceiling so custom ranges (dub, dnb)

@@ -49,12 +49,18 @@ extension PlayerState {
                 await MainActor.run { [weak self] in self?.cancelAnalysisTask(for: trackId) }
                 return
             }
+            // The deep pass returns the raw period, frequently the lower octave
+            // (125 BPM came back as 65 from the manual re-analyze button). Same
+            // normalization rule as everywhere else: no one-beat-per-second values
+            // in a dance-music player unless the user narrowed the range there.
+            let normalized = LibraryScanner.normalizeDanceBPM(bpm, floor: floor, ceiling: ceiling)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.analysisTasksByTrack.removeValue(forKey: trackId)
                 self.analysisFeed.progress.removeValue(forKey: trackId)
                 guard let i = self.tracks.firstIndex(where: { $0.id == trackId }) else { return }
                 var t = self.tracks[i]
+                let bpm = normalized
                 if bpm > 0 {
                     t.bpm = bpm
                     t.bpmAnalysisState = .analyzed
@@ -252,18 +258,11 @@ extension PlayerState {
             let deep = await LibraryScanner().analyzeBPMDeep(url: track.url, floor: floor, ceiling: ceiling)
             guard !Task.isCancelled else { return }
             if deep > 0 {
-                // The deep pass has no octave folding — it returns the raw period, often
-                // the lower octave (bench: 127 came back as 63.4, 135 as 67.6). Fold into
-                // 85-175 within the user range before comparing.
-                var d = deep
-                let prefLo = Swift.max(floor, 85.0)
-                let prefHi = Swift.min(ceiling, 175.0)
-                if prefLo < prefHi {
-                    while d < prefLo, d * 2 <= ceiling { d *= 2 }
-                    while d > prefHi, d / 2 >= floor { d /= 2 }
-                }
+                // The deep pass returns the raw period, often the lower octave (bench:
+                // 127 came back as 63.4, 135 as 67.6) — normalize before comparing.
+                let d = LibraryScanner.normalizeDanceBPM(deep, floor: floor, ceiling: ceiling)
                 if abs(d - bpm) > 0.5 {
-                    bpm = (d * 10).rounded() / 10
+                    bpm = d
                     // The beat-grid phase was estimated for the discarded tempo — invalidate.
                     beatGridOffset = 0
                     gridConfidence = 0
