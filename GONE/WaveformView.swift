@@ -172,33 +172,38 @@ struct ProgressRuler: View {
         let structuralTicks = Self.defaultStructuralTicks
         let subStructuralTicks = Self.defaultSubStructuralTicks
 
-        // ── 1. Waveform silhouette ───────────────────────────────────────────────
+        // ── 1. Waveform bars — SoundCloud-style discrete one-color strips ────────
+        // Same data, same zone as the old filled silhouette; just rendered as neat
+        // vertical bars with a gap, plus a gamma curve (^1.45) so quiet sections sink
+        // and drops stand out — the relief reads as track structure at a glance.
         if !waveform.isEmpty {
-            func silhouette(toX limitX: CGFloat) -> Path {
-                let endPx = Int(min(limitX, size.width).rounded())
-                guard endPx > 0 else { return Path() }
-                var p = Path()
-                p.move(to: CGPoint(x: 0, y: baseline))
-                for px in 0...endPx {
-                    let frac = CGFloat(px) / size.width
-                    let pos  = frac * CGFloat(waveform.count - 1)
-                    let ci0  = max(0, min(waveform.count - 1, Int(pos)))
-                    let ci1  = min(waveform.count - 1, ci0 + 1)
-                    let lerp = pos - CGFloat(ci0)
-                    let v    = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
-                    let norm = max(0, (v - waveMin) / waveRange)
-                    let amp  = max(maxWaveH * 0.07, norm * maxWaveH)
-                    p.addLine(to: CGPoint(x: CGFloat(px), y: baseline - amp))
-                }
-                p.addLine(to: CGPoint(x: CGFloat(endPx), y: baseline))
-                p.closeSubpath()
-                return p
+            let barW: CGFloat = 2
+            let gap:  CGFloat = 1.5
+            let step = barW + gap
+            let slots = max(1, Int(size.width / step))
+
+            func amp(atFrac frac: CGFloat) -> CGFloat {
+                let pos  = frac * CGFloat(waveform.count - 1)
+                let ci0  = max(0, min(waveform.count - 1, Int(pos)))
+                let ci1  = min(waveform.count - 1, ci0 + 1)
+                let lerp = pos - CGFloat(ci0)
+                let v    = CGFloat(waveform[ci0]) * (1 - lerp) + CGFloat(waveform[ci1]) * lerp
+                let norm = max(0, min(1, (v - waveMin) / waveRange))
+                let shaped = pow(norm, 1.45)
+                return max(1.5, shaped * maxWaveH)   // floor keeps the strip texture in silence
             }
 
-            ctx.fill(silhouette(toX: size.width), with: .color(.white.opacity(0.09)))
-            if playheadX > 0 {
-                ctx.fill(silhouette(toX: playheadX), with: .color(.white.opacity(0.24)))
+            var played = Path()
+            var rest   = Path()
+            for s in 0..<slots {
+                let x = CGFloat(s) * step
+                let a = amp(atFrac: (x + barW / 2) / size.width)
+                let bar = Path(roundedRect: CGRect(x: x, y: baseline - a, width: barW, height: a),
+                               cornerRadius: 0.75)
+                if x + barW / 2 <= playheadX { played.addPath(bar) } else { rest.addPath(bar) }
             }
+            ctx.fill(rest,   with: .color(.white.opacity(0.10)))
+            ctx.fill(played, with: .color(.white.opacity(0.28)))
         }
 
         // ── 2. Compute tick positions ────────────────────────────────────────────

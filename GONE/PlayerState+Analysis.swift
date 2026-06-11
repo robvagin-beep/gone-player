@@ -242,7 +242,7 @@ extension PlayerState {
         let ceiling = await MainActor.run { state.bpmAnalysisCeiling }
         // Single decode: BPM + waveform + beat grid offset from one AVAssetReader pass.
         var (bpm, waveform, beatGridOffset, gridConfidence) = await LibraryScanner().analyzeBPMWithWaveform(
-            url: track.url, floor: floor, ceiling: ceiling, waveformBars: 84
+            url: track.url, floor: floor, ceiling: ceiling, waveformBars: 168
         ) { progress in
             Task { @MainActor [weak state] in
                 state?.analysisFeed.progress[track.id] = progress
@@ -384,7 +384,7 @@ extension PlayerState {
         // BPM analysis may be reading the same URL simultaneously — retry with backoff.
         var waveform: [Float] = []
         for attempt in 0..<3 {
-            waveform = await LibraryScanner().computeWaveform(url: track.url, bars: 84)
+            waveform = await LibraryScanner().computeWaveform(url: track.url, bars: 168)
             if !waveform.isEmpty { break }
             if attempt < 2 { try? await Task.sleep(for: .milliseconds(1500)) }
         }
