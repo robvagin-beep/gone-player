@@ -81,7 +81,6 @@ final class PlayerState: ObservableObject {
     @Published var pendingDropURLs: [URL]? = nil   // non-nil = split chooser is active
     @Published var playlistPanelHeight: CGFloat = 244
     @Published var cueExportEnabled = false   // prefix filenames 001_, 002_… on drag-to-Finder
-    @Published var alwaysOnTop = true
     // Invisible mode: player fades to a ghost when the cursor is away, hover reveals.
     // Independent of snap — works while the window floats anywhere on screen.
     @Published var invisibleMode = false
@@ -434,7 +433,6 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "autoOpenPlaylist")    != nil { autoOpenPlaylistOnImport = ud.bool(forKey: "autoOpenPlaylist") }
         if ud.object(forKey: "confirmDelete")       != nil { confirmBeforeDelete  = ud.bool(forKey: "confirmDelete") }
         if ud.object(forKey: "hideMissing")         != nil { hideMissingTracks   = ud.bool(forKey: "hideMissing") }
-        if ud.object(forKey: "alwaysOnTop")         != nil { alwaysOnTop         = ud.bool(forKey: "alwaysOnTop") }
         if ud.object(forKey: "invisibleMode")       != nil { invisibleMode       = ud.bool(forKey: "invisibleMode") }
         if ud.object(forKey: "invisibleOpacity")    != nil { invisibleOpacity    = max(18, min(100, ud.double(forKey: "invisibleOpacity"))) }
         if !invisibleOpacity.isFinite || invisibleOpacity < 18 || invisibleOpacity > 100 { invisibleOpacity = 18 }
@@ -478,7 +476,6 @@ final class PlayerState: ObservableObject {
         ud.set(snapTabWidth,            forKey: "snapTabWidth")
         ud.set(snapDockLeft,            forKey: "snapDockLeft")
         ud.set(debugMode,              forKey: "debugMode")
-        ud.set(alwaysOnTop,             forKey: "alwaysOnTop")
         ud.set(invisibleMode,           forKey: "invisibleMode")
         ud.set(invisibleOpacity,        forKey: "invisibleOpacity")
         // Save base scale (not magnified override) so user preference is preserved

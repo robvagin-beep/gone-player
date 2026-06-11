@@ -93,6 +93,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
+        // With Settings{} as the only SwiftUI scene, SwiftUI may downgrade the app's
+        // activation policy during startup (no "real" windows from its point of view) —
+        // in optimized Release launches this raced our panel bootstrap and the ordered
+        // panel never reached the screen (process alive, zero WindowServer windows;
+        // an NSLog "fixed" it by shifting timing). Pin the policy explicitly.
+        NSApp.setActivationPolicy(.regular)
         installKeyMonitor()
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(systemDidWake),
@@ -133,6 +139,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.configureWindow(panel)
             panel.makeKeyAndOrderFront(nil)
             self.playerState = state   // didSet runs full setup against the live panel
+            // Belt and braces against any remaining startup ordering race: re-assert
+            // the policy and the panel order once the launch dust settles. Idempotent.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                NSApp.setActivationPolicy(.regular)
+                panel.orderFrontRegardless()
+            }
         } }
     }
 
@@ -213,7 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyPresencePolicy(to window: NSWindow) {
         // While docked/peeking, WindowSnapManager owns presence: the HUD tab is raised
         // ABOVE everything (incl. fullscreen Spaces). Don't stomp it back to .floating —
-        // every caller (becomeActive, screen-param change, wake, alwaysOnTop, …) must respect it.
+        // every caller (becomeActive, screen-param change, wake, …) must respect it.
         let snapState = WindowSnapManager.shared.snapState
         if snapState == .docked || snapState == .peeking {
             window.level = GWindowLevel.dockedHUD
@@ -222,10 +234,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.hidesOnDeactivate = false
             return
         }
-        // .floating: above normal app windows, stable across Space transitions.
-        // alwaysOnTop=false drops the player to .normal so other apps can cover it —
-        // this setting was persisted but never read before (dead pin button).
-        window.level = (playerState?.alwaysOnTop ?? true) ? GWindowLevel.player : .normal
+        // Always above normal app windows — a killer feature, not a setting (the player
+        // is small; losing it between windows is the failure mode, Invisible mode is
+        // the way to make it unobtrusive). .floating, stable across Space transitions.
+        window.level = GWindowLevel.player
         // .canJoinAllSpaces: enrolls window in every Space including new fullscreen Spaces.
         // .fullScreenAuxiliary: shows over other apps' fullscreen Spaces — works now that
         //   the primary is a true FloatingPlayerPanel (NSPanel), not a patched NSWindow.
@@ -253,14 +265,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func systemDidWake() {
         if let window = resolvedMainWindow() { applyPresencePolicy(to: window) }
-    }
-
-    @MainActor
-    func setAlwaysOnTop(_ enabled: Bool) {
-        playerState?.alwaysOnTop = enabled
-        if let window = resolvedMainWindow() {
-            applyPresencePolicy(to: window)
-        }
     }
 
     @MainActor
@@ -600,7 +604,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.$snapAnimSpeed.map { _ in () }.eraseToAnyPublisher(),
             state.$snapTabWidth.map { _ in () }.eraseToAnyPublisher(),
             state.$debugMode.map { _ in () }.eraseToAnyPublisher(),
-            state.$alwaysOnTop.map { _ in () }.eraseToAnyPublisher(),
             state.$invisibleMode.map { _ in () }.eraseToAnyPublisher(),
             state.$invisibleOpacity.map { _ in () }.eraseToAnyPublisher(),
             state.$magnifyEnabled.map { _ in () }.eraseToAnyPublisher(),
@@ -624,17 +627,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.removeInvisibleMonitor()
                     if let w = self.resolvedMainWindow() { self.setPlayerGhosted(false, window: w) }
                 }
-            }
-            .store(in: &settingsCancellables)
-
-        // Always-on-top toggle: re-apply presence policy live.
-        // receive(on:) defers one tick so the @Published value is committed before we read it.
-        state.$alwaysOnTop
-            .dropFirst()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self, let window = self.resolvedMainWindow() else { return }
-                self.applyPresencePolicy(to: window)
             }
             .store(in: &settingsCancellables)
 

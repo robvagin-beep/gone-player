@@ -710,12 +710,6 @@ private struct DisplaySettingsTab: View {
             Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
 
             SHead(text: "WINDOW")
-            SRow(label: "Always on top", sub: "keep the player above other apps' windows") {
-                MiniToggle(isOn: $state.alwaysOnTop)
-            }
-
-            SDivider()
-
             SRow(label: "Invisible mode", sub: "fade to a ghost when idle · hover to reveal") {
                 MiniToggle(isOn: $state.invisibleMode)
             }
