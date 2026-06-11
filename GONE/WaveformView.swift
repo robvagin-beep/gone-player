@@ -258,50 +258,30 @@ struct ProgressRuler: View {
             }
         }
 
+        // All marks are drawn as 1pt FILLED rects on whole-point X — strokes center on
+        // the coordinate and paint half-pixels on both sides (blurry on any display);
+        // hierarchy is expressed by opacity only, never by width.
+        func tick(_ x: CGFloat, _ h: CGFloat, _ alpha: Double) {
+            ctx.fill(Path(CGRect(x: x.rounded(), y: baseline - h, width: 1, height: h)),
+                     with: .color(.white.opacity(alpha)))
+        }
+
         // ── 3. Render base interstitial bottom ticks ─────────────────────────────
         for i in 0..<(totalTicks - 1) {
             let posInGap = i % 10
             guard posInGap == 3 || posInGap == 6 else { continue }
             let frac = (CGFloat(i) + 0.5) / CGFloat(totalTicks - 1)
-            let x = (frac * size.width * 2).rounded() / 2
-            let alpha: Double = 0.04
-
-            var path = Path()
-            path.move(to: CGPoint(x: x, y: baseline))
-            path.addLine(to: CGPoint(x: x, y: baseline - interstitialH))
-            ctx.stroke(path, with: .color(.white.opacity(alpha)),
-                       style: StrokeStyle(lineWidth: 1.0, lineCap: .butt))
+            tick(frac * size.width, interstitialH, 0.04)
         }
 
         // ── 4. Render musical grid ticks at exact time positions ─────────────────
-        for tick in musicalTicks {
-            let x = (CGFloat(tick.ratio) * size.width * 2).rounded() / 2
-
-            // Dividers outrank the 1px track lattice — SoundCloud-style hierarchy:
-            // structural marks are 2px, the waveform body stays hairline.
-            let tickH: CGFloat
-            let alpha: Double
-            let width: CGFloat
-            switch tick.type {
-            case .fourBar:
-                tickH = quarterH
-                alpha = 0.22
-                width = 2.0
-            case .bar:
-                tickH = subDivH
-                alpha = 0.14
-                width = 2.0
-            case .beat:
-                tickH = tinyH
-                alpha = 0.07
-                width = 1.0
+        // Uniform 1px everywhere; dividers outrank the lattice by OPACITY alone.
+        for t in musicalTicks {
+            switch t.type {
+            case .fourBar: tick(CGFloat(t.ratio) * size.width, quarterH, 0.34)
+            case .bar:     tick(CGFloat(t.ratio) * size.width, subDivH,  0.20)
+            case .beat:    tick(CGFloat(t.ratio) * size.width, tinyH,    0.07)
             }
-
-            var path = Path()
-            path.move(to: CGPoint(x: x, y: baseline))
-            path.addLine(to: CGPoint(x: x, y: baseline - tickH))
-            ctx.stroke(path, with: .color(.white.opacity(alpha)),
-                       style: StrokeStyle(lineWidth: width, lineCap: .butt))
         }
 
         // ── 5. Render stable structural tick lines ───────────────────────────────
@@ -310,25 +290,12 @@ struct ProgressRuler: View {
             let isSubMajor = subStructuralTicks.contains(i)
             guard isMajor || isSubMajor else { continue }
 
-            let frac   = CGFloat(i) / CGFloat(totalTicks - 1)
-            let x      = (frac * size.width * 2).rounded() / 2
-
-            let tickH: CGFloat
-            let alpha: Double
-
+            let frac = CGFloat(i) / CGFloat(totalTicks - 1)
             if isMajor {
-                tickH = quarterH
-                alpha = 0.20
+                tick(frac * size.width, quarterH, 0.30)
             } else if isSubMajor {
-                tickH = subDivH
-                alpha = 0.13
+                tick(frac * size.width, subDivH, 0.17)
             } else { continue }
-
-            var path = Path()
-            path.move(to:    CGPoint(x: x, y: baseline))
-            path.addLine(to: CGPoint(x: x, y: baseline - tickH))
-            ctx.stroke(path, with: .color(.white.opacity(alpha)),
-                       style: StrokeStyle(lineWidth: 2.0, lineCap: .butt))
         }
 
         // ── 6. A-B loop markers ──────────────────────────────────────────────────
