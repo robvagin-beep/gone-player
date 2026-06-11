@@ -277,10 +277,13 @@ struct ProgressRuler: View {
         func tick(_ x: CGFloat, _ h: CGFloat, _ alpha: Double) {
             ctx.fill(tickRect(x, h), with: .color(.white.opacity(alpha)))
         }
-        // DIVIDERS: solid #AAAAAA, no translucency — alpha stacking over the lattice
+        // DIVIDERS: solid grey, no translucency — alpha stacking over the lattice
         // produced a zoo of in-between shades, and brighter greys were too contrasty.
         // Rank reads from height.
-        let dividerColor = Color(hex: "#AAAAAA")
+        let dividerColor = Color(hex: "#8C8C8C")
+        // Minor dividers (between the tall anchors) sit ruler-low: at subDivH they
+        // collided with the wave peaks and vanished into them.
+        let minorDividerH = (subDivH * 0.5).rounded()
         func divider(_ x: CGFloat, _ h: CGFloat) {
             ctx.fill(tickRect(x, h), with: .color(dividerColor))
         }
@@ -297,7 +300,7 @@ struct ProgressRuler: View {
         for t in musicalTicks {
             switch t.type {
             case .fourBar: divider(CGFloat(t.ratio) * size.width, quarterH)
-            case .bar:     divider(CGFloat(t.ratio) * size.width, subDivH)
+            case .bar:     divider(CGFloat(t.ratio) * size.width, minorDividerH)
             case .beat:    tick(CGFloat(t.ratio) * size.width, tinyH, 0.07)
             }
         }
@@ -312,7 +315,7 @@ struct ProgressRuler: View {
             if isMajor {
                 divider(frac * size.width, quarterH)
             } else if isSubMajor {
-                divider(frac * size.width, subDivH)
+                divider(frac * size.width, minorDividerH)
             } else { continue }
         }
 
