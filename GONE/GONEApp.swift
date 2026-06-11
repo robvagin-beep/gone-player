@@ -155,6 +155,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyPresencePolicy(to: window)
         window.setContentSize(NSSize(width: G.windowWidth + 8, height: 190))
         window.center()
+        // center() can land on half points (odd screen/window widths) — snap to whole
+        // points so 1px hairlines render crisp from the very first frame.
+        window.setFrameOrigin(NSPoint(x: window.frame.origin.x.rounded(),
+                                      y: window.frame.origin.y.rounded()))
         windowAnchorMaxY = window.frame.maxY
         NotificationCenter.default.addObserver(
             self, selector: #selector(windowResizeCorrection(_:)),

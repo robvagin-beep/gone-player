@@ -211,6 +211,10 @@ struct RootView: View {
             return
         }
 
+        // Whole-point frame — fractional origins smear all 1px hairlines.
+        targetFrame.origin.x = targetFrame.origin.x.rounded()
+        targetFrame.origin.y = targetFrame.origin.y.rounded()
+
         // Set anchor BEFORE setFrame — the synchronous observer in AppDelegate must not
         // fight our own intentional resize.
         switch state.snapState {
@@ -382,6 +386,12 @@ final class DragHandleNSView: NSView {
         if snapState == .peeking || snapState == .docked {
             WindowSnapManager.shared.constrainSnapPosition(window: window)
         } else {
+            // Land on whole points: a mouse drag leaves the window on a fractional
+            // origin and every 1px hairline inside smears across two device pixels.
+            if let w = window {
+                w.setFrameOrigin(NSPoint(x: w.frame.origin.x.rounded(),
+                                         y: w.frame.origin.y.rounded()))
+            }
             NotificationCenter.default.post(name: .windowDidMove, object: nil)
         }
         NSCursor.openHand.set()
