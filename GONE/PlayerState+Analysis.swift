@@ -165,17 +165,20 @@ extension PlayerState {
                 return
             }
 
-            // Lane 2: background batch — capped at 2 concurrent to avoid I/O contention
-            // with ongoing playback. Priority lowered to .utility so the OS scheduler
-            // deprioritizes analysis reads vs audio engine writes.
-            let batchConcurrency = min(2, Self.analysisConcurrency)
+            // Lane 2: background batch. Since analysis ACTUALLY runs off-main now (it
+            // used to be silently main-pinned), concurrent AVAssetReaders genuinely
+            // contend with playback chunk reads for disk I/O — playback chewed in
+            // chunks. Throttle hard while music plays: 1 reader + a breather between
+            // batches; full speed only when idle.
             var queue = Array(pending.dropFirst())
             while !queue.isEmpty {
                 guard !Task.isCancelled else {
                     await MainActor.run { self.finishBPMAnalysisTask(ids: pendingIds, reschedule: false) }
                     return
                 }
-                let priorityId = await MainActor.run { self.bpmPriorityId ?? self.currentId }
+                let (priorityId, playing) = await MainActor.run {
+                    (self.bpmPriorityId ?? self.currentId, self.isPlaying)
+                }
                 if let pid = priorityId,
                    let idx = queue.firstIndex(where: { $0.id == pid }) {
                     let promoted = queue.remove(at: idx)
@@ -183,12 +186,13 @@ extension PlayerState {
                 }
                 await MainActor.run { self.bpmPriorityId = nil }
 
-                let batch = Array(queue.prefix(batchConcurrency * 2))
+                let conc = playing ? 1 : min(2, Self.analysisConcurrency)
+                let batch = Array(queue.prefix(conc * 2))
                 queue = Array(queue.dropFirst(batch.count))
 
                 await withTaskGroup(of: Void.self) { group in
                     var q = batch
-                    for _ in 0..<min(batchConcurrency, q.count) {
+                    for _ in 0..<min(conc, q.count) {
                         let track = q.removeFirst()
                         group.addTask(priority: .utility) {
                             await Self.analyzeBPMAndCommit(track: track, state: self)
@@ -200,6 +204,9 @@ extension PlayerState {
                             await Self.analyzeBPMAndCommit(track: track, state: self)
                         }
                     }
+                }
+                if playing {
+                    try? await Task.sleep(for: .milliseconds(400))   // let the player's prefetch refill
                 }
             }
 
@@ -330,11 +337,16 @@ extension PlayerState {
             let first = pending[0]
             await Self.computeWaveformAndCommit(track: first, state: self)
 
-            // Lane 2: background — priority-aware, no artificial batching wall.
+            // Lane 2: background — priority-aware. Same playback-aware throttle as the
+            // BPM batch: up to analysisConcurrency readers when idle, a single reader
+            // plus a breather while music plays (real off-main decode contends with
+            // the player's chunk reads for disk I/O).
             var queue = Array(pending.dropFirst())
             while !queue.isEmpty {
                 guard !Task.isCancelled else { break }
-                let priorityId = await MainActor.run { self.waveformPriorityId ?? self.currentId }
+                let (priorityId, playing) = await MainActor.run {
+                    (self.waveformPriorityId ?? self.currentId, self.isPlaying)
+                }
                 if let pid = priorityId,
                    let idx = queue.firstIndex(where: { $0.id == pid }) {
                     let promoted = queue.remove(at: idx)
@@ -342,12 +354,13 @@ extension PlayerState {
                 }
                 await MainActor.run { self.waveformPriorityId = nil }
 
-                let batch = Array(queue.prefix(Self.analysisConcurrency * 2))
+                let conc = playing ? 1 : Self.analysisConcurrency
+                let batch = Array(queue.prefix(conc * 2))
                 queue = Array(queue.dropFirst(batch.count))
 
                 await withTaskGroup(of: Void.self) { group in
                     var q = batch
-                    for _ in 0..<min(Self.analysisConcurrency, q.count) {
+                    for _ in 0..<min(conc, q.count) {
                         let track = q.removeFirst()
                         group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
                     }
@@ -355,6 +368,9 @@ extension PlayerState {
                         let track = q.removeFirst()
                         group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
                     }
+                }
+                if playing {
+                    try? await Task.sleep(for: .milliseconds(400))
                 }
             }
 
