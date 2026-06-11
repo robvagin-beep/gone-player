@@ -52,6 +52,7 @@ private struct MusicalGridTick {
 }
 
 struct ProgressRuler: View {
+    @Environment(\.displayScale) private var displayScale
     let progress: Double
     let waveform: [Float]
     var bpm: Double = 0
@@ -176,12 +177,16 @@ struct ProgressRuler: View {
         // Same data, same zone as the old filled silhouette; just rendered as neat
         // vertical bars with a gap, plus a gamma curve (^1.45) so quiet sections sink
         // and drops stand out — the relief reads as track structure at a glance.
+        // One DEVICE pixel, on any display: 0.5pt on retina, 1pt on 1x. Whole-point
+        // 1pt rects render as 2 physical px on retina — that's why the lattice read
+        // thicker than it should.
+        let px: CGFloat = 1.0 / max(1, displayScale)
+
         if !waveform.isEmpty {
-            // Dense 1px lattice: hairline strips on a 2px pitch — the track body reads
-            // as fine texture, structural dividers (2px, below) stay visually superior.
-            let barW: CGFloat = 1
-            let gap:  CGFloat = 1
-            let step = barW + gap
+            // Dense hairline lattice on a 2pt pitch; every strip is exactly one
+            // device pixel wide.
+            let barW = px
+            let step: CGFloat = 2.0
             let slots = max(1, Int(size.width / step))
 
             func amp(atFrac frac: CGFloat) -> CGFloat {
@@ -203,9 +208,8 @@ struct ProgressRuler: View {
                 let bar = Path(CGRect(x: x, y: baseline - a, width: barW, height: a))
                 if x + barW / 2 <= playheadX { played.addPath(bar) } else { rest.addPath(bar) }
             }
-            // Played vs unplayed: a strong split — played reads almost solid, the
-            // remainder is a faint 5% ghost so the playhead position pops instantly.
-            ctx.fill(rest,   with: .color(.white.opacity(0.05)))
+            // Played vs unplayed: strong split, but the remainder stays readable.
+            ctx.fill(rest,   with: .color(.white.opacity(0.16)))
             ctx.fill(played, with: .color(.white.opacity(0.45)))
         }
 
@@ -263,12 +267,20 @@ struct ProgressRuler: View {
         // All marks are drawn as 1pt FILLED rects on whole-point X — strokes center on
         // the coordinate and paint half-pixels on both sides (blurry on any display);
         // hierarchy is expressed by opacity only, never by width.
+        // One device pixel wide, snapped to the device grid; clamped inside the
+        // canvas (the 100% tick used to land at x == width and clip away entirely).
+        func tickRect(_ x: CGFloat, _ h: CGFloat) -> Path {
+            let snapped = min((x * displayScale).rounded() / displayScale, size.width - px)
+            return Path(CGRect(x: snapped, y: baseline - h, width: px, height: h))
+        }
+        // Texture marks (beat micro-ticks, interstitials): translucent white.
         func tick(_ x: CGFloat, _ h: CGFloat, _ alpha: Double) {
-            // Clamp inside the canvas: the 100% tick used to land at x == width and
-            // its 1pt rect was clipped away entirely (the "missing fifth divider").
-            let xx = min(x.rounded(), size.width - 1)
-            ctx.fill(Path(CGRect(x: xx, y: baseline - h, width: 1, height: h)),
-                     with: .color(.white.opacity(alpha)))
+            ctx.fill(tickRect(x, h), with: .color(.white.opacity(alpha)))
+        }
+        // DIVIDERS: solid play-button color, no translucency — alpha stacking over
+        // the lattice produced a zoo of in-between shades. Rank reads from height.
+        func divider(_ x: CGFloat, _ h: CGFloat) {
+            ctx.fill(tickRect(x, h), with: .color(G.accentPrimary))
         }
 
         // ── 3. Render base interstitial bottom ticks ─────────────────────────────
@@ -280,12 +292,11 @@ struct ProgressRuler: View {
         }
 
         // ── 4. Render musical grid ticks at exact time positions ─────────────────
-        // Uniform 1px everywhere; dividers outrank the lattice by OPACITY alone.
         for t in musicalTicks {
             switch t.type {
-            case .fourBar: tick(CGFloat(t.ratio) * size.width, quarterH, 0.50)
-            case .bar:     tick(CGFloat(t.ratio) * size.width, subDivH,  0.24)
-            case .beat:    tick(CGFloat(t.ratio) * size.width, tinyH,    0.07)
+            case .fourBar: divider(CGFloat(t.ratio) * size.width, quarterH)
+            case .bar:     divider(CGFloat(t.ratio) * size.width, subDivH)
+            case .beat:    tick(CGFloat(t.ratio) * size.width, tinyH, 0.07)
             }
         }
 
@@ -297,10 +308,9 @@ struct ProgressRuler: View {
 
             let frac = CGFloat(i) / CGFloat(totalTicks - 1)
             if isMajor {
-                // The always-present structural anchors — bright, play-button territory.
-                tick(frac * size.width, quarterH, 0.60)
+                divider(frac * size.width, quarterH)
             } else if isSubMajor {
-                tick(frac * size.width, subDivH, 0.26)
+                divider(frac * size.width, subDivH)
             } else { continue }
         }
 
