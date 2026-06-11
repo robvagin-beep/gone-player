@@ -293,6 +293,15 @@ extension PlayerState {
         }
 
         panel.begin(completionHandler: handleSelection)
+        // The open panel lives in a separate XPC service (openAndSavePanelService).
+        // With our non-activating key player panel around it occasionally comes up
+        // WITHOUT key focus — clicks then don't select files and the confirm button
+        // returns the enclosing folder. Force activation + key explicitly one tick
+        // after begin() so the file list always receives clicks.
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        }
     }
 
     // MARK: — Private helpers
