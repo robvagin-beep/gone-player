@@ -81,8 +81,11 @@ extension PlayerState {
     // Triggers BPM + waveform for the current track, then schedules the rest.
     func scheduleCurrentTrackAnalysis() {
         guard let current = current, !current.isMissing else { return }
+        // == 0 strictly: 0 means "grid never attempted". -1 means "attempted, weak" —
+        // re-triggering on -1 looped a full-track decode on every visit of such
+        // tracks (playlist on repeat chewed the disk mid-playback, forever).
         let currentNeedsBeatGrid = current.bpm > 0
-            && current.beatGridConfidence <= 0
+            && current.beatGridConfidence == 0
             && current.bpmAnalysisState == .analyzed
         if currentNeedsBeatGrid,
            let idx = tracks.firstIndex(where: { $0.id == current.id }) {
@@ -226,9 +229,13 @@ extension PlayerState {
     nonisolated private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
         guard !Task.isCancelled else { return }
         // Cache hit: skip decode + analysis entirely. Saves ~300-500 ms per track.
+        // confidence != 0 accepts BOTH strong grids (>0) and attempted-but-weak (-1):
+        // rejecting weak-grid cache entries made such tracks re-decode the full file
+        // on EVERY visit forever — a playlist on repeat chewed disk mid-playback.
+        // Only confidence == 0 (grid never attempted, legacy cache) goes to analysis.
         if let hit = await AnalysisCache.shared.get(for: track.url),
            hit.bpm > 0,
-           hit.beatGridConfidence > 0 {
+           hit.beatGridConfidence != 0 {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
@@ -277,9 +284,13 @@ extension PlayerState {
             }
         }
 
+        // Sentinel: confidence -1 = "grid attempted, too weak to trust". 0 is reserved
+        // for "never attempted" — it is what re-triggers grid analysis on track load,
+        // so storing a raw 0 here would loop the full decode forever on weak material.
+        let storedConfidence = gridConfidence > 0 ? gridConfidence : -1
         if bpm > 0 {
             await AnalysisCache.shared.putBPMAndWaveform(url: track.url, bpm: bpm, waveform: waveform,
-                                                         beatGridOffset: beatGridOffset, beatGridConfidence: gridConfidence)
+                                                         beatGridOffset: beatGridOffset, beatGridConfidence: storedConfidence)
         }
         await MainActor.run {
             state.analysisFeed.progress.removeValue(forKey: track.id)
@@ -289,7 +300,7 @@ extension PlayerState {
                 t.bpm = bpm
                 t.bpmAnalysisState = .analyzed
                 t.beatGridOffset = beatGridOffset
-                t.beatGridConfidence = gridConfidence
+                t.beatGridConfidence = storedConfidence
                 if t.waveform.isEmpty, !waveform.isEmpty {
                     t.waveform = waveform
                 }
