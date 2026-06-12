@@ -272,12 +272,12 @@ GONE/GONE/
 
 ## Known Tech Debt (do NOT touch without instruction)
 
-- `Task.detached` for BPM/waveform have no stored cancellation handles — tech debt, not a bug
-- `Task.sleep(nanoseconds:)` deprecated — replace with `Task.sleep(for: .milliseconds(N))` on next pass
-- Dual SnapState enums: `WindowSnapManager.SnapState` and `PlayerState.SnapMode` are functionally identical — consolidate when touching snap system
-- `presentImportPanel` uses `NSApp.keyWindow` — should use `AppDelegate.resolvedMainWindow()` (low risk)
-- `splitPlaylistView` / `secondaryPlaylistTabId` in PlayerState — orphan state, no UI yet (was after artworkData note)
-- `splitPlaylistView` / `secondaryPlaylistTabId` in PlayerState — orphan state, no UI yet
+- Clone Mode teardown uses fixed 1.8/2.0s delays (SplitModeManager.deactivate)
+- applicationWillTerminate blocks main up to 2s on the analysis-cache flush
+- dockedHUD(1001) vs floatingPanel(4) level gap: aux panels can sit under the docked tab
+- Presence policy has multiple owners (AppDelegate / WindowSnapManager / SplitModeManager) — PresencePolicy controller not built (backlog #28)
+- MainActor-by-default project setting: any NEW worker class must be marked `nonisolated` or it silently runs on main (see LibraryScanner header comment)
+- Resolved and removed from this list (2026-06): Task.sleep modernization, dual SnapState (typealias), presentImportPanel keyWindow, splitPlaylistView (live feature)
 
 ---
 
