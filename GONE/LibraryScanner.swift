@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 // This class touches no UI state; everything here must run on background executors.
 nonisolated final class LibraryScanner {
 
-    static let supportedExtensions: Set<String> = ["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac"]
+    static let supportedExtensions: Set<String> = ["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac", "caf"]
 
     func audioURLs(in folderURL: URL) -> [URL] {
         collectAudioURLs(in: folderURL)

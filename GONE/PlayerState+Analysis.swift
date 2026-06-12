@@ -18,12 +18,6 @@ extension PlayerState {
         analysisFeed.progress.removeValue(forKey: trackId)
     }
 
-    func reanalyzeBPM(for trackId: UUID) {
-        guard let idx = tracks.firstIndex(where: { $0.id == trackId }) else { return }
-        tracks[idx].bpmAnalysisState = .pending
-        scheduleBPMAnalysis()
-    }
-
     // Deep re-analysis: wider BPM range (30–280) + longer window + half-tempo correction.
     // Only triggered by explicit user action (clicking the BPM refresh badge).
     func reanalyzeBPMDeep(for trackId: UUID) {

@@ -64,16 +64,13 @@ final class WindowSnapManager {
     private var savedFrame:       NSRect?
     private var savedDockedY:     CGFloat?
     private var dockToken:        UInt64 = 0  // incremented per dock attempt; guards completion against rapid toggle
-    private var savedWindowWidth: CGFloat?    // full width saved when shrinking to tabVisible at dock; nil outside snap lifecycle
 
     // Captured at enable(), used for the full lifecycle.
     private weak var snapWindow: NSWindow?
 
-    // Frame lock — enforces snap X position AND tab width even when the SwiftUI
-    // content layer resizes the window internally (panel-collapse animations keep
-    // re-expanding the docked window to full width — resize trace 2026-06-10).
+    // Frame lock — enforces the snap X position while docked (X-only: the window
+    // keeps full width in the full-width snap model).
     private var frameLockObserver: Any?
-    private var frameLockResizeObserver: Any?
     private var frameLockX: CGFloat? = nil
 
     private var mainWindow: NSWindow? {
@@ -92,7 +89,6 @@ final class WindowSnapManager {
         removeActivityMonitor()
         removeSpaceChangeObserver()
         unlockFrame()
-        savedWindowWidth = nil
         playerState?.isSnapping = false
     }
 
@@ -165,13 +161,7 @@ final class WindowSnapManager {
         // Cancel any in-flight dockToEdge completion — prevents a pending completion from
         // overwriting snapState/.docked and re-locking the frame after we've disabled snap.
         dockToken &+= 1
-        let fullWidth = savedWindowWidth  // capture before clearInfrastructure nils it
         clearInfrastructure()
-        // If we were docked at tabVisible width, restore full width before restoreFromSnap/animateTo.
-        if let w = fullWidth, window.frame.width < w {
-            let f = window.frame
-            window.setFrame(NSRect(x: f.origin.x, y: f.origin.y, width: w, height: f.height), display: true)
-        }
         playerState?.snapEnabled = false
         savedDockedY = nil
         playerState?.snapTimerFeed.set(nil)
@@ -219,10 +209,6 @@ final class WindowSnapManager {
         if let obs = frameLockObserver {
             NotificationCenter.default.removeObserver(obs)
             frameLockObserver = nil
-        }
-        if let obs = frameLockResizeObserver {
-            NotificationCenter.default.removeObserver(obs)
-            frameLockResizeObserver = nil
         }
         frameLockX = nil
     }
@@ -488,7 +474,7 @@ final class WindowSnapManager {
             targetFrame = saved
         } else {
             let origin = centeredOrigin(for: window)
-            let sz = NSSize(width: savedWindowWidth ?? window.frame.size.width, height: window.frame.size.height)
+            let sz = window.frame.size
             targetFrame = NSRect(origin: origin, size: sz)
         }
 
