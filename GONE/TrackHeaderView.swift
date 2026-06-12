@@ -194,7 +194,12 @@ struct ArtSwatchView: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .onAppear { loadArtwork() }
-        .onChange(of: artworkTaskId) { _ in loadArtwork() }
+        .onChange(of: artworkTaskId) { _ in
+            // Drop the previous track's artwork immediately — keeping it visible
+            // while the new one loads showed a WRONG cover for a beat on track change.
+            image = nil
+            loadArtwork()
+        }
     }
 
     private func loadArtwork() {

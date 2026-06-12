@@ -424,25 +424,11 @@ nonisolated final class LibraryScanner {
             }
         }
 
-        guard let contents = try? fileManager.contentsOfDirectory(
-            at: folderURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
-
-        let fallbackImage = contents.first { url in
-            candidateExtensions.contains(url.pathExtension.lowercased())
-        }
-
-        guard let fallbackImage,
-              let data = try? Data(contentsOf: fallbackImage)
-        else {
-            return nil
-        }
-
-        return normalizedArtworkData(from: data)
+        // NO "any image in the folder" fallback. In mixed DJ folders (many tracks +
+        // assorted covers/screenshots) that step assigned a RANDOM other track's
+        // artwork to every track without embedded art — covers showed up on the
+        // wrong tracks. Only named candidates above are trustworthy; otherwise none.
+        return nil
     }
 
     private func sanitizedArtworkKey(_ value: String) -> String {
