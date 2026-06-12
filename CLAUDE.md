@@ -135,8 +135,9 @@ The most delicate subsystem. Do NOT modify without reading the full state machin
   invisible forever (commit 852d603).
 - `.fullScreenAuxiliary` is part of every presence-policy path (expanded, docked,
   clone) — it works because the windows are real panels.
-- `alwaysOnTop` maps to window level in `applyPresencePolicy` (.floating/.normal);
-  live re-apply via Combine in `setupSettingsPersistence`.
+- Always-on-top is UNCONDITIONAL (the toggle was removed 2026-06-11): the player
+  level is always GWindowLevel.player. Invisible mode is the sanctioned way to
+  make the player unobtrusive — do not reintroduce a level toggle.
 - Snap countdown lives on `state.snapTimerFeed` (isolated ObservableObject) —
   NEVER re-add a @Published countdown to PlayerState: it gets rewritten at
   mouse-move rate and re-renders the whole tree.
