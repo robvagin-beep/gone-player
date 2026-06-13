@@ -8,7 +8,7 @@ set -e
 
 APP_NAME="GONE Player Beta 1.0"
 SHORT_VERSION="1.0"
-BUILD_VERSION="10"
+BUILD_VERSION="11"
 ENTITLEMENTS="$(dirname "$0")/GONE/GONE_release.entitlements"   # intentionally empty (no sandbox)
 OUT_DIR="$HOME/Desktop"
 DMG_PATH="$OUT_DIR/$APP_NAME.dmg"
