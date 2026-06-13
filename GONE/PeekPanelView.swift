@@ -38,7 +38,7 @@ struct PeekPanelView: View {
         .background(panelBackground)
         .mask(panelMask)
         .allowsHitTesting(state.snapState == .docked || state.snapState == .peeking)
-        .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: onFileDrop)
+        .onDrop(of: [UTType.fileURL, UTType.audio], isTargeted: $isDropTarget, perform: onFileDrop)
     }
 
     @ViewBuilder

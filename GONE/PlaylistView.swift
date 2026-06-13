@@ -93,19 +93,9 @@ struct PlaylistView: View {
 
         for (i, provider) in providers.enumerated() {
             group.enter()
-            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+            provider.resolveFileURL { url in
                 defer { group.leave() }
-                var resolved: URL?
-                if let data = item as? Data {
-                    resolved = URL(dataRepresentation: data, relativeTo: nil)
-                } else if let url = item as? URL {
-                    resolved = url
-                } else if let nsURL = item as? NSURL {
-                    resolved = nsURL as URL
-                } else if let str = item as? String {
-                    resolved = URL(string: str)
-                }
-                guard let url = resolved else { return }
+                guard let url = url else { return }
                 lock.withLock { slots[i] = url }
             }
         }
@@ -605,7 +595,7 @@ struct PlaylistTracksPane: View {
                 }
                 .animation(.easeInOut(duration: 0.12), value: isDropTarget)
                 .animation(.easeInOut(duration: 0.12), value: state.crossPaneDragTargetTabId == tabId)
-                .onDrop(of: [UTType.audio, UTType.fileURL], isTargeted: $isDropTarget, perform: onDrop)
+                .onDrop(of: [UTType.fileURL, UTType.audio], isTargeted: $isDropTarget, perform: onDrop)
                 .onChange(of: focusScrollTarget) { id in
                     guard let id else { return }
                     withAnimation(.easeInOut(duration: 0.20)) {
