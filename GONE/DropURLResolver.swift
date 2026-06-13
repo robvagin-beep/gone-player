@@ -13,13 +13,23 @@ extension NSItemProvider {
     /// Resolve a file URL from this provider, preferring the URL-bridging path.
     /// `completion` is always called exactly once (with nil when nothing resolves).
     func resolveFileURL(_ completion: @escaping (URL?) -> Void) {
+        if ProcessInfo.processInfo.environment["GONE_DEBUG_DROP"] != nil {
+            NSLog("[GONE drop] provider types=%@ canLoadURL=%d",
+                  registeredTypeIdentifiers.description, canLoadObject(ofClass: URL.self) ? 1 : 0)
+        }
+        let report: (URL?) -> Void = { url in
+            if ProcessInfo.processInfo.environment["GONE_DEBUG_DROP"] != nil {
+                NSLog("[GONE drop] resolved=%@", url?.path ?? "nil")
+            }
+            completion(url)
+        }
         if canLoadObject(ofClass: URL.self) {
             _ = loadObject(ofClass: URL.self) { url, _ in
-                if let url { completion(url); return }
-                self.resolveViaItem(completion)
+                if let url { report(url); return }
+                self.resolveViaItem(report)
             }
         } else {
-            resolveViaItem(completion)
+            resolveViaItem(report)
         }
     }
 

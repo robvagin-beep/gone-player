@@ -595,7 +595,7 @@ struct PlaylistTracksPane: View {
                 }
                 .animation(.easeInOut(duration: 0.12), value: isDropTarget)
                 .animation(.easeInOut(duration: 0.12), value: state.crossPaneDragTargetTabId == tabId)
-                .onDrop(of: [UTType.fileURL, UTType.audio], isTargeted: $isDropTarget, perform: onDrop)
+                .onDrop(of: [UTType.fileURL], isTargeted: $isDropTarget, perform: onDrop)
                 .onChange(of: focusScrollTarget) { id in
                     guard let id else { return }
                     withAnimation(.easeInOut(duration: 0.20)) {

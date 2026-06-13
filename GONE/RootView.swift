@@ -167,7 +167,11 @@ struct RootView: View {
             let win = appDelegate?.resolvedMainWindow() ?? WindowSnapManager.shared.currentWindow
             if let maxY = win?.frame.maxY { appDelegate?.windowAnchorMaxY = maxY }
         }
-        .onDrop(of: [UTType.fileURL, UTType.audio], isTargeted: $isDropTarget, perform: handleDrop)
+        // Only fileURL — listing UTType.audio made SwiftUI match a lone audio file on its
+        // audio UTI and hand back an audio-content provider with no usable file URL, so a
+        // single drop silently failed while multiples (delivered as file-url providers)
+        // worked. fileURL alone yields file-url providers for files AND folders.
+        .onDrop(of: [UTType.fileURL], isTargeted: $isDropTarget, perform: handleDrop)
         .onReceive(NotificationCenter.default.publisher(for: .headerDoubleClick)) { _ in
             guard !state.tracks.isEmpty else { return }
             state.toggleAccordionPanels()
