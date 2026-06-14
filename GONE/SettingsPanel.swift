@@ -103,6 +103,9 @@ final class SettingsPanel {
                                      .fullScreenDisallowsTiling, .ignoresCycle]
             p.hidesOnDeactivate  = false
             p.ignoresMouseEvents = false
+            // Grab anywhere on the panel's background/border to move it — no dedicated handle.
+            // Controls (buttons, sliders) consume their own clicks, so only empty space drags.
+            p.isMovableByWindowBackground = true
             hc.view.wantsLayer = true
             hc.view.layer?.backgroundColor = CGColor.clear
             p.contentView        = hc.view
@@ -227,24 +230,12 @@ struct SettingsView: View {
         case info    = "INFO"
     }
     @State private var tab: Tab = .audio
-    @State private var dragStartOrigin: NSPoint?
-    @State private var dragStartMouse: NSPoint = .zero
 
     var body: some View {
         VStack(spacing: 0) {
-            // Drag affordance dots — standard macOS borderless panel pattern
-            HStack(spacing: 3) {
-                ForEach(0..<3, id: \.self) { _ in
-                    Circle()
-                        .fill(Color.white.opacity(0.18))
-                        .frame(width: 3, height: 3)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 6)
-            .padding(.bottom, 4)
-
-            // Tab bar — also the drag handle
+            // Tab bar. The whole tab cell is clickable (contentShape), not just the glyphs.
+            // Close button sits on the left. There is no drag handle — the window moves by
+            // dragging anywhere on its glass background (isMovableByWindowBackground).
             HStack(spacing: 0) {
                 CloseTabBtn()
                 Rectangle()
@@ -254,12 +245,14 @@ struct SettingsView: View {
                     Button { tab = t } label: {
                         Text(t.rawValue)
                             .font(G.mono(8, weight: tab == t ? .semibold : .regular))
-                            .foregroundStyle(tab == t ? Color.white.opacity(0.82) : Color.white.opacity(0.28))
+                            .foregroundStyle(tab == t ? Color.white.opacity(0.82) : Color.white.opacity(0.30))
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
+                            .padding(.vertical, 12)
+                            .background(tab == t ? Color.white.opacity(0.06) : Color.clear)
+                            .contentShape(Rectangle())          // entire tab zone is the hit area
                             .overlay(alignment: .bottom) {
                                 if tab == t {
-                                    Rectangle().fill(Color.white.opacity(0.40)).frame(height: 1)
+                                    Rectangle().fill(Color.white.opacity(0.45)).frame(height: 1.5)
                                 }
                             }
                     }
@@ -267,26 +260,7 @@ struct SettingsView: View {
                     .cursor(.pointingHand)
                 }
             }
-            .background(Color.white.opacity(0.025))
-            .cursor(.openHand)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 3)
-                    .onChanged { _ in
-                        guard let p = SettingsPanel.shared.currentPanel else { return }
-                        SettingsView.isDraggingGlobal = true
-                        if dragStartOrigin == nil {
-                            dragStartOrigin = p.frame.origin
-                            dragStartMouse  = NSEvent.mouseLocation
-                        }
-                        let dx = NSEvent.mouseLocation.x - dragStartMouse.x
-                        let dy = NSEvent.mouseLocation.y - dragStartMouse.y
-                        p.setFrameOrigin(NSPoint(x: dragStartOrigin!.x + dx, y: dragStartOrigin!.y + dy))
-                    }
-                    .onEnded { _ in
-                        dragStartOrigin = nil
-                        SettingsView.isDraggingGlobal = false
-                    }
-            )
+            .padding(.top, 4)
 
             Divider().overlay(Color.white.opacity(0.07))
 
@@ -302,21 +276,39 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .frame(width: 420)
-        .background(G.bgFloatingPanel)
+        // Same glass shell as the player so the panel reads as one program. The whole shell
+        // is the draggable "border" (isMovableByWindowBackground); the strokes show its edge.
+        .background(settingsGlass)
         .clipShape(RoundedRectangle(cornerRadius: G.rFloatingPanel))
-        // Stronger, two-tone border so the panel edge reads clearly against the player /
-        // desktop behind it — the user needs to see where the window's edges are.
         .overlay {
             RoundedRectangle(cornerRadius: G.rFloatingPanel)
-                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                .stroke(Color.white.opacity(0.18), lineWidth: 1)
         }
-        .overlay {
+        .overlay(alignment: .top) {
             RoundedRectangle(cornerRadius: G.rFloatingPanel)
-                .inset(by: 1)
-                .stroke(Color.black.opacity(0.55), lineWidth: 1)
+                .stroke(Color.white.opacity(0.34), lineWidth: 1)
+                .mask(LinearGradient(colors: [.white, .white.opacity(0)],
+                                     startPoint: .top, endPoint: .bottom))
         }
-        .shadow(color: .black.opacity(0.66), radius: 34, x: 0, y: 12)
+        .shadow(color: .black.opacity(0.42), radius: 14, x: 0, y: 3)
+        .shadow(color: .black.opacity(0.30), radius: 34, x: 0, y: 14)
         .fixedSize(horizontal: true, vertical: true)
+    }
+
+    // Glass shell matching the player's outer shell (RootView): opaque base + a top-down
+    // white sheen, so the panel looks like part of the same program.
+    private var settingsGlass: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: G.rFloatingPanel).fill(G.bgFloatingPanel)
+            RoundedRectangle(cornerRadius: G.rFloatingPanel).fill(
+                LinearGradient(stops: [
+                    .init(color: .white.opacity(0.12), location: 0),
+                    .init(color: .white.opacity(0.05), location: 0.18),
+                    .init(color: .white.opacity(0.02), location: 0.5),
+                    .init(color: .white.opacity(0.03), location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+            )
+        }
     }
 }
 
@@ -330,13 +322,17 @@ private struct CloseTabBtn: View {
             Task { @MainActor in SettingsPanel.shared.hide() }
         } label: {
             Image(systemName: "xmark")
-                .font(.system(size: 7, weight: .medium))
-                .foregroundStyle(Color.white.opacity(hovered ? 0.52 : 0.22))
-                .frame(width: 36, height: 34)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(hovered ? 0.95 : 0.62))
+                .frame(width: 22, height: 22)
+                .background(Color.white.opacity(hovered ? 0.16 : 0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .frame(width: 40, height: 38)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
+        .cursor(.pointingHand)
     }
 }
 
