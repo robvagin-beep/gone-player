@@ -160,7 +160,6 @@ struct ArtSwatchView: View {
     var isCurrent: Bool = false
 
     @State private var image: NSImage?
-    @State private var loadGeneration: Int = 0
 
     private var artworkTaskId: String { "\(trackId?.uuidString ?? ""):\(hasArtwork)" }
 
@@ -193,25 +192,22 @@ struct ArtSwatchView: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-        .onAppear { loadArtwork() }
-        .onChange(of: artworkTaskId) { _ in
-            // Drop the previous track's artwork immediately — keeping it visible
-            // while the new one loads showed a WRONG cover for a beat on track change.
+        // .task(id:) is the race-free loader: when the track id (or hasArtwork) changes it
+        // auto-cancels the in-flight load and starts a fresh one. The old manual
+        // generation-counter approach could resolve loads out of order across the two swatches
+        // shown for the current track (header + the real-color float over the gradient map),
+        // which is what put a WRONG / shifted-by-one cover on screen at large volume.
+        .task(id: artworkTaskId) {
+            // Drop the previous track's cover up front — showing a stale cover while the new
+            // one loads is worse than a brief placeholder.
             image = nil
-            loadArtwork()
-        }
-    }
-
-    private func loadArtwork() {
-        guard hasArtwork, let id = trackId else { image = nil; return }
-        loadGeneration += 1
-        let generation = loadGeneration
-        DispatchQueue.global(qos: .userInitiated).async {
-            let resolved = ArtworkCache.shared.image(for: id)
-            DispatchQueue.main.async {
-                guard loadGeneration == generation else { return }
-                image = resolved
-            }
+            guard hasArtwork, let id = trackId else { return }
+            // ArtworkCache.image(for:) must run off the main thread (it asserts so in DEBUG).
+            let resolved = await Task.detached(priority: .userInitiated) {
+                ArtworkCache.shared.image(for: id)
+            }.value
+            guard !Task.isCancelled else { return }
+            image = resolved
         }
     }
 }
