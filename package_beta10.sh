@@ -1,14 +1,14 @@
 #!/bin/zsh
 set -e
 
-# GONE — package Beta 1.0 into an ad-hoc DMG (no Developer ID).
+# GONE — package Beta 1.1 into an ad-hoc DMG (no Developer ID).
 # Order matters: PlistBuddy (display name + version) BEFORE codesign — Info.plist lives
 # inside the signed bundle, so editing it after signing invalidates the signature
 # (crash -67030).
 
-APP_NAME="GONE Player Beta 1.0"
-SHORT_VERSION="1.0"
-BUILD_VERSION="13"
+APP_NAME="GONE Player Beta 1.1"
+SHORT_VERSION="1.1"
+BUILD_VERSION="14"
 ENTITLEMENTS="$(dirname "$0")/GONE/GONE_release.entitlements"   # intentionally empty (no sandbox)
 OUT_DIR="$HOME/Desktop"
 DMG_PATH="$OUT_DIR/$APP_NAME.dmg"
