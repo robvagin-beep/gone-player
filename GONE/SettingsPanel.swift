@@ -148,8 +148,14 @@ final class SettingsPanel {
         let panelSize = size ?? panel.frame.size
         let winF = window.frame
         let baseBottom = winF.maxY - FullPlayerView.baseHeight - 12
-        let x = winF.minX + 8
-        let y = baseBottom - panelSize.height - 4
+        var x = winF.minX + 8
+        var y = baseBottom - panelSize.height - 4
+        // The player can sit in any corner, and the panel may overlap it — clamp the origin to
+        // the screen so the (now taller, no-constraint) settings always land fully visible.
+        if let vf = (window.screen ?? NSScreen.main)?.visibleFrame {
+            x = min(max(x, vf.minX + 8), max(vf.minX + 8, vf.maxX - panelSize.width - 8))
+            y = min(max(y, vf.minY + 8), max(vf.minY + 8, vf.maxY - panelSize.height - 8))
+        }
         panel.setFrame(CGRect(origin: CGPoint(x: x, y: y), size: panelSize), display: true)
     }
 
@@ -217,8 +223,7 @@ struct SettingsView: View {
         case audio   = "AUDIO"
         case bpm     = "BPM"
         case library = "LIBRARY"
-        case look    = "LOOK"
-        case window  = "WINDOW"
+        case view    = "VIEW"
         case info    = "INFO"
     }
     @State private var tab: Tab = .audio
@@ -290,21 +295,27 @@ struct SettingsView: View {
                 case .audio:   AudioSettingsTab(state: state)
                 case .bpm:     BpmSettingsTab(state: state)
                 case .library: LibrarySettingsTab(state: state)
-                case .look:    LookSettingsTab(state: state)
-                case .window:  WindowSettingsTab(state: state)
+                case .view:    ViewSettingsTab(state: state)
                 case .info:    InfoSettingsTab(state: state)
                 }
             }
             .frame(maxWidth: .infinity)
         }
-        .frame(width: 400)
+        .frame(width: 420)
         .background(G.bgFloatingPanel)
         .clipShape(RoundedRectangle(cornerRadius: G.rFloatingPanel))
+        // Stronger, two-tone border so the panel edge reads clearly against the player /
+        // desktop behind it — the user needs to see where the window's edges are.
         .overlay {
             RoundedRectangle(cornerRadius: G.rFloatingPanel)
-                .stroke(Color.white.opacity(0.09), lineWidth: 0.5)
+                .stroke(Color.white.opacity(0.22), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.60), radius: 28, x: 0, y: 10)
+        .overlay {
+            RoundedRectangle(cornerRadius: G.rFloatingPanel)
+                .inset(by: 1)
+                .stroke(Color.black.opacity(0.55), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.66), radius: 34, x: 0, y: 12)
         .fixedSize(horizontal: true, vertical: true)
     }
 }
@@ -371,6 +382,93 @@ private struct SRow<C: View>: View {
 private struct SDivider: View {
     var body: some View {
         Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1).padding(.horizontal, 14)
+    }
+}
+
+// Heavier separator between top-level sections (vs SDivider between rows).
+private struct SSectionRule: View {
+    var body: some View {
+        Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1)
+            .padding(.top, 4)
+    }
+}
+
+// Row of equal-width segmented chips. `items` carry a (label, value); the value is passed
+// back to isActive/action so one component drives scale, delay, side, animation, etc.
+private struct ChipRow: View {
+    let items: [(String, Double)]
+    let isActive: (Double) -> Bool
+    let action: (Double) -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(items, id: \.0) { label, value in
+                Button { action(value) } label: {
+                    let active = isActive(value)
+                    Text(label)
+                        .font(G.mono(10, weight: active ? .semibold : .regular))
+                        .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.white.opacity(active ? 0.12 : 0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+// Compact chip cluster for inline use inside an SRow (e.g. magnify Speed).
+private struct SmallChipRow: View {
+    let items: [(String, Double)]
+    let isActive: (Double) -> Bool
+    let action: (Double) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items, id: \.0) { label, value in
+                Button { action(value) } label: {
+                    let active = isActive(value)
+                    Text(label)
+                        .font(G.mono(8, weight: active ? .semibold : .regular))
+                        .foregroundStyle(Color.white.opacity(active ? 0.82 : 0.32))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(active ? 0.12 : 0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+// Caption + live value + slider, the repeated "GHOST OPACITY 42 %" style block.
+private struct InlineSlider: View {
+    let caption: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    var unit: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(caption)
+                    .font(G.mono(7, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.28))
+                    .kerning(0.7)
+                Spacer()
+                Text("\(Int(value))\(unit.isEmpty ? "" : " \(unit)")")
+                    .font(G.mono(10, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .monospacedDigit()
+            }
+            SettingsSlider(label: "", value: $value, range: range)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
     }
 }
 
@@ -648,21 +746,27 @@ private struct LibrarySettingsTab: View {
     }
 }
 
-// MARK: - Tab: LOOK (appearance — gradient + scale)
+// MARK: - Tab: VIEW (merged LOOK + WINDOW — appearance + on-screen behavior)
 
-private struct LookSettingsTab: View {
+private struct ViewSettingsTab: View {
     @ObservedObject var state: PlayerState
 
-    private let presets: [(String, Double)] = [
+    private let scalePresets: [(String, Double)] = [
         ("50%", 0.50), ("60%", 0.60), ("70%", 0.70),
         ("80%", 0.80), ("90%", 0.90), ("100%", 1.00)
+    ]
+    private let delayOptions: [(String, Double)] = [
+        ("2 s", 2), ("3 s", 3), ("5 s", 5), ("10 s", 10), ("20 s", 20)
+    ]
+    private let snapSpeedOptions: [(String, Double)] = [
+        ("SLOW", 1.8), ("MED", 1.0), ("FAST", 0.5)
     ]
 
     var body: some View {
         VStack(spacing: 0) {
+            // ── Appearance ───────────────────────────────────────────────
             SHead(text: "GRADIENT MAP")
-
-            VStack(spacing: 14) {
+            VStack(spacing: 16) {
                 SettingsSlider(
                     label: "COLOR",
                     value: $state.gradientMapHue,
@@ -683,13 +787,13 @@ private struct LookSettingsTab: View {
                     ))
                 )
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 18)
+            .padding(.top, 4)
+            .padding(.bottom, 18)
 
-            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
+            SSectionRule()
 
             SHead(text: "DISPLAY SCALE")
-
             SettingsSlider(
                 label: "",
                 value: $state.windowScale,
@@ -699,212 +803,75 @@ private struct LookSettingsTab: View {
                     startPoint: .leading, endPoint: .trailing
                 ))
             )
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 18)
+            .padding(.top, 6)
+            .padding(.bottom, 12)
 
-            HStack(spacing: 4) {
-                ForEach(presets, id: \.0) { label, value in
-                    Button {
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.72)) {
-                            state.windowScale = value
-                        }
-                    } label: {
-                        let active = abs(state.windowScale - value) < 0.01
-                        Text(label)
-                            .font(G.mono(10, weight: active ? .semibold : .regular))
-                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 9)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.white.opacity(active ? 0.12 : 0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
+            ChipRow(items: scalePresets,
+                    isActive: { abs(state.windowScale - $0) < 0.01 },
+                    action: { v in
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.72)) { state.windowScale = v }
+                    })
+                .padding(.horizontal, 18)
+                .padding(.bottom, 14)
+
+            // Hover-to-zoom lives right under the scale — it's the way to read the player
+            // at full size again after scaling it down, without leaving it large.
+            SRow(label: "Hover to zoom 100%", sub: "snap back to full size when the cursor nears") {
+                MiniToggle(isOn: $state.magnifyEnabled)
+            }
+            if state.magnifyEnabled {
+                SDivider()
+                InlineSlider(caption: "PROXIMITY", value: $state.magnifyProximity,
+                             range: 20...200, unit: "px")
+                SDivider()
+                SRow(label: "Speed") {
+                    SmallChipRow(items: [("SLOW", 0.45), ("MED", 0.25), ("FAST", 0.12)],
+                                 isActive: { abs(state.magnifySpeed - $0) < 0.05 },
+                                 action: { state.magnifySpeed = $0 })
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 16)
-        }
-        .padding(.bottom, 16)
-    }
-}
 
-// MARK: - Tab: WINDOW (on-screen behavior — invisible + magnify + snap)
+            SSectionRule()
 
-private struct WindowSettingsTab: View {
-    @ObservedObject var state: PlayerState
-
-    private let delayOptions: [(String, Double)] = [
-        ("2 s", 2), ("3 s", 3), ("5 s", 5), ("10 s", 10), ("20 s", 20)
-    ]
-    private let speedOptions: [(String, Double)] = [
-        ("SLOW", 1.8), ("MED", 1.0), ("FAST", 0.5)
-    ]
-
-    var body: some View {
-        VStack(spacing: 0) {
+            // ── Window behaviour ─────────────────────────────────────────
             SHead(text: "INVISIBLE")
             SRow(label: "Invisible mode", sub: "fade to a ghost when idle · hover to reveal") {
                 MiniToggle(isOn: $state.invisibleMode)
             }
-
             if state.invisibleMode {
                 SDivider()
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("GHOST OPACITY")
-                            .font(G.mono(7, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.28))
-                            .kerning(0.7)
-                        Spacer()
-                        Text("\(Int(state.invisibleOpacity)) %")
-                            .font(G.mono(10, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.55))
-                            .monospacedDigit()
-                    }
-                    SettingsSlider(label: "", value: $state.invisibleOpacity, range: 18...100)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
+                InlineSlider(caption: "GHOST OPACITY", value: $state.invisibleOpacity,
+                             range: 18...100, unit: "%")
             }
 
-            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
+            SSectionRule()
 
-            SHead(text: "MAGNIFY")
-            SRow(label: "Proximity zoom", sub: "scale-up when cursor approaches window") {
-                MiniToggle(isOn: $state.magnifyEnabled)
-            }
+            SHead(text: "SNAP DELAY")
+            ChipRow(items: delayOptions,
+                    isActive: { abs(state.snapInactivityDelay - $0) < 0.5 },
+                    action: { state.snapInactivityDelay = $0 })
+                .padding(.horizontal, 18)
+                .padding(.bottom, 16)
 
-            if state.magnifyEnabled {
-                SDivider()
+            SHead(text: "SNAP SIDE")
+            ChipRow(items: [("LEFT", 1.0), ("RIGHT", 0.0)],
+                    isActive: { state.snapDockLeft == ($0 > 0.5) },
+                    action: { state.snapDockLeft = $0 > 0.5 })
+                .padding(.horizontal, 18)
+                .padding(.bottom, 16)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("PROXIMITY")
-                            .font(G.mono(7, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.28))
-                            .kerning(0.7)
-                        Spacer()
-                        Text("\(Int(state.magnifyProximity)) px")
-                            .font(G.mono(10, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.55))
-                            .monospacedDigit()
-                    }
-                    SettingsSlider(label: "", value: $state.magnifyProximity, range: 20...200)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-
-                SDivider()
-
-                SRow(label: "Speed") {
-                    HStack(spacing: 4) {
-                        ForEach([("SLOW", 0.45), ("MED", 0.25), ("FAST", 0.12)], id: \.0) { label, val in
-                            Button { state.magnifySpeed = val } label: {
-                                let active = abs(state.magnifySpeed - val) < 0.05
-                                Text(label)
-                                    .font(G.mono(8, weight: active ? .semibold : .regular))
-                                    .foregroundStyle(Color.white.opacity(active ? 0.82 : 0.32))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.white.opacity(active ? 0.12 : 0.05))
-                                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-
-            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
-
-            SHead(text: "DOCK DELAY")
-            HStack(spacing: 4) {
-                ForEach(delayOptions, id: \.0) { label, val in
-                    Button { state.snapInactivityDelay = val } label: {
-                        let active = abs(state.snapInactivityDelay - val) < 0.5
-                        Text(label)
-                            .font(G.mono(10, weight: active ? .semibold : .regular))
-                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 9)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.white.opacity(active ? 0.12 : 0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 14)
-
-            SDivider()
-
-            SHead(text: "DOCK SIDE")
-            HStack(spacing: 4) {
-                ForEach([("LEFT", true), ("RIGHT", false)], id: \.0) { label, left in
-                    Button { state.snapDockLeft = left } label: {
-                        let active = state.snapDockLeft == left
-                        Text(label)
-                            .font(G.mono(10, weight: active ? .semibold : .regular))
-                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 9)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.white.opacity(active ? 0.12 : 0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 14)
-
-            SDivider()
-
-            SHead(text: "ANIMATION")
-            HStack(spacing: 4) {
-                ForEach(speedOptions, id: \.0) { label, val in
-                    Button { state.snapAnimSpeed = val } label: {
-                        let active = speedOptions.min(by: { abs($0.1 - state.snapAnimSpeed) < abs($1.1 - state.snapAnimSpeed) })?.1 == val
-                        Text(label)
-                            .font(G.mono(10, weight: active ? .semibold : .regular))
-                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 9)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.white.opacity(active ? 0.12 : 0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 14)
-
-            SDivider()
+            SHead(text: "SNAP ANIMATION")
+            ChipRow(items: snapSpeedOptions,
+                    isActive: { snapSpeedOptions.min(by: { abs($0.1 - state.snapAnimSpeed) < abs($1.1 - state.snapAnimSpeed) })?.1 == $0 },
+                    action: { state.snapAnimSpeed = $0 })
+                .padding(.horizontal, 18)
+                .padding(.bottom, 16)
 
             SHead(text: "PEEK TAB WIDTH")
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("VISIBLE PX")
-                        .font(G.mono(7, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.28))
-                        .kerning(0.7)
-                    Spacer()
-                    Text("\(Int(state.snapTabWidth)) px")
-                        .font(G.mono(10, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.55))
-                        .monospacedDigit()
-                }
-                SettingsSlider(label: "", value: $state.snapTabWidth, range: 8...36)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            InlineSlider(caption: "VISIBLE", value: $state.snapTabWidth, range: 8...36, unit: "px")
         }
-        .padding(.bottom, 14)
+        .padding(.bottom, 18)
     }
 }
 
