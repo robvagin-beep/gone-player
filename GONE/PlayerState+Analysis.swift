@@ -212,24 +212,35 @@ extension PlayerState {
                 await MainActor.run { self.bpmPriorityId = nil }
 
                 let conc = playing ? 1 : min(2, Self.analysisConcurrency)
-                let batch = Array(queue.prefix(conc * 2))
-                queue = Array(queue.dropFirst(batch.count))
+                // Coarser dosing the larger the library: every committed track triggers a
+                // @Published tracks broadcast → a full playlist re-sort/re-diff (O(n log n)).
+                // At per-track granularity that is O(n²·log n) and visibly drags at thousands
+                // of tracks. Commit a whole chunk in ONE write — chunk grows with volume while
+                // idle; stays small + responsive while playing.
+                let chunkSize = playing ? 4 : (pending.count >= 1000 ? 64 : pending.count >= 300 ? 24 : 8)
+                let chunk = Array(queue.prefix(chunkSize))
+                queue = Array(queue.dropFirst(chunk.count))
 
-                await withTaskGroup(of: Void.self) { group in
-                    var q = batch
+                var outcomes: [BPMOutcome] = []
+                await withTaskGroup(of: BPMOutcome?.self) { group in
+                    var q = chunk
                     for _ in 0..<min(conc, q.count) {
                         let track = q.removeFirst()
                         group.addTask(priority: .utility) {
-                            await Self.analyzeBPMAndCommit(track: track, state: self)
+                            await Self.analyzeBPMCompute(track: track, state: self)
                         }
                     }
-                    while await group.next() != nil, !q.isEmpty {
-                        let track = q.removeFirst()
-                        group.addTask(priority: .utility) {
-                            await Self.analyzeBPMAndCommit(track: track, state: self)
+                    while let res = await group.next() {
+                        if let res { outcomes.append(res) }
+                        if !q.isEmpty {
+                            let track = q.removeFirst()
+                            group.addTask(priority: .utility) {
+                                await Self.analyzeBPMCompute(track: track, state: self)
+                            }
                         }
                     }
                 }
+                await Self.applyBPMOutcomes(outcomes, state: self)
                 if playing {
                     try? await Task.sleep(for: .milliseconds(400))   // let the player's prefetch refill
                 }
@@ -248,30 +259,29 @@ extension PlayerState {
     // nonisolated: with the project's MainActor-by-default isolation this method body —
     // including the awaited analyzer calls — ran ON the main thread. All PlayerState
     // access inside already goes through MainActor.run, so the body itself is main-free.
-    nonisolated private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
-        guard !Task.isCancelled else { return }
+    // One analyzed track's result, decoupled from the commit so a whole chunk can be written
+    // to `state.tracks` in a single @Published broadcast (see applyBPMOutcomes / Lane 2).
+    fileprivate struct BPMOutcome {
+        let id: UUID
+        let bpm: Double            // > 0 = success, 0 = failed
+        let beatGridOffset: Double
+        let beatGridConfidence: Double
+        let waveform: [Float]
+    }
+
+    // Pure analysis — decode + dance-floor sanity + cache, NO state.tracks write.
+    // Returns nil only when cancelled. Caller commits via applyBPMOutcomes.
+    nonisolated private static func analyzeBPMCompute(track: Track, state: PlayerState) async -> BPMOutcome? {
+        guard !Task.isCancelled else { return nil }
         // Cache hit: skip decode + analysis entirely. Saves ~300-500 ms per track.
         // confidence != 0 accepts BOTH strong grids (>0) and attempted-but-weak (-1):
         // rejecting weak-grid cache entries made such tracks re-decode the full file
-        // on EVERY visit forever — a playlist on repeat chewed disk mid-playback.
-        // Only confidence == 0 (grid never attempted, legacy cache) goes to analysis.
+        // on EVERY visit forever. Only confidence == 0 (legacy "never attempted") re-analyzes.
         if let hit = await AnalysisCache.shared.get(for: track.url),
            hit.bpm > 0,
            hit.beatGridConfidence != 0 {
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
-                var t = state.tracks[idx]
-                t.bpm = hit.bpm
-                t.bpmAnalysisState = .analyzed
-                t.beatGridOffset = hit.beatGridOffset
-                t.beatGridConfidence = hit.beatGridConfidence
-                if t.waveform.isEmpty, !hit.waveform.isEmpty {
-                    t.waveform = hit.waveform
-                }
-                state.tracks[idx] = t
-            }
-            return
+            return BPMOutcome(id: track.id, bpm: hit.bpm, beatGridOffset: hit.beatGridOffset,
+                              beatGridConfidence: hit.beatGridConfidence, waveform: hit.waveform)
         }
 
         let floor   = await MainActor.run { state.bpmAnalysisFloor }
@@ -284,7 +294,7 @@ extension PlayerState {
                 state?.analysisFeed.progress[track.id] = progress
             }
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return nil }
 
         // Dance-floor sanity: in a DJ tool a first-pass result below 80 or above 145 BPM
         // is suspect — auto-verify with the deep full-track pass and let its verdict win.
@@ -292,7 +302,7 @@ extension PlayerState {
         // (D&B 160-195, HIP-HOP 70-115) makes such values expected and skips this.
         if bpm > 0, floor < 80, ceiling > 160, bpm < 95 || bpm > 145 {
             let deep = await LibraryScanner().analyzeBPMDeep(url: track.url, floor: floor, ceiling: ceiling)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return nil }
             if deep > 0 {
                 // The deep pass returns the raw period, often the lower octave (bench:
                 // 127 came back as 63.4, 135 as 67.6) — normalize before comparing.
@@ -307,29 +317,46 @@ extension PlayerState {
         }
 
         // Sentinel: confidence -1 = "grid attempted, too weak to trust". 0 is reserved
-        // for "never attempted" — it is what re-triggers grid analysis on track load,
-        // so storing a raw 0 here would loop the full decode forever on weak material.
+        // for "never attempted" — re-triggers grid analysis on track load, so a raw 0
+        // here would loop the full decode forever on weak material.
         let storedConfidence = gridConfidence > 0 ? gridConfidence : -1
         if bpm > 0 {
             await AnalysisCache.shared.putBPMAndWaveform(url: track.url, bpm: bpm, waveform: waveform,
                                                          beatGridOffset: beatGridOffset, beatGridConfidence: storedConfidence)
         }
+        return BPMOutcome(id: track.id, bpm: bpm, beatGridOffset: beatGridOffset,
+                          beatGridConfidence: storedConfidence, waveform: waveform)
+    }
+
+    // Apply a batch of analyzed results in ONE state.tracks write → one @Published broadcast
+    // for the whole chunk instead of one per track (the O(n²·log n) scale killer). Builds an
+    // id→index map once so lookups are O(1) within the batch.
+    nonisolated private static func applyBPMOutcomes(_ outcomes: [BPMOutcome], state: PlayerState) async {
+        guard !outcomes.isEmpty else { return }
         await MainActor.run {
-            state.analysisFeed.progress.removeValue(forKey: track.id)
-            guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }) else { return }
-            var t = state.tracks[idx]
-            if bpm > 0 {
-                t.bpm = bpm
-                t.bpmAnalysisState = .analyzed
-                t.beatGridOffset = beatGridOffset
-                t.beatGridConfidence = storedConfidence
-                if t.waveform.isEmpty, !waveform.isEmpty {
-                    t.waveform = waveform
+            var t = state.tracks
+            var index = [UUID: Int](minimumCapacity: t.count)
+            for (i, tr) in t.enumerated() { index[tr.id] = i }
+            for o in outcomes {
+                state.analysisFeed.progress.removeValue(forKey: o.id)
+                guard let idx = index[o.id] else { continue }
+                if o.bpm > 0 {
+                    t[idx].bpm = o.bpm
+                    t[idx].bpmAnalysisState = .analyzed
+                    t[idx].beatGridOffset = o.beatGridOffset
+                    t[idx].beatGridConfidence = o.beatGridConfidence
+                    if t[idx].waveform.isEmpty, !o.waveform.isEmpty { t[idx].waveform = o.waveform }
+                } else {
+                    t[idx].bpmAnalysisState = .failed
                 }
-            } else {
-                t.bpmAnalysisState = .failed
             }
-            state.tracks[idx] = t
+            state.tracks = t   // single broadcast for the whole chunk
+        }
+    }
+
+    nonisolated private static func analyzeBPMAndCommit(track: Track, state: PlayerState) async {
+        if let outcome = await analyzeBPMCompute(track: track, state: state) {
+            await applyBPMOutcomes([outcome], state: state)
         }
     }
 
@@ -388,20 +415,29 @@ extension PlayerState {
                 await MainActor.run { self.waveformPriorityId = nil }
 
                 let conc = playing ? 1 : Self.analysisConcurrency
-                let batch = Array(queue.prefix(conc * 2))
-                queue = Array(queue.dropFirst(batch.count))
+                // Coarser dosing the larger the library — same scale fix as BPM: commit a whole
+                // chunk in ONE state.tracks write instead of one broadcast (→ playlist re-sort)
+                // per track. Chunk grows with volume while idle, stays small while playing.
+                let chunkSize = playing ? 4 : (pending.count >= 1000 ? 64 : pending.count >= 300 ? 24 : 8)
+                let chunk = Array(queue.prefix(chunkSize))
+                queue = Array(queue.dropFirst(chunk.count))
 
-                await withTaskGroup(of: Void.self) { group in
-                    var q = batch
+                var outcomes: [(id: UUID, waveform: [Float])] = []
+                await withTaskGroup(of: (id: UUID, waveform: [Float])?.self) { group in
+                    var q = chunk
                     for _ in 0..<min(conc, q.count) {
                         let track = q.removeFirst()
-                        group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
+                        group.addTask { await Self.computeWaveform(track: track, state: self) }
                     }
-                    while await group.next() != nil, !q.isEmpty {
-                        let track = q.removeFirst()
-                        group.addTask { await Self.computeWaveformAndCommit(track: track, state: self) }
+                    while let res = await group.next() {
+                        if let res { outcomes.append(res) }
+                        if !q.isEmpty {
+                            let track = q.removeFirst()
+                            group.addTask { await Self.computeWaveform(track: track, state: self) }
+                        }
                     }
                 }
+                await Self.applyWaveformOutcomes(outcomes, state: self)
                 if playing {
                     try? await Task.sleep(for: .milliseconds(400))
                 }
@@ -418,15 +454,12 @@ extension PlayerState {
         }
     }
 
-    private static func computeWaveformAndCommit(track: Track, state: PlayerState) async {
+    // Pure waveform compute — decode + cache, NO state.tracks write. Returns the bars to
+    // commit (a flat low floor on failure). Caller commits via applyWaveformOutcomes.
+    private static func computeWaveform(track: Track, state: PlayerState) async -> (id: UUID, waveform: [Float])? {
         // Cache hit: skip full-track decode entirely.
         if let hit = await AnalysisCache.shared.get(for: track.url), !hit.waveform.isEmpty {
-            await MainActor.run {
-                guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }),
-                      state.tracks[idx].waveform.isEmpty else { return }
-                state.tracks[idx].waveform = hit.waveform
-            }
-            return
+            return (track.id, hit.waveform)
         }
 
         // AVAssetReader doesn't support concurrent reads on the same file.
@@ -439,10 +472,27 @@ extension PlayerState {
         }
         if !waveform.isEmpty { await AnalysisCache.shared.putWaveform(url: track.url, waveform: waveform) }
         let committed = waveform.isEmpty ? Array(repeating: Float(0.04), count: 84) : waveform
+        return (track.id, committed)
+    }
+
+    // Apply a chunk of waveforms in ONE state.tracks write → one broadcast for the whole chunk.
+    private static func applyWaveformOutcomes(_ outcomes: [(id: UUID, waveform: [Float])], state: PlayerState) async {
+        guard !outcomes.isEmpty else { return }
         await MainActor.run {
-            guard let idx = state.tracks.firstIndex(where: { $0.id == track.id }),
-                  state.tracks[idx].waveform.isEmpty else { return }
-            state.tracks[idx].waveform = committed
+            var t = state.tracks
+            var index = [UUID: Int](minimumCapacity: t.count)
+            for (i, tr) in t.enumerated() { index[tr.id] = i }
+            for o in outcomes {
+                guard let idx = index[o.id], t[idx].waveform.isEmpty else { continue }
+                t[idx].waveform = o.waveform
+            }
+            state.tracks = t
+        }
+    }
+
+    private static func computeWaveformAndCommit(track: Track, state: PlayerState) async {
+        if let outcome = await computeWaveform(track: track, state: state) {
+            await applyWaveformOutcomes([outcome], state: state)
         }
     }
 
