@@ -605,6 +605,15 @@ struct PlaylistTracksPane: View {
                         scrollProxy.scrollTo(id, anchor: .center)
                     }
                 }
+                // Follow the playing track — keeps it findable when it advances or shuffles
+                // far from view. Only when the current track lives in THIS tab.
+                .onChange(of: state.currentId) { id in
+                    guard state.followCurrentTrack, let id,
+                          visibleTracks.contains(where: { $0.id == id }) else { return }
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        scrollProxy.scrollTo(id, anchor: .center)
+                    }
+                }
             }
             } // ScrollViewReader
             .overlay(alignment: .bottom) {

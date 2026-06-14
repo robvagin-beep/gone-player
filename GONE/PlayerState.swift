@@ -98,6 +98,7 @@ final class PlayerState: ObservableObject {
     @Published var autoOpenPlaylistOnImport: Bool = true
     @Published var confirmBeforeDelete: Bool = false
     @Published var hideMissingTracks: Bool = false
+    @Published var followCurrentTrack: Bool = true   // auto-scroll the playlist to the playing track
     @Published var autoBPMOnImport: Bool = true
     @Published var bpmAnalysisFloor: Double = 60
     @Published var bpmAnalysisCeiling: Double = 200
@@ -433,6 +434,7 @@ final class PlayerState: ObservableObject {
         if ud.object(forKey: "autoOpenPlaylist")    != nil { autoOpenPlaylistOnImport = ud.bool(forKey: "autoOpenPlaylist") }
         if ud.object(forKey: "confirmDelete")       != nil { confirmBeforeDelete  = ud.bool(forKey: "confirmDelete") }
         if ud.object(forKey: "hideMissing")         != nil { hideMissingTracks   = ud.bool(forKey: "hideMissing") }
+        if ud.object(forKey: "followCurrent")       != nil { followCurrentTrack  = ud.bool(forKey: "followCurrent") }
         if ud.object(forKey: "invisibleMode")       != nil { invisibleMode       = ud.bool(forKey: "invisibleMode") }
         if ud.object(forKey: "invisibleOpacity")    != nil { invisibleOpacity    = max(18, min(100, ud.double(forKey: "invisibleOpacity"))) }
         if !invisibleOpacity.isFinite || invisibleOpacity < 18 || invisibleOpacity > 100 { invisibleOpacity = 18 }
@@ -471,6 +473,7 @@ final class PlayerState: ObservableObject {
         ud.set(autoOpenPlaylistOnImport, forKey: "autoOpenPlaylist")
         ud.set(confirmBeforeDelete,     forKey: "confirmDelete")
         ud.set(hideMissingTracks,       forKey: "hideMissing")
+        ud.set(followCurrentTrack,      forKey: "followCurrent")
         ud.set(snapInactivityDelay,     forKey: "snapInactivityDelay")
         ud.set(snapAnimSpeed,           forKey: "snapAnimSpeed")
         ud.set(snapTabWidth,            forKey: "snapTabWidth")

@@ -639,6 +639,10 @@ private struct LibrarySettingsTab: View {
             }
             SDivider()
             SRow(label: "Hide missing tracks") { MiniToggle(isOn: $state.hideMissingTracks) }
+            SDivider()
+            SRow(label: "Follow current track", sub: "auto-scroll the list to the playing track") {
+                MiniToggle(isOn: $state.followCurrentTrack)
+            }
         }
         .padding(.bottom, 16)
     }

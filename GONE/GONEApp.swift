@@ -612,6 +612,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsB: [AnyPublisher<Void, Never>] = [
             state.$confirmBeforeDelete.map { _ in () }.eraseToAnyPublisher(),
             state.$hideMissingTracks.map { _ in () }.eraseToAnyPublisher(),
+            state.$followCurrentTrack.map { _ in () }.eraseToAnyPublisher(),
             state.$snapInactivityDelay.map { _ in () }.eraseToAnyPublisher(),
             state.$snapDockLeft.map { _ in () }.eraseToAnyPublisher(),
             state.$snapAnimSpeed.map { _ in () }.eraseToAnyPublisher(),
