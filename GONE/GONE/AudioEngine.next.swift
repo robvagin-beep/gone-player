@@ -9,7 +9,7 @@ import CoreAudio
 /// and no heavy dependencies or modern-only UI/audio abstractions.
 // Threading contract:
 // - Public playback/control API (load/play/pause/stop/seek) is called from the main thread.
-// - bufferQueue owns disk decode / AVAudioFile chunk reads / schedulePCMChunk.
+// - bufferQueue owns disk decode / AVAudioFile chunk reads / scheduleNextChunk.
 // - The CoreAudio render tap must never allocate, block on a contended lock, or touch UI state.
 // - AVAudioPlayerNode completion callbacks hop to main before touching progress/UI state.
 // - playbackToken (guarded by tokenLock) is the cross-queue cancellation boundary; any work that
@@ -75,10 +75,15 @@ final class AudioEngineNext {
     private var currentRate: Double = 1.0      // Main-thread only
     private var isUserPlaying = false           // Main-thread only; tracks user intent, not hardware node state
 
-    // Pre-decoded PCM prefetch — keeps 3s of audio in RAM ahead of playhead.
+    // Pre-decoded PCM prefetch — keeps `prefetchDepth` seconds of audio in RAM ahead of playhead.
     private let bufferQueue = DispatchQueue(label: "gone.audio.prefetch", qos: .userInteractive)
     private let prefetchChunkSeconds: Double = 1.0
-    private let prefetchDepth: Int = 3  // chunks queued ahead (3 × 1s = 3s)
+    private let prefetchDepth: Int = 6  // chunks queued ahead (6 × 1s = 6s headroom)
+    // Furthest frame handed to scheduleBuffer (the nextStart after the last queued chunk).
+    // Mutated ONLY on bufferQueue (serial) so the self-healing top-up never double-schedules a
+    // frame; read on main for the underrun watchdog (a 64-bit aligned read is atomic).
+    private var highestScheduledFrame: AVAudioFramePosition = 0
+    private var prefetchEOF = false  // last chunk has been queued — stops the watchdog re-priming
 
     private var fileSampleRate: Double {
         audioFile?.processingFormat.sampleRate ?? 44_100
@@ -252,11 +257,11 @@ final class AudioEngineNext {
         isUserPlaying = false
         // Ensure any stuck hold-seek rate override is cleared before stopping.
         stopHoldSeek()
-        bumpToken()             // cancels pending scheduling (checked in schedulePCMChunk)
+        bumpToken()             // cancels pending scheduling (checked in scheduleNextChunk)
         isPreparingFirstBuffer = false
         pendingPlayAfterPrepare = false
         // drain=true: called from deactivation on audioOpQueue. Blocks until any in-flight
-        // schedulePCMChunk (which calls playerNode.scheduleBuffer) exits bufferQueue.
+        // scheduleNextChunk (which calls playerNode.scheduleBuffer) exits bufferQueue.
         // Without this, concurrent scheduleBuffer + stop() inside AVAudioPlayerNode deadlock.
         // drain=true is teardown-only (deactivation off-main). It must never run on bufferQueue
         // itself — that would deadlock the sync barrier against the queue it is waiting on.
@@ -316,7 +321,7 @@ final class AudioEngineNext {
 
         progressTimer?.invalidate()
         progressTimer = nil
-        let token = bumpToken()         // cancels pending scheduling (checked in schedulePCMChunk)
+        let token = bumpToken()         // cancels pending scheduling (checked in scheduleNextChunk)
         playerNode.stop()               // flush queued buffers
 
         scheduledStartFrame = targetFrame
@@ -611,7 +616,7 @@ final class AudioEngineNext {
         isScheduled = false
         isPreparingFirstBuffer = false
         pendingPlayAfterPrepare = false
-        let token = bumpToken()          // cancels pending scheduling (checked in schedulePCMChunk)
+        let token = bumpToken()          // cancels pending scheduling (checked in scheduleNextChunk)
         playerNode.stop()                // flush queued buffers
 
         ensureEngineRunning()
@@ -741,12 +746,16 @@ final class AudioEngineNext {
 
         isPreparingFirstBuffer = true
 
-        // First chunk asynchronously — avoids disk/decode work on the main thread.
-        // play() records intent and starts the player after this first buffer is queued.
+        // First chunk asynchronously — avoids disk/decode work on the main thread —
+        // then top the queue up to prefetchDepth. play() records intent and starts the
+        // player once the first buffer is queued.
         bufferQueue.async { [weak self] in
             guard let self, token == self.playbackToken else { return }
-            let didSchedule = self.schedulePCMChunk(url: url, format: fmt, startFrame: startFrame,
-                                                    chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
+            // Reset the prefetch cursor for this scheduling generation.
+            self.highestScheduledFrame = startFrame
+            self.prefetchEOF = false
+            let didSchedule = self.scheduleNextChunk(url: url, format: fmt,
+                                                     chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
             DispatchQueue.main.async { [weak self] in
                 guard let self, token == self.playbackToken else { return }
                 self.isPreparingFirstBuffer = false
@@ -762,33 +771,41 @@ final class AudioEngineNext {
                     self.startPreparedPlayback()
                 }
             }
-        }
-
-        // Pre-fill remaining prefetchDepth-1 chunks in the background
-        for depth in 1..<prefetchDepth {
-            let chunkStart = startFrame + AVAudioFramePosition(chunkFrames) * AVAudioFramePosition(depth)
-            guard chunkStart < totalFrames else { break }
-            bufferQueue.async { [weak self] in
-                guard let self, token == self.playbackToken else { return }
-                self.schedulePCMChunk(url: url, format: fmt, startFrame: chunkStart,
-                                      chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
-            }
+            // Fill the rest of the headroom for this generation.
+            self.topUpPrefetch(url: url, format: fmt, chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
         }
     }
 
-    // Reads one PCM chunk from disk and hands it to playerNode.scheduleBuffer.
-    // Called on bufferQueue — never on the render thread. Each call opens its
-    // own AVAudioFile so framePosition cursors never collide.
+    // Keeps the queue filled to `prefetchDepth` chunks ahead of the live playhead.
+    // Idempotent and serialized on bufferQueue: safe to call from a chunk's completion AND
+    // from the watchdog timer without double-scheduling — every queued chunk advances the
+    // shared highestScheduledFrame cursor and each iteration re-checks headroom before reading.
+    private func topUpPrefetch(url: URL, format: AVAudioFormat,
+                               chunkFrames: AVAudioFrameCount,
+                               totalFrames: AVAudioFramePosition,
+                               token: UInt64) {
+        let targetAhead = AVAudioFramePosition(prefetchDepth) * AVAudioFramePosition(chunkFrames)
+        while token == playbackToken && !prefetchEOF {
+            let playhead = currentFrameApprox()
+            if highestScheduledFrame - playhead >= targetAhead { break }
+            if !scheduleNextChunk(url: url, format: format, chunkFrames: chunkFrames,
+                                  totalFrames: totalFrames, token: token) { break }
+        }
+    }
+
+    // Reads the chunk at `highestScheduledFrame`, hands it to playerNode.scheduleBuffer, and
+    // advances the cursor. Called on bufferQueue only — never the render thread. Opens its own
+    // AVAudioFile so framePosition cursors never collide with other readers.
     @discardableResult
-    private func schedulePCMChunk(url: URL, format: AVAudioFormat,
-                                  startFrame: AVAudioFramePosition,
-                                  chunkFrames: AVAudioFrameCount,
-                                  totalFrames: AVAudioFramePosition,
-                                  token: UInt64) -> Bool {
+    private func scheduleNextChunk(url: URL, format: AVAudioFormat,
+                                   chunkFrames: AVAudioFrameCount,
+                                   totalFrames: AVAudioFramePosition,
+                                   token: UInt64) -> Bool {
         guard token == playbackToken else { return false }
 
+        let startFrame = highestScheduledFrame
         let remaining = totalFrames - startFrame
-        guard remaining > 0 else { return false }
+        guard remaining > 0 else { prefetchEOF = true; return false }
 
         let framesToRead = AVAudioFrameCount(min(AVAudioFramePosition(chunkFrames), remaining))
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRead) else { return false }
@@ -801,11 +818,13 @@ final class AudioEngineNext {
             return false
         }
 
-        // Second check after disk I/O: token may have changed while reading
+        // Second check after disk I/O: token may have changed while reading.
         guard token == playbackToken else { return false }
 
         let nextStart = startFrame + AVAudioFramePosition(framesToRead)
         let isLastChunk = nextStart >= totalFrames
+        highestScheduledFrame = nextStart
+        if isLastChunk { prefetchEOF = true }
 
         playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             guard let self else { return }
@@ -820,14 +839,11 @@ final class AudioEngineNext {
                     self.onFinished?()
                 }
             } else {
-                // Keep prefetchDepth buffers ahead: as each chunk plays out,
-                // schedule one more chunk prefetchDepth positions forward.
-                let prefetchStart = nextStart + AVAudioFramePosition(chunkFrames) * AVAudioFramePosition(self.prefetchDepth - 1)
-                guard prefetchStart < totalFrames else { return }
+                // As each chunk plays out, refill the headroom from the shared cursor.
                 self.bufferQueue.async { [weak self] in
                     guard let self, token == self.playbackToken else { return }
-                    self.schedulePCMChunk(url: url, format: format, startFrame: prefetchStart,
-                                          chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
+                    self.topUpPrefetch(url: url, format: format, chunkFrames: chunkFrames,
+                                       totalFrames: totalFrames, token: token)
                 }
             }
         }
@@ -843,7 +859,72 @@ final class AudioEngineNext {
     }
 
     private func tickProgress() {
-        emitProgress(currentFrame: currentPlaybackFrame())
+        let frame = currentPlaybackFrame()
+        emitProgress(currentFrame: frame)
+
+        // Underrun watchdog. The prefetch refill is completion-driven, so if a completion is
+        // dropped/delayed (disk hiccup, CPU contention) or the sample clock desyncs (sleep/wake)
+        // the queue can drain and never refill on its own — that is the long-session "jerky"
+        // playback. While the user intends to play and we are not at EOF / preparing, keep the
+        // headroom topped up; if playback has run PAST everything queued (a hard underrun),
+        // re-prime from the live playhead.
+        guard isUserPlaying, !isPreparingFirstBuffer, !prefetchEOF,
+              let url = currentURL, let file = audioFile else { return }
+        let chunkFrames = AVAudioFrameCount(prefetchChunkSeconds * fileSampleRate)
+        let ahead = highestScheduledFrame - frame
+        if ahead <= 0 {
+            reprimePlayback(from: frame)
+        } else if ahead < AVAudioFramePosition(2) * AVAudioFramePosition(chunkFrames) {
+            let token = playbackToken
+            let fmt = file.processingFormat
+            let total = file.length
+            bufferQueue.async { [weak self] in
+                guard let self, token == self.playbackToken else { return }
+                self.topUpPrefetch(url: url, format: fmt, chunkFrames: chunkFrames, totalFrames: total, token: token)
+            }
+        }
+    }
+
+    // Hard-underrun recovery: playback ran past every scheduled buffer (the refill chain broke).
+    // Restart the schedule from the live playhead so audio resumes contiguously instead of
+    // playing stale buffers in lumps. Main-thread only (called from the progress timer).
+    private func reprimePlayback(from frame: AVAudioFramePosition) {
+        guard let file = audioFile, frame < file.length else { return }
+        let token = bumpToken()        // cancel stale completions/top-ups for the broken generation
+        playerNode.stop()              // flush whatever silence/lag is queued
+        isScheduled = false
+        ensureEngineRunning()
+        scheduleFrom(frame: frame, token: token)
+        if isUserPlaying {
+            pendingPlayAfterPrepare = true
+            if !isPreparingFirstBuffer { startPreparedPlayback() }
+        }
+    }
+
+    // System wake re-sync. After sleep the HAL device and the player node's sample clock can be
+    // left stale, which renders audio in lumps on resume. AVAudioEngineConfigurationChange is not
+    // reliably posted on wake, so we force a clean reset: tear the I/O unit down, restart it, and
+    // reschedule from the last known playhead. Called from AppDelegate.systemDidWake (main).
+    func handleSystemWake() {
+        guard let file = audioFile else { return }
+        let wasPlaying = isUserPlaying
+        // Use the last committed playhead, not the live clock — the post-wake sample clock can be
+        // garbage and would clamp to a wrong frame.
+        let frame = max(0, min(pausedFrameOffset, file.length))
+        let token = bumpToken()
+        progressTimer?.invalidate(); progressTimer = nil
+        isScheduled = false
+        isPreparingFirstBuffer = false
+        pendingPlayAfterPrepare = false
+        playerNode.stop()
+        engine.stop()                  // full teardown of the stale I/O unit
+        ensureEngineRunning()          // fresh start against the woken HAL device
+        guard frame < file.length else { return }
+        scheduleFrom(frame: frame, token: token)
+        if wasPlaying {
+            pendingPlayAfterPrepare = true
+            if !isPreparingFirstBuffer { startPreparedPlayback() }
+        }
     }
 
     private func emitProgress(currentFrame: AVAudioFramePosition) {
@@ -879,6 +960,21 @@ final class AudioEngineNext {
             return clamped
         }
 
+        return max(0, min(pausedFrameOffset, file.length))
+    }
+
+    // Side-effect-free playhead estimate (currentPlaybackFrame writes pausedFrameOffset, which
+    // must stay main-thread owned). Safe to read from bufferQueue during top-up.
+    private func currentFrameApprox() -> AVAudioFramePosition {
+        guard let file = audioFile else { return 0 }
+        if playerNode.isPlaying,
+           let nodeTime = playerNode.lastRenderTime,
+           let playerTime = playerNode.playerTime(forNodeTime: nodeTime),
+           playerTime.sampleTime >= 0 {
+            let elapsedSeconds = Double(playerTime.sampleTime) / playerTime.sampleRate
+            let frame = scheduledStartFrame + AVAudioFramePosition(elapsedSeconds * fileSampleRate)
+            return max(0, min(frame, file.length))
+        }
         return max(0, min(pausedFrameOffset, file.length))
     }
 

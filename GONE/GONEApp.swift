@@ -269,6 +269,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func systemDidWake() {
         if let window = resolvedMainWindow() { applyPresencePolicy(to: window) }
+        // Re-sync the audio engine(s): after sleep the HAL device and the player node's sample
+        // clock can be stale and resume playback in lumps. Deferred ~0.4s so the audio hardware
+        // has settled before we restart the I/O unit.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            AudioEngineNext.shared.handleSystemWake()
+            if SplitModeManager.shared.secondaryState != nil {
+                AudioEngineNext.secondary.handleSystemWake()
+            }
+        }
     }
 
     @MainActor
