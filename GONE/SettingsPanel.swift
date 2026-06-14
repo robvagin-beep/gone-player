@@ -214,11 +214,12 @@ struct SettingsView: View {
     static var isDraggingGlobal = false
 
     enum Tab: String, CaseIterable {
-        case audio    = "AUDIO"
-        case playback = "PLAYBACK"
-        case display  = "DISPLAY"
-        case snap     = "SNAP"
-        case info     = "INFO"
+        case audio   = "AUDIO"
+        case bpm     = "BPM"
+        case library = "LIBRARY"
+        case look    = "LOOK"
+        case window  = "WINDOW"
+        case info    = "INFO"
     }
     @State private var tab: Tab = .audio
     @State private var dragStartOrigin: NSPoint?
@@ -286,16 +287,17 @@ struct SettingsView: View {
 
             Group {
                 switch tab {
-                case .audio:    AudioSettingsTab(state: state)
-                case .playback: PlaybackSettingsTab(state: state)
-                case .display:  DisplaySettingsTab(state: state)
-                case .snap:     SnapSettingsTab(state: state)
-                case .info:     InfoSettingsTab(state: state)
+                case .audio:   AudioSettingsTab(state: state)
+                case .bpm:     BpmSettingsTab(state: state)
+                case .library: LibrarySettingsTab(state: state)
+                case .look:    LookSettingsTab(state: state)
+                case .window:  WindowSettingsTab(state: state)
+                case .info:    InfoSettingsTab(state: state)
                 }
             }
             .frame(maxWidth: .infinity)
         }
-        .frame(width: 360)
+        .frame(width: 400)
         .background(G.bgFloatingPanel)
         .clipShape(RoundedRectangle(cornerRadius: G.rFloatingPanel))
         .overlay {
@@ -331,13 +333,13 @@ private struct SHead: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(G.mono(7, weight: .semibold))
-            .foregroundStyle(Color.white.opacity(0.20))
-            .kerning(0.8)
+            .font(G.mono(8, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(0.28))
+            .kerning(1.0)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
-            .padding(.top, 14)
-            .padding(.bottom, 3)
+            .padding(.top, 18)
+            .padding(.bottom, 5)
     }
 }
 
@@ -553,9 +555,68 @@ private struct AudioSettingsTab: View {
     }
 }
 
-// MARK: - Tab: PLAYBACK (merged PLAY + SCAN)
+// MARK: - Tab: BPM (detection + range)
 
-private struct PlaybackSettingsTab: View {
+private struct BpmSettingsTab: View {
+    @ObservedObject var state: PlayerState
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SHead(text: "DETECTION")
+            SRow(label: "Auto-scan on import", sub: "detect tempo as tracks are added") {
+                MiniToggle(isOn: $state.autoBPMOnImport)
+            }
+
+            SHead(text: "DETECTION RANGE")
+            // Genre presets — the Rekordbox approach: octave/half-tempo ambiguity is
+            // resolved by constraining the search range, not by the algorithm alone.
+            // Bench: breaks tagged 133-136 detected at 2/3 tempo on 60-200, perfectly
+            // within 110-160.
+            HStack(spacing: 5) {
+                ForEach([("OPEN", 60.0, 200.0), ("HIP-HOP", 70.0, 115.0), ("CLUB", 90.0, 180.0),
+                         ("BREAKS", 110.0, 160.0), ("D&B", 160.0, 195.0)], id: \.0) { label, lo, hi in
+                    Button {
+                        state.bpmAnalysisFloor = lo
+                        state.bpmAnalysisCeiling = hi
+                    } label: {
+                        let active = abs(state.bpmAnalysisFloor - lo) < 0.5 && abs(state.bpmAnalysisCeiling - hi) < 0.5
+                        Text(label)
+                            .font(G.mono(8, weight: active ? .semibold : .regular))
+                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(active ? 0.12 : 0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
+
+            SRow(label: "Min BPM") {
+                NumStepper(value: $state.bpmAnalysisFloor, range: 30...190, step: 5)
+            }
+            SDivider()
+            SRow(label: "Max BPM") {
+                NumStepper(value: $state.bpmAnalysisCeiling, range: 100...240, step: 5)
+            }
+        }
+        // Keep floor < ceiling with a minimum gap of one step (5 BPM)
+        .onChange(of: state.bpmAnalysisFloor) { floor in
+            if state.bpmAnalysisCeiling <= floor { state.bpmAnalysisCeiling = floor + 5 }
+        }
+        .onChange(of: state.bpmAnalysisCeiling) { ceiling in
+            if state.bpmAnalysisFloor >= ceiling { state.bpmAnalysisFloor = ceiling - 5 }
+        }
+        .padding(.bottom, 16)
+    }
+}
+
+// MARK: - Tab: LIBRARY (session + import + library behavior)
+
+private struct LibrarySettingsTab: View {
     @ObservedObject var state: PlayerState
 
     var body: some View {
@@ -578,60 +639,14 @@ private struct PlaybackSettingsTab: View {
             }
             SDivider()
             SRow(label: "Hide missing tracks") { MiniToggle(isOn: $state.hideMissingTracks) }
-
-            SHead(text: "BPM DETECTION")
-            SRow(label: "Auto-scan on import") { MiniToggle(isOn: $state.autoBPMOnImport) }
-
-            SHead(text: "DETECTION RANGE")
-            // Genre presets — the Rekordbox approach: octave/half-tempo ambiguity is
-            // resolved by constraining the search range, not by the algorithm alone.
-            // Bench: breaks tagged 133-136 detected at 2/3 tempo on 60-200, perfectly
-            // within 110-160.
-            HStack(spacing: 4) {
-                ForEach([("OPEN", 60.0, 200.0), ("HIP-HOP", 70.0, 115.0), ("CLUB", 90.0, 180.0),
-                         ("BREAKS", 110.0, 160.0), ("D&B", 160.0, 195.0)], id: \.0) { label, lo, hi in
-                    Button {
-                        state.bpmAnalysisFloor = lo
-                        state.bpmAnalysisCeiling = hi
-                    } label: {
-                        let active = abs(state.bpmAnalysisFloor - lo) < 0.5 && abs(state.bpmAnalysisCeiling - hi) < 0.5
-                        Text(label)
-                            .font(G.mono(8, weight: active ? .semibold : .regular))
-                            .foregroundStyle(Color.white.opacity(active ? 0.84 : 0.32))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 8)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.white.opacity(active ? 0.12 : 0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 10)
-
-            SRow(label: "Min BPM") {
-                NumStepper(value: $state.bpmAnalysisFloor, range: 30...190, step: 5)
-            }
-            SDivider()
-            SRow(label: "Max BPM") {
-                NumStepper(value: $state.bpmAnalysisCeiling, range: 100...240, step: 5)
-            }
         }
-        // Keep floor < ceiling with a minimum gap of one step (5 BPM)
-        .onChange(of: state.bpmAnalysisFloor) { floor in
-            if state.bpmAnalysisCeiling <= floor { state.bpmAnalysisCeiling = floor + 5 }
-        }
-        .onChange(of: state.bpmAnalysisCeiling) { ceiling in
-            if state.bpmAnalysisFloor >= ceiling { state.bpmAnalysisFloor = ceiling - 5 }
-        }
-        .padding(.bottom, 14)
+        .padding(.bottom, 16)
     }
 }
 
-// MARK: - Tab: DISPLAY (merged LOOK + SCALE)
+// MARK: - Tab: LOOK (appearance — gradient + scale)
 
-private struct DisplaySettingsTab: View {
+private struct LookSettingsTab: View {
     @ObservedObject var state: PlayerState
 
     private let presets: [(String, Double)] = [
@@ -705,11 +720,27 @@ private struct DisplaySettingsTab: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.bottom, 14)
+            .padding(.bottom, 16)
+        }
+        .padding(.bottom, 16)
+    }
+}
 
-            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
+// MARK: - Tab: WINDOW (on-screen behavior — invisible + magnify + snap)
 
-            SHead(text: "WINDOW")
+private struct WindowSettingsTab: View {
+    @ObservedObject var state: PlayerState
+
+    private let delayOptions: [(String, Double)] = [
+        ("2 s", 2), ("3 s", 3), ("5 s", 5), ("10 s", 10), ("20 s", 20)
+    ]
+    private let speedOptions: [(String, Double)] = [
+        ("SLOW", 1.8), ("MED", 1.0), ("FAST", 0.5)
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SHead(text: "INVISIBLE")
             SRow(label: "Invisible mode", sub: "fade to a ghost when idle · hover to reveal") {
                 MiniToggle(isOn: $state.invisibleMode)
             }
@@ -782,25 +813,9 @@ private struct DisplaySettingsTab: View {
                     }
                 }
             }
-        }
-        .padding(.bottom, 14)
-    }
-}
 
-// MARK: - Tab: SNAP
+            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
 
-private struct SnapSettingsTab: View {
-    @ObservedObject var state: PlayerState
-
-    private let delayOptions: [(String, Double)] = [
-        ("2 s", 2), ("3 s", 3), ("5 s", 5), ("10 s", 10), ("20 s", 20)
-    ]
-    private let speedOptions: [(String, Double)] = [
-        ("SLOW", 1.8), ("MED", 1.0), ("FAST", 0.5)
-    ]
-
-    var body: some View {
-        VStack(spacing: 0) {
             SHead(text: "DOCK DELAY")
             HStack(spacing: 4) {
                 ForEach(delayOptions, id: \.0) { label, val in
