@@ -199,8 +199,14 @@ struct RootView: View {
             }
             targetFrame.origin.y = currentFrame.minY
         case .off, .waiting, .expanded:
-            targetFrame.origin.x = currentFrame.minX
-            targetFrame.origin.y = currentFrame.maxY - targetFrame.height  // top (maxY) fixed, grows downward
+            if let center = appDelegate?.magnifyAnchorCenter {
+                // Hover-zoom: grow/shrink around the captured center, not the top-left corner.
+                targetFrame.origin.x = center.x - targetFrame.width / 2
+                targetFrame.origin.y = center.y - targetFrame.height / 2
+            } else {
+                targetFrame.origin.x = currentFrame.minX
+                targetFrame.origin.y = currentFrame.maxY - targetFrame.height  // top (maxY) fixed, grows downward
+            }
         }
 
         guard abs(currentFrame.minX   - targetFrame.minX)   > 0.5 ||

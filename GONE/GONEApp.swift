@@ -87,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isCorrectingFrame = false
     private var magnifyTimer: Timer? = nil
     private var magnifyBaseFrame: CGRect = .zero
+    // When set, updateWindowSize keeps the window centered on this point instead of pinning the
+    // top-left — so hover-zoom grows/shrinks from the center, not the top-left corner.
+    var magnifyAnchorCenter: CGPoint? = nil
     private var invisibleTimer: Timer? = nil
     private var isGhosted = false
     private var lastMouseInsidePlayer = Date()
@@ -659,6 +662,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         withAnimation(.spring(response: s.magnifySpeed, dampingFraction: 0.8)) {
                             s.windowScale = s.magnifyBaseScale
                         }
+                        self.clearMagnifyAnchorAfterSettle(s.magnifySpeed)
+                    } else {
+                        self.magnifyAnchorCenter = nil
                     }
                 }
             }
@@ -755,19 +761,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !state.isMagnified && distance < state.magnifyProximity
             && state.windowScale < 0.99 {
-            // Only magnify when there's actually a scale increase to show
+            // Only magnify when there's actually a scale increase to show.
+            // Capture the live center so the grow stays centered, not top-left.
+            magnifyAnchorCenter = CGPoint(x: frame.midX, y: frame.midY)
             state.isMagnified = true
             state.magnifyBaseScale = state.windowScale
             withAnimation(.spring(response: state.magnifySpeed, dampingFraction: 0.8)) {
                 state.windowScale = 1.0
             }
         } else if state.isMagnified && distance > 15 {
-            // Exit when cursor is >15px outside the current (enlarged) window frame
+            // Exit when cursor is >15px outside the current (enlarged) window frame.
+            // Keep the same center for the shrink, then release the anchor.
             state.isMagnified = false
             magnifyBaseFrame = .zero
             withAnimation(.spring(response: state.magnifySpeed, dampingFraction: 0.8)) {
                 state.windowScale = state.magnifyBaseScale
             }
+            clearMagnifyAnchorAfterSettle(state.magnifySpeed)
+        }
+    }
+
+    // Release the center anchor once the shrink has settled so a later slider scale change
+    // anchors top-left as usual. Guarded so a re-magnify during the delay keeps the anchor.
+    private func clearMagnifyAnchorAfterSettle(_ speed: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + speed + 0.15) { [weak self] in
+            guard let self, self.playerState?.isMagnified != true else { return }
+            self.magnifyAnchorCenter = nil
         }
     }
 }
