@@ -754,32 +754,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let window = resolvedMainWindow() else { return }
 
         let mouse = NSEvent.mouseLocation
-        let frame = window.frame
-        let dx = max(0, max(frame.minX - mouse.x, mouse.x - frame.maxX))
-        let dy = max(0, max(frame.minY - mouse.y, mouse.y - frame.maxY))
+        // Measure against a STABLE reference rect, never the live frame. While magnified the
+        // window is bigger and (center-anchored) its edges have moved — measuring off the live
+        // frame made enter/exit flip-flop, so the zoom jittered in and back out. Use the small
+        // (pre-zoom) frame captured at entry for the whole magnified session.
+        let refFrame = state.isMagnified ? magnifyBaseFrame : window.frame
+        let dx = max(0, max(refFrame.minX - mouse.x, mouse.x - refFrame.maxX))
+        let dy = max(0, max(refFrame.minY - mouse.y, mouse.y - refFrame.maxY))
         let distance = sqrt(dx * dx + dy * dy)
 
-        if !state.isMagnified && distance < state.magnifyProximity
-            && state.windowScale < 0.99 {
-            // Only magnify when there's actually a scale increase to show.
-            // Capture the live center so the grow stays centered, not top-left.
-            magnifyAnchorCenter = CGPoint(x: frame.midX, y: frame.midY)
+        if !state.isMagnified {
+            // Enter when the cursor comes within proximity of the un-zoomed player.
+            guard distance < state.magnifyProximity, state.windowScale < 0.99 else { return }
+            magnifyBaseFrame = window.frame                              // stable reference
+            magnifyAnchorCenter = CGPoint(x: window.frame.midX, y: window.frame.midY)
             state.isMagnified = true
             state.magnifyBaseScale = state.windowScale
             withAnimation(.spring(response: state.magnifySpeed, dampingFraction: 0.8)) {
                 state.windowScale = 1.0
             }
-        } else if state.isMagnified && distance > 15 {
-            // Exit when cursor is >15px outside the current (enlarged) window frame.
-            // Keep the same center for the shrink, then release the anchor.
+        } else {
+            // Exit only past a wider band (hysteresis) so the boundary doesn't oscillate.
+            guard distance > state.magnifyProximity + Self.magnifyExitHysteresis else { return }
             state.isMagnified = false
-            magnifyBaseFrame = .zero
             withAnimation(.spring(response: state.magnifySpeed, dampingFraction: 0.8)) {
                 state.windowScale = state.magnifyBaseScale
             }
             clearMagnifyAnchorAfterSettle(state.magnifySpeed)
         }
     }
+
+    private static let magnifyExitHysteresis: CGFloat = 40
 
     // Release the center anchor once the shrink has settled so a later slider scale change
     // anchors top-left as usual. Guarded so a re-magnify during the delay keeps the anchor.
