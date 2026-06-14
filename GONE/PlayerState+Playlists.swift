@@ -187,7 +187,7 @@ extension PlayerState {
         let newURLs      = candidateURLs.filter     { existingByURL[$0.standardized] == nil }
         let placeholders = newURLs.map { scanner.placeholderTrack(url: $0) }
 
-        await MainActor.run {
+        let expressId: UUID? = await MainActor.run {
             tracks.append(contentsOf: placeholders)
             let tabSet = Set(playlistTabs.first(where: { $0.id == destinationTabId })?.trackIds ?? [])
             let toAdd  = (existingIds + placeholders.map(\.id)).filter { !tabSet.contains($0) }
@@ -204,13 +204,23 @@ extension PlayerState {
                     playlistAutoOpened = true
                 }
                 if autoPlayOnImport { isPlaying = true; audioEngine.play() }
-                scheduleCurrentTrackAnalysis()
+                return first.id   // express-lane this one ahead of the bulk metadata pass
             }
+            return nil
         }
 
+        // Express lane: tempo + waveform of the track the user is about to hear come FIRST,
+        // before the whole-library metadata/duration pass (which only feeds the list and the
+        // lowest-priority total playlist time). See analyzeTrackExpress.
+        if let expressId {
+            await analyzeTrackExpress(id: expressId)
+        }
+
+        // Bulk metadata pass for the rest (the express track is already fully done).
+        let bulkPlaceholders = placeholders.filter { $0.id != expressId }
         let batchSize = 4
-        for batchStart in stride(from: 0, to: placeholders.count, by: batchSize) {
-            let batch = Array(placeholders[batchStart..<min(batchStart + batchSize, placeholders.count)])
+        for batchStart in stride(from: 0, to: bulkPlaceholders.count, by: batchSize) {
+            let batch = Array(bulkPlaceholders[batchStart..<min(batchStart + batchSize, bulkPlaceholders.count)])
             // Collect all results for the batch concurrently, then apply in one tracks = … write
             var batchResults: [Track] = []
             await withTaskGroup(of: Track?.self) { group in

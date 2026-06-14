@@ -96,6 +96,34 @@ extension PlayerState {
         }
     }
 
+    // Express lane (see importURLs). Fully processes ONE track — metadata, then BPM, then
+    // waveform — directly, bypassing the `while isImporting` gate in scheduleBPMAnalysis. The
+    // track the user is about to hear gets its tempo + waveform BEFORE the bulk metadata pass,
+    // which only feeds the list and the lowest-priority total playlist time. One track at a
+    // time → no multi-reader UI freeze. analyzeBPMAndCommit/computeWaveformAndCommit set the
+    // track to .analyzed / fill its waveform, so the later bulk passes skip it.
+    func analyzeTrackExpress(id: UUID) async {
+        guard let placeholder = tracks.first(where: { $0.id == id && !$0.isMissing }) else { return }
+
+        // 1. Metadata for this single file (title / artist / duration / artwork / tag BPM).
+        if let full = await LibraryScanner().readMetadata(url: placeholder.url, id: id) {
+            if let idx = tracks.firstIndex(where: { $0.id == id }) {
+                var updated = full
+                updated.rating = tracks[idx].rating
+                updated.flag   = tracks[idx].flag
+                tracks[idx] = updated
+            }
+        }
+
+        // 2. BPM (computed off-main; analyzeBPMAndCommit is nonisolated).
+        guard let t1 = tracks.first(where: { $0.id == id }) else { return }
+        await Self.analyzeBPMAndCommit(track: t1, state: self)
+
+        // 3. Waveform.
+        guard let t2 = tracks.first(where: { $0.id == id }), t2.waveform.isEmpty else { return }
+        await Self.computeWaveformAndCommit(track: t2, state: self)
+    }
+
     // MARK: — BPM analysis
 
     func scheduleBPMAnalysis() {
