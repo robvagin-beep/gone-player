@@ -260,7 +260,10 @@ struct PlaylistTracksPane: View {
         summaryAlignment == .trailing ? .trailing : .leading
     }
 
-    @State private var footerLabelCache: String = ""
+    @State private var footerLeadText: String = ""    // "1192 tracks · " — always solid
+    @State private var footerTimeText: String = ""    // total time, or the pending placeholder
+    @State private var footerTrailText: String = ""   // " · N missing" — always solid
+    @State private var footerTimePending: Bool = false  // durations still being read → fade the time
     @State private var scrollerOffset: CGFloat = 0
     @State private var scrollOffset: CGFloat = 0
     @State private var contentHeight: CGFloat = 0
@@ -615,11 +618,19 @@ struct PlaylistTracksPane: View {
                     .allowsHitTesting(false)
 
                     HStack(alignment: .center, spacing: 0) {
-                        Text(footerLabelCache)
-                            .font(G.mono(10))
-                            .foregroundStyle(Color.white.opacity(0.30))
-                            .frame(maxWidth: .infinity, alignment: summaryTextAlignment)
-
+                        HStack(spacing: 0) {
+                            Text(footerLeadText)
+                                .foregroundStyle(Color.white.opacity(0.30))
+                            // While durations are still being read, the time reads as a pale
+                            // background-loading hint instead of a dumb "0m".
+                            Text(footerTimeText)
+                                .foregroundStyle(Color.white.opacity(footerTimePending ? 0.12 : 0.30))
+                            Text(footerTrailText)
+                                .foregroundStyle(Color.white.opacity(0.30))
+                        }
+                        .font(G.mono(10))
+                        .animation(.easeInOut(duration: 0.25), value: footerTimePending)
+                        .frame(maxWidth: .infinity, alignment: summaryTextAlignment)
                     }
                     .padding(.leading, 12)
                     .padding(.trailing, 10)
@@ -740,6 +751,7 @@ struct PlaylistTracksPane: View {
             cursor.anchorId = newId
         }
         .onChange(of: state.tracks)           { _ in updateFooterLabel() }
+        .onChange(of: state.isImporting)      { _ in updateFooterLabel() }
         .onChange(of: state.hideMissingTracks) { _ in updateFooterLabel() }
         .onAppear { updateFooterLabel() }
     }
@@ -749,14 +761,24 @@ struct PlaylistTracksPane: View {
             ? state.sortedTracks(forPlaylistTabId: tabId).filter { !$0.isMissing }
             : state.sortedTracks(forPlaylistTabId: tabId)
         let nonMissing = visible.filter { !$0.isMissing }
-        let totalDuration = nonMissing.reduce(0.0) { $0 + $1.duration }
         let missing = visible.filter(\.isMissing).count
-        let h = Int(totalDuration) / 3600
-        let m = (Int(totalDuration) % 3600) / 60
-        let time = h > 0 ? "\(h)h \(m)m" : "\(m)m"
-        footerLabelCache = missing > 0
-            ? "\(nonMissing.count) tracks · \(time) · \(missing) missing"
-            : "\(nonMissing.count) tracks · \(time)"
+
+        footerLeadText = "\(nonMissing.count) tracks · "
+        footerTrailText = missing > 0 ? " · \(missing) missing" : ""
+
+        // Durations are filled by the metadata pass; until every track has one, summing would
+        // print a misleading "0m". Show a faded placeholder while pending, the real total after.
+        // Gated on isImporting so a present-but-unreadable file can't pin the placeholder forever.
+        let pending = state.isImporting && nonMissing.contains { $0.duration <= 0 }
+        footerTimePending = pending
+        if pending {
+            footerTimeText = "summing time"
+        } else {
+            let totalDuration = nonMissing.reduce(0.0) { $0 + $1.duration }
+            let h = Int(totalDuration) / 3600
+            let m = (Int(totalDuration) % 3600) / 60
+            footerTimeText = h > 0 ? "\(h)h \(m)m" : "\(m)m"
+        }
     }
 }
 
