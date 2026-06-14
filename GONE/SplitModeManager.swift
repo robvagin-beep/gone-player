@@ -50,6 +50,15 @@ final class SplitModeManager: ObservableObject {
 
         isActive = true
 
+        // Invisible mode is suspended for the duration of Clone Mode — a half-transparent
+        // player while DJing across two windows is the wrong call (same reasoning as snap).
+        // We do NOT touch the persisted invisibleMode setting; checkInvisibleFade just no-ops
+        // while isActive, so it resumes automatically on deactivate. Un-ghost now in case the
+        // window was already faded when Clone Mode started.
+        if primaryState.invisibleMode, let delegate = AppDelegate.shared {
+            delegate.forceUnghostPlayer()
+        }
+
         let win = makeSecondWindow(primaryState: primaryState, relativeTo: primaryWindow)
         secondWindow = win
         positionWindows(primary: primaryWindow, secondary: win)
@@ -135,6 +144,8 @@ final class SplitModeManager: ObservableObject {
         } else {
             snapWasEnabled = false
         }
+        // Invisible mode resumes on its own: checkInvisibleFade stops no-op'ing once
+        // isActive is false (set above), so no explicit restore is needed.
 
         // Step 7 — CRITICAL ORDER: stop engine first, THEN close window.
         // suppressConfigChange=true before enqueueing stop() so that setOutputDevice()

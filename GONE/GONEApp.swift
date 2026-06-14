@@ -684,8 +684,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         invisibleTimer = nil
     }
 
+    // Force the player back to full opacity (used when Clone Mode starts while ghosted).
+    func forceUnghostPlayer() {
+        guard let window = resolvedMainWindow() else { return }
+        setPlayerGhosted(false, window: window)
+    }
+
     private func checkInvisibleFade() {
         guard let state = playerState, state.invisibleMode, !state.isSnapping,
+              !SplitModeManager.shared.isActive,
               let window = resolvedMainWindow() else { return }
         // Docked/peeking presence belongs to WindowSnapManager — never ghost the tab.
         guard state.snapState == .off || state.snapState == .waiting || state.snapState == .expanded else {
