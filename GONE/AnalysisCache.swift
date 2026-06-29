@@ -41,11 +41,11 @@ actor AnalysisCache {
            let decoded = try? JSONDecoder().decode([String: AnalysisCacheEntry].self, from: data) {
             // Drop entries from older algorithm versions on load — cheaper than scanning at lookup.
             self.map = decoded.filter { $0.value.analyzerVersion == Self.version }
-            purgeMissingFiles()
-            enforceLRUCap()
-            if dirty {
-                Task { await flushSoon() }
-            }
+            // Purge + LRU-cap run as the actor's first job — init is nonisolated and can't call
+            // isolated methods synchronously. Housekeeping a beat late is harmless: lookups are
+            // awaited and queue behind this job; a stale entry for a missing file fails its own
+            // file-existence check anyway.
+            Task { await self.purgeAndCapAfterLoad() }
         }
     }
 
@@ -164,5 +164,11 @@ actor AnalysisCache {
             .map(\.key)
         for key in victims { map.removeValue(forKey: key) }
         dirty = true
+    }
+
+    private func purgeAndCapAfterLoad() async {
+        purgeMissingFiles()
+        enforceLRUCap()
+        if dirty { await flushSoon() }
     }
 }
