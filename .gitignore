@@ -30,3 +30,8 @@ Podfile.lock
 GONE_*HANDOFF*.md
 GONE_Sweep_*.md
 GONE_REMAINING_PLAN_*.md
+
+# Stale / superseded working files
+GONE_CURATOR.md
+package_beta07.sh
+package_beta09.sh
