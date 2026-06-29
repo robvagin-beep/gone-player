@@ -173,7 +173,7 @@ extension PlayerState {
         let destinationTabId = targetTabId ?? activePlaylistTabId
 
         let candidateURLs = await Task.detached(priority: .userInitiated) {
-            await LibraryScanner().expandImportURLs(urls)
+            LibraryScanner().expandImportURLs(urls)
         }.value
 
         let existingByURL: [URL: UUID] = await MainActor.run { [weak self] in

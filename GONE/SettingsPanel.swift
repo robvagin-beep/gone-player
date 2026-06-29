@@ -186,8 +186,9 @@ final class SettingsPanel {
         ]
         for name in hideNames {
             let token = center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                guard let self else { return }
                 Task { @MainActor in
-                    self?.hide()
+                    self.hide()
                 }
             }
             anchorObservers.append(token)
