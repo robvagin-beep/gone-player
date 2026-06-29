@@ -25,3 +25,8 @@ DerivedData/
 # CocoaPods (not used, but safe)
 Pods/
 Podfile.lock
+
+# Ephemeral session / handoff scratch docs (working notes, not source)
+GONE_*HANDOFF*.md
+GONE_Sweep_*.md
+GONE_REMAINING_PLAN_*.md
