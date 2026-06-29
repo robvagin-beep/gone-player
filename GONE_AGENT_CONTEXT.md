@@ -9,11 +9,11 @@
 ## 0. Status snapshot
 
 - **Branch model:** single branch `main` is the source of truth (consolidated 2026-06-29; old `dev` retired, dead `loop/*` + `parker/*` branches removed). `origin` has only `main`.
-- **HEAD:** `104fbdb` · local == origin, in sync.
+- **HEAD:** `13fc6fc` · local == origin, in sync. Working tree clean.
 - **Release tag:** `beta-1.1` @ `3752ae2`. Shipping version: Beta 1.1, build 15.
 - **CI:** only `pr-review.yml` + `premerge-check.yml` remain (23 dead agentic audit workflows were removed). `.github/scripts/claude_review.py` is used by `pr-review` — keep it.
-- **Two uncommitted fixes live in the working tree** — see section 2. Do NOT commit them until Robert tests in Xcode.
-- **Open item [medium]:** `project.pbxproj` still has `MARKETING_VERSION = 1.0` / `CURRENT_PROJECT_VERSION = 1` while UI + DMG say 1.1 / 15 (packager patches the plist at build time). A direct Xcode Archive would mislabel as 1.0. Bump in Xcode when convenient.
+- **Version aligned:** `project.pbxproj` `MARKETING_VERSION = 1.1` / `CURRENT_PROJECT_VERSION = 15`, matching UI + DMG (commit `267ba7f`).
+- **Recently landed** (clean `xcodebuild` compile, runtime still worth an eyeball — see section 2): audio channel-layout pin `520e8cc`, window scaled-frame `13fc6fc`, `print`→`os.Logger` `775a336`. Each is its own commit so any one reverts cleanly.
 
 ### Workflow (non-negotiable)
 - Edits go into the **source files only**. Robert runs and tests through **Xcode → Run**. You do not build/ship.
@@ -46,9 +46,9 @@ Beat-grid editing or BPM sync between players · MIDI · library database / pers
 
 ---
 
-## 2. Held changes — uncommitted, review + test these FIRST
+## 2. Recently landed changes — runtime-verify in normal use
 
-Both are deliberate bug fixes sitting in the working tree, **not yet committed**. Robert tests them in Xcode himself, then says when to commit. A full backup of both lives at `scratchpad/gone_uncommitted_2fixes_2026-06-29.patch` (applies cleanly).
+Landed 2026-06-29 (`520e8cc`, `13fc6fc`, `775a336`) after a clean `xcodebuild` Debug compile. The runtime edge cases below were not interactively driven, so keep an eye on them in normal use. Each change is an isolated commit, so any single one reverts cleanly.
 
 ### Fix 1 — `GONE/GONE/AudioEngine.next.swift` (channel-layout pin)
 
@@ -89,7 +89,11 @@ Fixes the window never shrinking below 100% when `windowScale` < 1.
 
 Why it's safe: at 100% scale `scaledShellSize == shellSize`, so it's a no-op for existing behaviour. Test focus: scale slider in Settings below 100%, window actually shrinks; magnify/hover-zoom still behaves; snap docking still lines up.
 
-**Until Robert green-lights:** leave both unstaged. Do not bundle them into unrelated commits.
+### #5 — `GONE/GONE/AudioEngine.next.swift` (logging, `775a336`)
+
+Three error-path `print` calls became `audioEngineLog.error(...)` (`Logger`, category `AudioEngine`, `.public`). The `onError?(msg)` callback is untouched. No behavioural change; pure logging hygiene.
+
+> Rejected from the same review pass (do not re-propose): swapping `playbackToken`'s lock, blocking-lock on the FFT path, caching `AVAudioFile` across the prefetch queue, gating FFT on `onSpectrum == nil`, speculative format validation in `load()`. Reasons live in the session history — three of these undo verified/deliberate designs (the file-per-chunk cursor is the fix for a real playback race).
 
 ---
 
