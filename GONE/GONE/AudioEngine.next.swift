@@ -176,6 +176,14 @@ final class AudioEngineNext {
             let file = try AVAudioFile(forReading: url)
             audioFile = file
             currentURL = url
+            // Pin the player node's output bus to THIS file's channel layout before scheduling.
+            // The graph is wired with `format: nil`, so the player's output format otherwise
+            // follows whatever the current hardware/virtual output device presents. When that
+            // device reports a mono (or otherwise mismatched) layout, scheduleBuffer aborts with
+            // 'required condition is false: _outputFormat.channelCount == buffer.format.channelCount'.
+            // Reconnecting here guarantees the scheduled PCM buffers always match the node.
+            // playerNode is stopped (stop() above), so reconnecting is safe; node ORDER is unchanged.
+            engine.connect(playerNode, to: speedNode, format: file.processingFormat)
             scheduledStartFrame = 0
             pausedFrameOffset = 0
             let token = bumpToken()
