@@ -127,6 +127,13 @@ final class AudioEngineNext {
     // Pre-allocated PCM ring for the tap callback.
     // The tap runs on the CoreAudio render thread — no heap allocation and no blocking wait.
     private let spectrumBufferLock = NSLock()
+    // Sendable handle to one spectrum tap ring slot. @unchecked is sound: the in-use flags
+    // guarantee exclusive ownership between acquire and release, so the pointer is never aliased
+    // across the render thread and spectrumQueue.
+    private struct SpectrumTapSlot: @unchecked Sendable {
+        let index: Int
+        let pointer: UnsafeMutablePointer<Float>
+    }
     private var spectrumTapBuffers: [UnsafeMutablePointer<Float>] = []
     private var spectrumTapBufferInUse: [Bool] = []
 
@@ -715,12 +722,12 @@ final class AudioEngineNext {
         engine.stop()
     }
 
-    private func acquireSpectrumTapBuffer() -> (index: Int, pointer: UnsafeMutablePointer<Float>)? {
+    private func acquireSpectrumTapBuffer() -> SpectrumTapSlot? {
         guard spectrumBufferLock.try() else { return nil }
         defer { spectrumBufferLock.unlock() }
         guard let index = spectrumTapBufferInUse.firstIndex(of: false) else { return nil }
         spectrumTapBufferInUse[index] = true
-        return (index, spectrumTapBuffers[index])
+        return SpectrumTapSlot(index: index, pointer: spectrumTapBuffers[index])
     }
 
     private func releaseSpectrumTapBuffer(at index: Int) {
