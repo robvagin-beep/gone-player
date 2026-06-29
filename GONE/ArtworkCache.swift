@@ -1,6 +1,10 @@
 import AppKit
 
-final class ArtworkCache: @unchecked Sendable {
+// nonisolated: opt out of the project's MainActor-by-default isolation. This cache is
+// thread-safe by design (NSCache + background-dispatched disk I/O) and is called from the
+// nonisolated LibraryScanner during import; isolating it to the main actor would hop every
+// artwork store onto main and stall bulk import.
+nonisolated final class ArtworkCache: @unchecked Sendable {
     static let shared = ArtworkCache()
 
     private let cache: NSCache<NSString, NSImage> = {
