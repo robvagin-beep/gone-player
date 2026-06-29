@@ -133,6 +133,13 @@ struct RootView: View {
         // Math: SwiftUI centers shellSize in scaledShellSize window; scaleEffect
         // from view center equals window center → visual fills window exactly.
         .scaleEffect(state.windowScale)
+        // scaleEffect is render-only — it does NOT change the SwiftUI layout size. The content
+        // frame above stays at the UNSCALED shellSize, so NSHostingView kept reporting 472pt as
+        // its ideal size and pinned the panel to it; updateWindowSize's scaled target lost the
+        // fight and the window never shrank below 100%. Pinning the layout footprint to the
+        // scaled size makes the hosting ideal == updateWindowSize target. At 100% this is a
+        // no-op (scaledShellSize == shellSize), so existing behaviour is unchanged.
+        .frame(width: scaledShellSize.width, height: scaledShellSize.height, alignment: .top)
         .background(Color.clear)
         // Drop zone highlight
         .overlay {
