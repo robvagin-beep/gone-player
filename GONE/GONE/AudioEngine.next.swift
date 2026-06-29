@@ -2,6 +2,11 @@ import AVFoundation
 import Accelerate
 import Foundation
 import CoreAudio
+import os
+
+// Unified logging for the playback core (replaces ad-hoc print()).
+// Category "AudioEngine"; .error level is auto-stripped to the unified log in release.
+private let audioEngineLog = Logger(subsystem: "com.robertvagin.GONE", category: "AudioEngine")
 
 /// A stricter playback core kept separate from the production AudioEngine while
 /// the app is being refactored. The implementation stays intentionally simple:
@@ -197,7 +202,7 @@ final class AudioEngineNext {
             audioFile = nil
             currentURL = nil
             let msg = "load failed: \(error)"
-            print("[AudioEngineNext] \(msg)")
+            audioEngineLog.error("\(msg, privacy: .public)")
             onError?(msg)
         }
     }
@@ -363,7 +368,7 @@ final class AudioEngineNext {
         let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
         if status != noErr {
             let msg = "setOutputDevice failed: OSStatus \(status)"
-            print("[AudioEngineNext] \(msg)")
+            audioEngineLog.error("\(msg, privacy: .public)")
             onError?(msg)
         }
     }
@@ -675,7 +680,7 @@ final class AudioEngineNext {
             try engine.start()
         } catch {
             let msg = "engine start failed: \(error)"
-            print("[AudioEngineNext] \(msg)")
+            audioEngineLog.error("\(msg, privacy: .public)")
             onError?(msg)
         }
     }
