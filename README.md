@@ -55,7 +55,7 @@ Every release lists the SHA-256 of its `.dmg`. To check your download: `shasum -
 You need Xcode 26 or later. No third-party dependencies: only Apple frameworks (SwiftUI, AppKit, AVFoundation, Accelerate).
 
 ```sh
-git clone https://github.com/robvagin-beep/gone-player.git
+git clone https://github.com/robvagin/gone-player.git
 cd gone-player
 open GONE.xcodeproj
 ```
