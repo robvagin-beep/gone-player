@@ -1,0 +1,138 @@
+diff --git a/GONE/LibraryScanner.swift b/GONE/LibraryScanner.swift
+index 2ffabbc..8a9a678 100644
+--- a/GONE/LibraryScanner.swift
++++ b/GONE/LibraryScanner.swift
+@@ -566,6 +566,14 @@ nonisolated final class LibraryScanner {
+         var allSamples: [Float] = []
+         allSamples.reserveCapacity(min(expectedSamples, Int(decodedSR * 1200)))
+         var lastReportedPct = 0.0
++        // Hard cap at 30 min of STORED audio: a 2h file would hold ~316MB resident
++        // (× batchConcurrency). 30 min is far more than BPM needs. The waveform is built while
++        // decoding instead (below), so it still covers the whole file — with the old
++        // break-at-cap a 1-hour mix showed a flat second half and the playhead ran over nothing.
++        let sampleCap = Int(decodedSR * 1800)
++        var waveformAcc: WaveformAccumulator? = totalSec > 0
++            ? WaveformAccumulator(totalSec: totalSec, bars: waveformBars) : nil
++        var decodedCount = 0
+ 
+         var scale: Float = 1.0 / 32768.0
+         while let buf = output.copyNextSampleBuffer(),
+@@ -586,12 +594,13 @@ nonisolated final class LibraryScanner {
+                     vDSP_vsmul(dp, 1, &scale, dp, 1, vDSP_Length(count))
+                 }
+             }
+-            allSamples.append(contentsOf: converted)
+-            // Hard cap at 30 min of decoded audio: a 2h file would hold ~316MB resident
+-            // (× batchConcurrency). 30 min is far more than BPM/waveform need.
+-            if allSamples.count > Int(decodedSR * 1800) { break }
++            waveformAcc?.feed(converted)
++            decodedCount += count
++            if allSamples.count <= sampleCap { allSamples.append(contentsOf: converted) }
++            // Past the cap keep decoding only while the streamed waveform still needs samples.
++            if allSamples.count > sampleCap, waveformAcc?.isFull ?? true { break }
+             if let onProgress {
+-                let pct = min(0.88, Double(allSamples.count) / Double(max(1, expectedSamples)))
++                let pct = min(0.88, Double(decodedCount) / Double(max(1, expectedSamples)))
+                 if pct - lastReportedPct >= 0.08 { lastReportedPct = pct; onProgress(pct) }
+             }
+         }
+@@ -599,7 +608,8 @@ nonisolated final class LibraryScanner {
+         guard allSamples.count > 11025 else { return (0, [], 0, 0) }
+ 
+         let effectiveSec = totalSec > 0 ? totalSec : Double(allSamples.count) / decodedSR
+-        let waveform = computeWaveformFromSamples(allSamples, totalSec: effectiveSec, bars: waveformBars)
++        let waveform = waveformAcc.map(finishWaveform)
++            ?? computeWaveformFromSamples(allSamples, totalSec: effectiveSec, bars: waveformBars)
+ 
+         // Multi-window vote. The old single window (15–45s) sat in the intro of nearly
+         // every club track — sparse/ambient beats produced wildly wrong initial BPM
+@@ -841,41 +851,61 @@ nonisolated final class LibraryScanner {
+     }
+ 
+     private func computeWaveformFromSamples(_ samples: [Float], totalSec: Double, bars: Int) -> [Float] {
+-        // One-pole HPF — de-emphasizes sustained bass so kick/sub doesn't wall the waveform.
+-        // alpha = 0.85 → cutoff ≈ 600 Hz at 11 025 Hz. y[n] = α·(y[n−1] + x[n] − x[n−1])
+-        var src = samples
+-        var hpfY: Float = 0; var prevX: Float = 0
+-        for i in 0..<src.count {
+-            let x = src[i]
+-            hpfY   = 0.85 * (hpfY + x - prevX)
+-            src[i] = hpfY
+-            prevX  = x
++        var acc = WaveformAccumulator(totalSec: totalSec, bars: bars)
++        acc.feed(samples)
++        return finishWaveform(acc)
++    }
++
++    // Waveform envelope in streaming form: fed buffer by buffer during decode (same math as the
++    // former one-shot computeWaveformFromSamples — HPF, then peak/RMS buckets).
++    // nonisolated: the project defaults to MainActor isolation; this is used from the
++    // nonisolated decode path (see the class header).
++    nonisolated private struct WaveformAccumulator {
++        let bars: Int
++        let bucketSize: Int
++        var envelope: [Float]
++        var bucketIndex = 0
++        var bucketCount = 0
++        var bucketPeak: Float = 0
++        var bucketSumSquares: Float = 0
++        var hpfY: Float = 0
++        var prevX: Float = 0
++
++        init(totalSec: Double, bars: Int) {
++            self.bars = max(0, bars)
++            let expectedFrames = max(1, Int(totalSec * 11025))
++            bucketSize = max(1, expectedFrames / max(1, bars))
++            envelope = [Float](repeating: 0, count: max(0, bars))
+         }
+ 
+-        let expectedFrames = max(1, Int(totalSec * 11025))
+-        let bucketSize     = max(1, expectedFrames / max(1, bars))
+-        var envelope       = [Float](repeating: 0, count: bars)
+-        var bucketIndex = 0, bucketCount = 0
+-        var bucketPeak: Float = 0, bucketSumSquares: Float = 0
+-
+-        for sample in src {
+-            let value = abs(sample)
+-            bucketPeak = max(bucketPeak, value)
+-            bucketSumSquares += value * value
+-            bucketCount += 1
+-            if bucketCount >= bucketSize {
+-                if bucketIndex < bars {
++        var isFull: Bool { bucketIndex >= bars }
++
++        mutating func feed(_ samples: [Float]) {
++            for x in samples {
++                guard bucketIndex < bars else { return }
++                // One-pole HPF — de-emphasizes sustained bass so kick/sub doesn't wall the waveform.
++                // alpha = 0.85 → cutoff ≈ 600 Hz at 11 025 Hz. y[n] = α·(y[n−1] + x[n] − x[n−1])
++                hpfY = 0.85 * (hpfY + x - prevX)
++                prevX = x
++                let value = abs(hpfY)
++                bucketPeak = max(bucketPeak, value)
++                bucketSumSquares += value * value
++                bucketCount += 1
++                if bucketCount >= bucketSize {
+                     let rms = sqrt(bucketSumSquares / Float(bucketCount))
+                     envelope[bucketIndex] = bucketPeak * 0.62 + rms * 0.38
++                    bucketIndex += 1
++                    bucketCount = 0; bucketPeak = 0; bucketSumSquares = 0
+                 }
+-                bucketIndex += 1
+-                if bucketIndex >= bars { break }
+-                bucketCount = 0; bucketPeak = 0; bucketSumSquares = 0
+             }
+         }
+-        if bucketIndex < bars, bucketCount > 0 {
+-            let rms = sqrt(bucketSumSquares / Float(bucketCount))
+-            envelope[bucketIndex] = bucketPeak * 0.62 + rms * 0.38
++    }
++
++    private func finishWaveform(_ acc: WaveformAccumulator) -> [Float] {
++        var envelope = acc.envelope
++        if acc.bucketIndex < acc.bars, acc.bucketCount > 0 {
++            let rms = sqrt(acc.bucketSumSquares / Float(acc.bucketCount))
++            envelope[acc.bucketIndex] = acc.bucketPeak * 0.62 + rms * 0.38
+         }
+         guard envelope.contains(where: { $0 > 0 }) else { return [] }
+ 

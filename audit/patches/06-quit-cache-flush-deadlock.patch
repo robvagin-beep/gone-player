@@ -1,0 +1,17 @@
+diff --git a/GONE/GONEApp.swift b/GONE/GONEApp.swift
+index 4d244a1..6cd2bb2 100644
+--- a/GONE/GONEApp.swift
++++ b/GONE/GONEApp.swift
+@@ -587,8 +587,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
+         playerState?.persistSettings()
+         // Flush any pending cache writes before process exits.
+         // flushSoon debounces to 1.5s — synchronous flush here captures the last analysis session.
++        // Task.detached, not Task {}: AppDelegate is main-actor isolated (project default), so a
++        // plain Task inherits the main actor and cannot start while main is blocked in wait() —
++        // the flush never ran and every quit sat out the full 2 s timeout.
+         let sema = DispatchSemaphore(value: 0)
+-        Task { await AnalysisCache.shared.flushNow(); sema.signal() }
++        Task.detached { await AnalysisCache.shared.flushNow(); sema.signal() }
+         _ = sema.wait(timeout: .now() + 2.0)
+     }
+ 

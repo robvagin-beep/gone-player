@@ -1,0 +1,116 @@
+diff --git a/GONE/GONE/AudioEngine.next.swift b/GONE/GONE/AudioEngine.next.swift
+index a775ffd..effee72 100644
+--- a/GONE/GONE/AudioEngine.next.swift
++++ b/GONE/GONE/AudioEngine.next.swift
+@@ -103,6 +103,10 @@ final class AudioEngineNext {
+     var onSpectrum: (([Float]) -> Void)?
+     var onFinished: (() -> Void)?
+     var onError: ((String) -> Void)?   // fires with human-readable error string; always set, debugMode gate is inside the closure
++    // Fires on main when the output device that was playing disappeared (headphones / USB
++    // interface unplugged). The engine stays paused at the same frame; the owner flips its UI.
++    var onOutputLost: (() -> Void)?
++    private var lastOutputDeviceID: AudioDeviceID = kAudioObjectUnknown   // Main-thread only
+ 
+     private var baseVolume: Double = 72
+     var crossfadeGain: Float = 1.0 {
+@@ -380,6 +384,19 @@ final class AudioEngineNext {
+         }
+     }
+ 
++    private func isDeviceAlive(_ id: AudioDeviceID) -> Bool {
++        var addr = AudioObjectPropertyAddress(
++            mSelector: kAudioDevicePropertyDeviceIsAlive,
++            mScope: kAudioObjectPropertyScopeGlobal,
++            mElement: kAudioObjectPropertyElementMain
++        )
++        var alive: UInt32 = 0
++        var size = UInt32(MemoryLayout<UInt32>.size)
++        // A removed device answers kAudioHardwareBadObjectError → treated as gone.
++        let status = AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &alive)
++        return status == noErr && alive != 0
++    }
++
+     private func systemDefaultOutputDeviceID() -> AudioDeviceID {
+         var addr = AudioObjectPropertyAddress(
+             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+@@ -628,8 +645,9 @@ final class AudioEngineNext {
+ 
+     private func handleEngineConfigurationChange() {
+         guard !suppressConfigChange else { return }
+-        let wasPlaying = isUserPlaying   // use intent flag — playerNode.isPlaying may already be false
++        var wasPlaying = isUserPlaying   // use intent flag — playerNode.isPlaying may already be false
+         let frame = currentPlaybackFrame()
++        let previousDevice = lastOutputDeviceID
+ 
+         progressTimer?.invalidate()
+         progressTimer = nil
+@@ -641,6 +659,19 @@ final class AudioEngineNext {
+ 
+         ensureEngineRunning()
+ 
++        // The device we were playing on is gone (headphones or interface unplugged) and the
++        // engine has fallen back to another output — typically the laptop speakers. Resuming
++        // there blasts the track into the room; stay paused at the same frame instead.
++        let currentDevice = currentOutputDeviceID()
++        lastOutputDeviceID = currentDevice
++        if wasPlaying, previousDevice != kAudioObjectUnknown,
++           currentDevice != previousDevice, !isDeviceAlive(previousDevice) {
++            wasPlaying = false
++            isUserPlaying = false
++            endAudioActivity()
++            onOutputLost?()
++        }
++
+         guard audioFile != nil else { return }
+         if frame < (audioFile?.length ?? 0) {
+             scheduleFrom(frame: frame, token: token)
+@@ -685,6 +716,7 @@ final class AudioEngineNext {
+ 
+         do {
+             try engine.start()
++            lastOutputDeviceID = currentOutputDeviceID()
+         } catch {
+             let msg = "engine start failed: \(error)"
+             audioEngineLog.error("\(msg, privacy: .public)")
+diff --git a/GONE/GONEApp.swift b/GONE/GONEApp.swift
+index 313663e..4d244a1 100644
+--- a/GONE/GONEApp.swift
++++ b/GONE/GONEApp.swift
+@@ -323,6 +323,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
+                 s.lastError = "[\(timestamp)] \(msg)"
+             }
+         }
++        engine.onOutputLost = { [weak self] in
++            // Output device unplugged mid-track: the engine stays paused (see
++            // handleEngineConfigurationChange) — make the transport say so.
++            guard let state = self?.playerState else { return }
++            state.isPlaying = false
++            state.stopAllMomentaryAudioModifiers()
++        }
+         engine.onSpectrum = { [weak self] data in
+             DispatchQueue.main.async { [weak self] in
+                 self?.playerState?.spectrumFeed.data = data
+diff --git a/GONE/SplitModeManager.swift b/GONE/SplitModeManager.swift
+index f9f974b..35bbbe2 100644
+--- a/GONE/SplitModeManager.swift
++++ b/GONE/SplitModeManager.swift
+@@ -116,6 +116,7 @@ final class SplitModeManager: ObservableObject {
+         AudioEngineNext.secondary.onFinished = nil
+         AudioEngineNext.secondary.onSpectrum = nil
+         AudioEngineNext.secondary.onError    = nil
++        AudioEngineNext.secondary.onOutputLost = nil
+ 
+         // Step 3 — mark stopped on main. Sets isUserPlaying=false so
+         // handleEngineConfigurationChange won't restart playback. Must NOT call
+@@ -292,6 +293,11 @@ final class SplitModeManager: ObservableObject {
+                 }
+             }
+         }
++        eng.onOutputLost = { [weak state] in
++            guard let s = state, s === SplitModeManager.shared.secondaryState else { return }
++            s.isPlaying = false
++            s.stopAllMomentaryAudioModifiers()
++        }
+         eng.onError = { [weak state] msg in
+             DispatchQueue.main.async {
+                 MainActor.assumeIsolated {

@@ -1,0 +1,58 @@
+diff --git a/GONE/GONE/AudioEngine.next.swift b/GONE/GONE/AudioEngine.next.swift
+index 76f6283..a775ffd 100644
+--- a/GONE/GONE/AudioEngine.next.swift
++++ b/GONE/GONE/AudioEngine.next.swift
+@@ -774,8 +774,11 @@ final class AudioEngineNext {
+             // Reset the prefetch cursor for this scheduling generation.
+             self.highestScheduledFrame = startFrame
+             self.prefetchEOF = false
++            // Mid-track start (seek, hot cue, loop jump, re-prime): fade the first few ms in so
++            // the cut into a non-zero sample does not click. A start at frame 0 is untouched.
+             let didSchedule = self.scheduleNextChunk(url: url, format: fmt,
+-                                                     chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
++                                                     chunkFrames: chunkFrames, totalFrames: totalFrames, token: token,
++                                                     fadeIn: startFrame > 0)
+             DispatchQueue.main.async { [weak self] in
+                 guard let self, token == self.playbackToken else { return }
+                 self.isPreparingFirstBuffer = false
+@@ -820,7 +823,8 @@ final class AudioEngineNext {
+     private func scheduleNextChunk(url: URL, format: AVAudioFormat,
+                                    chunkFrames: AVAudioFrameCount,
+                                    totalFrames: AVAudioFramePosition,
+-                                   token: UInt64) -> Bool {
++                                   token: UInt64,
++                                   fadeIn: Bool = false) -> Bool {
+         guard token == playbackToken else { return false }
+ 
+         let startFrame = highestScheduledFrame
+@@ -847,6 +851,8 @@ final class AudioEngineNext {
+         // Second check after disk I/O: token may have changed while reading.
+         guard token == playbackToken else { return false }
+ 
++        if fadeIn { applyFadeIn(to: buffer) }
++
+         let nextStart = startFrame + AVAudioFramePosition(framesToRead)
+         let isLastChunk = nextStart >= totalFrames
+         highestScheduledFrame = nextStart
+@@ -871,6 +877,21 @@ final class AudioEngineNext {
+         return true
+     }
+ 
++    // ~3 ms linear ramp at the head of a buffer (132 frames at 44.1 kHz, scales with the rate).
++    // Runs on bufferQueue on a buffer nobody else references yet.
++    private func applyFadeIn(to buffer: AVAudioPCMBuffer) {
++        guard let channels = buffer.floatChannelData else { return }
++        let rampFrames = min(Int(buffer.frameLength), max(32, Int(buffer.format.sampleRate * 0.003)))
++        guard rampFrames > 1 else { return }
++        var ramp = [Float](repeating: 0, count: rampFrames)
++        var start: Float = 0
++        var step: Float = 1 / Float(rampFrames)
++        vDSP_vramp(&start, &step, &ramp, 1, vDSP_Length(rampFrames))
++        for c in 0..<Int(buffer.format.channelCount) {
++            vDSP_vmul(channels[c], 1, ramp, 1, channels[c], 1, vDSP_Length(rampFrames))
++        }
++    }
++
+     // End-of-track path shared by the last real chunk and the error terminator. Main thread.
+     private func finishPlayback(token: UInt64, totalFrames: AVAudioFramePosition) {
+         guard token == playbackToken else { return }

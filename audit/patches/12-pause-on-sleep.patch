@@ -1,0 +1,30 @@
+diff --git a/GONE/GONEApp.swift b/GONE/GONEApp.swift
+index b5e57a2..367e1e2 100644
+--- a/GONE/GONEApp.swift
++++ b/GONE/GONEApp.swift
+@@ -107,6 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
+             self, selector: #selector(systemDidWake),
+             name: NSWorkspace.didWakeNotification, object: nil
+         )
++        NSWorkspace.shared.notificationCenter.addObserver(
++            self, selector: #selector(systemWillSleep),
++            name: NSWorkspace.willSleepNotification, object: nil
++        )
+         // Variant D bootstrap: build the panel directly, no WindowGroup placeholder,
+         // no onAppear dependency, no alpha tricks (a 0-alpha "fade in later" once kept
+         // the panel invisible forever — see commit 852d603).
+@@ -273,6 +277,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
+         WindowSnapManager.shared.constrainCurrentWindow()
+     }
+ 
++    // Lid closed mid-track: pause both players. handleSystemWake resumes whatever was still
++    // "playing", so without this the track restarted out loud wherever the laptop was opened
++    // next (booth, train, meeting).
++    @objc private func systemWillSleep() {
++        if let state = playerState, state.isPlaying { state.togglePlayback() }
++        if let sec = SplitModeManager.shared.secondaryState, sec.isPlaying { sec.togglePlayback() }
++    }
++
+     @objc private func systemDidWake() {
+         if let window = resolvedMainWindow() { applyPresencePolicy(to: window) }
+         // Re-sync the audio engine(s): after sleep the HAL device and the player node's sample

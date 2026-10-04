@@ -1,0 +1,18 @@
+diff --git a/GONE/GONE/AudioEngine.next.swift b/GONE/GONE/AudioEngine.next.swift
+index 2d0af57..abc0d06 100644
+--- a/GONE/GONE/AudioEngine.next.swift
++++ b/GONE/GONE/AudioEngine.next.swift
+@@ -1156,8 +1156,11 @@ final class AudioEngineNext {
+         for barIndex in 0..<spectrumBars {
+             let lowerFrequency = pow(10, logMin + (logMax - logMin) * Float(barIndex) / Float(spectrumBars))
+             let upperFrequency = pow(10, logMin + (logMax - logMin) * Float(barIndex + 1) / Float(spectrumBars))
+-            let lowerIndex = max(0, Int(lowerFrequency / binWidth))
+-             let upperIndex = min(fftMagnitudes.count - 1, Int(upperFrequency / binWidth))
++            // Bin 0 of the packed zrip output holds DC + Nyquist, not 0-binWidth Hz. At 96/192 kHz
++            // output (binWidth 94/188 Hz) the lowest 3/6 bars all read it: identical blocks that
++            // also react to DC offset. Start at bin 1 and let narrow bars share their bin.
++            let lowerIndex = max(1, Int(lowerFrequency / binWidth))
++            let upperIndex = max(lowerIndex, min(fftMagnitudes.count - 1, Int(upperFrequency / binWidth)))
+             guard lowerIndex <= upperIndex else { continue }
+             var peak: Float = 0
+             fftMagnitudes.withUnsafeBufferPointer { magnitudesBuffer in
