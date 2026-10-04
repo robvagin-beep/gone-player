@@ -1,7 +1,7 @@
 # GONE Deep Systems Audit Recommendations
 
 Date: 2026-05-12
-Scope: current local codebase under `/Users/robertvagin/Desktop/GONE`
+Scope: current local codebase under `the repository root`
 Mode: audit only. This document contains recommendations and suspected weak points. It does not describe code that was changed.
 
 This audit follows `GONE_CURATOR.md`: no new product features, no external dependencies, no replacement of the snap state machine, no audio graph reorder, and no changes to `windowResizability(.automatic)` or `isMovableByWindowBackground = false`.

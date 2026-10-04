@@ -19,7 +19,7 @@ COMMENT_ID    = os.environ.get("COMMENT_ID", "0")
 GITHUB_TOKEN  = os.environ["GITHUB_TOKEN"]
 API_KEY       = os.environ["ANTHROPIC_API_KEY"]
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tools/ → repo root
 
 ALL_FILES = [
     "GONE/AudioEngine.next.swift",

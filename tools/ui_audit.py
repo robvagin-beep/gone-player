@@ -122,7 +122,7 @@ def main() -> None:
     pr_number    = os.environ.get("PR_NUMBER", "1")
     repo         = os.environ.get("REPO", "robvagin-beep/gone-player")
 
-    base = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tools/ → repo root
     sources = load_sources(base)
 
     total_chars = len(sources)

@@ -364,13 +364,13 @@ Session goal:
 Default:
 
 ```text
-/Users/robertvagin/Desktop/GONE/GONE_SESSION_HANDOFF.md
+GONE_SESSION_HANDOFF.md (local only, not in the repository)
 ```
 
 If the work is about a specific task or issue:
 
 ```text
-/Users/robertvagin/Desktop/GONE/handoffs/YYYY-MM-DD-short-topic.md
+handoffs/YYYY-MM-DD-short-topic.md
 ```
 
 ### Compact emergency template

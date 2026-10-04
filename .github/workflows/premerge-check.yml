@@ -28,4 +28,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
           REPO: ${{ github.repository }}
-        run: python premerge_check.py
+        run: python tools/premerge_check.py

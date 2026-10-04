@@ -3,7 +3,7 @@ set -e
 
 APP_NAME="GONE Player Beta 0.8"
 SCHEME="GONE"
-ENTITLEMENTS="$(dirname "$0")/GONE/GONE_release.entitlements"
+ENTITLEMENTS="$(dirname "$0")/../GONE/GONE_release.entitlements"
 OUT_DIR="$HOME/Desktop"
 DMG_PATH="$OUT_DIR/$APP_NAME.dmg"
 

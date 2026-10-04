@@ -35,3 +35,7 @@ GONE_REMAINING_PLAN_*.md
 GONE_CURATOR.md
 package_beta07.sh
 package_beta09.sh
+
+# Python
+__pycache__/
+*.pyc

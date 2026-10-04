@@ -28,7 +28,7 @@
 
 **GONE player** — компактный macOS-плеер для диджеев. Работает рядом с Finder. Ключевые фичи: дроп папки → BPM, pitch fader с Master Tempo, 4-band EQ, snap-to-edge (прячется за край экрана). Целевая платформа: macOS 13+, MacBook 2010 и новее.
 
-Проект: `/Users/robertvagin/Desktop/GONE/GONE/`  
+Проект: `GONE/`  
 Xcode project: `PBXFileSystemSynchronizedRootGroup` — файлы определяются папкой автоматически, не нужно добавлять в pbxproj вручную.
 
 ---
