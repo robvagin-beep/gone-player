@@ -63,6 +63,12 @@ final class SplitModeManager: ObservableObject {
         secondWindow = win
         positionWindows(primary: primaryWindow, secondary: win)
 
+        // B is pinned to A's device (makeSecondWindow). A follows the system default, B does
+        // not — re-point B whenever A's engine handles a configuration change.
+        primaryState.audioEngine.onConfigurationChange = { [weak self] in
+            self?.resyncSecondaryOutput()
+        }
+
         let gap = CrossfaderGapWindow(manager: self, windowA: primaryWindow, windowB: win)
         gapWindow = gap
         installLifecycleObservers(primary: primaryWindow, secondary: win)
@@ -107,6 +113,7 @@ final class SplitModeManager: ObservableObject {
 
         // Step 1 — tear down observers and crossfader UI immediately.
         removeLifecycleObservers()
+        primaryState?.audioEngine.onConfigurationChange = nil
         crossfade = 0.5
         primaryState?.audioEngine.crossfadeGain = 1.0
 
@@ -116,6 +123,8 @@ final class SplitModeManager: ObservableObject {
         AudioEngineNext.secondary.onFinished = nil
         AudioEngineNext.secondary.onSpectrum = nil
         AudioEngineNext.secondary.onError    = nil
+        AudioEngineNext.secondary.onOutputLost = nil
+        AudioEngineNext.secondary.onLoadFailed = nil
 
         // Step 3 — mark stopped on main. Sets isUserPlaying=false so
         // handleEngineConfigurationChange won't restart playback. Must NOT call
@@ -208,6 +217,18 @@ final class SplitModeManager: ObservableObject {
         lifecycleObservers.removeAll()
     }
 
+    // Plugging in / pulling an interface moves A to the new default output; B, pinned at
+    // activation, kept playing into the old device (or a dead one). Serialized on audioOpQueue
+    // like every other secondary-engine device operation.
+    private func resyncSecondaryOutput() {
+        guard isActive, let primary = primaryState else { return }
+        let deviceID = primary.audioEngine.currentOutputDeviceID()
+        audioOpQueue.async {
+            guard AudioEngineNext.secondary.currentOutputDeviceID() != deviceID else { return }
+            AudioEngineNext.secondary.setOutputDevice(deviceID)
+        }
+    }
+
     // MARK: — Crossfade
 
     func setCrossfade(_ t: Double) {
@@ -291,6 +312,15 @@ final class SplitModeManager: ObservableObject {
                     state?.spectrumFeed.data = data
                 }
             }
+        }
+        eng.onOutputLost = { [weak state] in
+            guard let s = state, s === SplitModeManager.shared.secondaryState else { return }
+            s.isPlaying = false
+            s.stopAllMomentaryAudioModifiers()
+        }
+        eng.onLoadFailed = { [weak state] in
+            guard let s = state, s === SplitModeManager.shared.secondaryState else { return }
+            s.isPlaying = false
         }
         eng.onError = { [weak state] msg in
             DispatchQueue.main.async {

@@ -1,0 +1,29 @@
+diff --git a/GONE/PitchFaderView.swift b/GONE/PitchFaderView.swift
+index 5108cde..cf105fb 100644
+--- a/GONE/PitchFaderView.swift
++++ b/GONE/PitchFaderView.swift
+@@ -133,7 +133,9 @@ struct PitchFaderView: View {
+                     action: {
+                         guard !state.tracks.isEmpty else { return }
+                         state.masterTempo.toggle()
+-                        state.audioEngine.setPitch(state.pitch, masterTempo: state.masterTempo)
++                        // Respect the pitch bypass — toggling MT used to re-apply the fader value
++                        // to a bypassed player.
++                        state.audioEngine.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
+                     }
+                 )
+                 .goneTooltip("Master Tempo — pitch stays locked to original key when you change speed")
+diff --git a/GONE/PlayerState+Playback.swift b/GONE/PlayerState+Playback.swift
+index dd23676..5d8cf56 100644
+--- a/GONE/PlayerState+Playback.swift
++++ b/GONE/PlayerState+Playback.swift
+@@ -14,6 +14,9 @@ extension PlayerState {
+         let idx = ranges.firstIndex(of: pitchRange) ?? 0
+         pitchRange = ranges[(idx + 1) % ranges.count]
+         pitch = max(-Double(pitchRange), min(Double(pitchRange), pitch))
++        // The clamp must reach the engine too: ±100 at +40% → ±8 showed +8% while the
++        // track kept playing at +40% until the fader was touched.
++        audioEngine.setPitch(pitchBypassed ? 0 : pitch, masterTempo: masterTempo)
+     }
+ 
+     // MARK: — BPM Filter

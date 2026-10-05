@@ -1,0 +1,39 @@
+diff --git a/GONE/GONE/AudioEngine.next.swift b/GONE/GONE/AudioEngine.next.swift
+index 6a84cca..b76cf44 100644
+--- a/GONE/GONE/AudioEngine.next.swift
++++ b/GONE/GONE/AudioEngine.next.swift
+@@ -194,6 +194,20 @@ final class AudioEngineNext {
+     func load(_ url: URL, autoplay: Bool = false) {
+         stop(resetProgress: true)
+ 
++        // iCloud placeholder ("Optimize Mac Storage", Desktop & Documents in iCloud): opening it
++        // with AVAudioFile blocks — here, on the MAIN thread — until the whole file has been
++        // downloaded. Start the download in the background and report instead of freezing the UI.
++        if Self.isNotDownloaded(url) {
++            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
++            audioFile = nil
++            currentURL = nil
++            let msg = "not downloaded from iCloud yet — download started: \(url.lastPathComponent)"
++            audioEngineLog.error("\(msg, privacy: .public)")
++            onError?(msg)
++            DispatchQueue.main.async { [weak self] in self?.onLoadFailed?() }
++            return
++        }
++
+         do {
+             let file = try AVAudioFile(forReading: url)
+             audioFile = file
+@@ -226,6 +240,13 @@ final class AudioEngineNext {
+         }
+     }
+ 
++    private static func isNotDownloaded(_ url: URL) -> Bool {
++        guard let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey,
++                                                             .ubiquitousItemDownloadingStatusKey]),
++              values.isUbiquitousItem == true else { return false }
++        return values.ubiquitousItemDownloadingStatus == .notDownloaded
++    }
++
+     func reloadCurrent(autoplay: Bool) {
+         guard let currentURL else { return }
+         load(currentURL, autoplay: autoplay)

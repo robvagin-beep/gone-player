@@ -1,0 +1,66 @@
+diff --git a/GONE/GONE/AudioEngine.next.swift b/GONE/GONE/AudioEngine.next.swift
+index effee72..2d0af57 100644
+--- a/GONE/GONE/AudioEngine.next.swift
++++ b/GONE/GONE/AudioEngine.next.swift
+@@ -107,6 +107,9 @@ final class AudioEngineNext {
+     // interface unplugged). The engine stays paused at the same frame; the owner flips its UI.
+     var onOutputLost: (() -> Void)?
+     private var lastOutputDeviceID: AudioDeviceID = kAudioObjectUnknown   // Main-thread only
++    // Fires on main after every handled configuration change (device switch, rate change).
++    // SplitModeManager uses it on the primary engine to re-point the secondary's pinned output.
++    var onConfigurationChange: (() -> Void)?
+ 
+     private var baseVolume: Double = 72
+     var crossfadeGain: Float = 1.0 {
+@@ -671,6 +674,7 @@ final class AudioEngineNext {
+             endAudioActivity()
+             onOutputLost?()
+         }
++        onConfigurationChange?()
+ 
+         guard audioFile != nil else { return }
+         if frame < (audioFile?.length ?? 0) {
+diff --git a/GONE/SplitModeManager.swift b/GONE/SplitModeManager.swift
+index 35bbbe2..48d7a01 100644
+--- a/GONE/SplitModeManager.swift
++++ b/GONE/SplitModeManager.swift
+@@ -63,6 +63,12 @@ final class SplitModeManager: ObservableObject {
+         secondWindow = win
+         positionWindows(primary: primaryWindow, secondary: win)
+ 
++        // B is pinned to A's device (makeSecondWindow). A follows the system default, B does
++        // not — re-point B whenever A's engine handles a configuration change.
++        primaryState.audioEngine.onConfigurationChange = { [weak self] in
++            self?.resyncSecondaryOutput()
++        }
++
+         let gap = CrossfaderGapWindow(manager: self, windowA: primaryWindow, windowB: win)
+         gapWindow = gap
+         installLifecycleObservers(primary: primaryWindow, secondary: win)
+@@ -107,6 +113,7 @@ final class SplitModeManager: ObservableObject {
+ 
+         // Step 1 — tear down observers and crossfader UI immediately.
+         removeLifecycleObservers()
++        primaryState?.audioEngine.onConfigurationChange = nil
+         crossfade = 0.5
+         primaryState?.audioEngine.crossfadeGain = 1.0
+ 
+@@ -209,6 +216,18 @@ final class SplitModeManager: ObservableObject {
+         lifecycleObservers.removeAll()
+     }
+ 
++    // Plugging in / pulling an interface moves A to the new default output; B, pinned at
++    // activation, kept playing into the old device (or a dead one). Serialized on audioOpQueue
++    // like every other secondary-engine device operation.
++    private func resyncSecondaryOutput() {
++        guard isActive, let primary = primaryState else { return }
++        let deviceID = primary.audioEngine.currentOutputDeviceID()
++        audioOpQueue.async {
++            guard AudioEngineNext.secondary.currentOutputDeviceID() != deviceID else { return }
++            AudioEngineNext.secondary.setOutputDevice(deviceID)
++        }
++    }
++
+     // MARK: — Crossfade
+ 
+     func setCrossfade(_ t: Double) {

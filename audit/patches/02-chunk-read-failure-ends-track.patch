@@ -1,0 +1,74 @@
+diff --git a/GONE/GONE/AudioEngine.next.swift b/GONE/GONE/AudioEngine.next.swift
+index c109e43..76f6283 100644
+--- a/GONE/GONE/AudioEngine.next.swift
++++ b/GONE/GONE/AudioEngine.next.swift
+@@ -835,7 +835,13 @@ final class AudioEngineNext {
+             chunkFile.framePosition = startFrame
+             try chunkFile.read(into: buffer, frameCount: framesToRead)
+         } catch {
+-            return false
++            // Unreadable chunk: truncated download, corrupt frame, file gone from a network share.
++            // Returning false left highestScheduledFrame on the bad frame, so the underrun watchdog
++            // re-primed it 24×/s forever — silent, UI "playing", never advancing to the next track.
++            // Treat it as the end of the track instead: queue a 1-frame silent terminator whose
++            // completion runs the normal end-of-track path once the audio before it has played.
++            return scheduleTerminator(after: startFrame, error: error, format: format,
++                                      totalFrames: totalFrames, token: token)
+         }
+ 
+         // Second check after disk I/O: token may have changed while reading.
+@@ -851,12 +857,7 @@ final class AudioEngineNext {
+ 
+             if isLastChunk {
+                 DispatchQueue.main.async {
+-                    guard token == self.playbackToken else { return }
+-                    self.progressTimer?.invalidate()
+-                    self.isScheduled = false
+-                    self.pausedFrameOffset = totalFrames
+-                    self.emitProgress(currentFrame: totalFrames)
+-                    self.onFinished?()
++                    self.finishPlayback(token: token, totalFrames: totalFrames)
+                 }
+             } else {
+                 // As each chunk plays out, refill the headroom from the shared cursor.
+@@ -870,6 +871,40 @@ final class AudioEngineNext {
+         return true
+     }
+ 
++    // End-of-track path shared by the last real chunk and the error terminator. Main thread.
++    private func finishPlayback(token: UInt64, totalFrames: AVAudioFramePosition) {
++        guard token == playbackToken else { return }
++        progressTimer?.invalidate()
++        isScheduled = false
++        pausedFrameOffset = totalFrames
++        emitProgress(currentFrame: totalFrames)
++        onFinished?()
++    }
++
++    // bufferQueue only. Marks the generation as fully scheduled (stops the watchdog) and queues
++    // one silent frame; its .dataPlayedBack completion fires after everything queued before it.
++    private func scheduleTerminator(after frame: AVAudioFramePosition, error: Error,
++                                    format: AVAudioFormat, totalFrames: AVAudioFramePosition,
++                                    token: UInt64) -> Bool {
++        guard token == playbackToken,
++              let terminator = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1) else { return false }
++        terminator.frameLength = 1
++        if let channels = terminator.floatChannelData {
++            for c in 0..<Int(format.channelCount) { channels[c][0] = 0 }
++        }
++        highestScheduledFrame = totalFrames
++        prefetchEOF = true
++        let msg = "read failed at frame \(frame): \(error) — ending track"
++        audioEngineLog.error("\(msg, privacy: .public)")
++        DispatchQueue.main.async { [weak self] in self?.onError?(msg) }
++        playerNode.scheduleBuffer(terminator, completionCallbackType: .dataPlayedBack) { [weak self] _ in
++            DispatchQueue.main.async {
++                self?.finishPlayback(token: token, totalFrames: totalFrames)
++            }
++        }
++        return true
++    }
++
+     private func startProgressTimer() {
+         progressTimer?.invalidate()
+         progressTimer = Timer(timeInterval: 1.0 / 24.0, repeats: true) { [weak self] _ in

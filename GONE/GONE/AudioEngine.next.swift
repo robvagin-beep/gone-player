@@ -103,6 +103,16 @@ final class AudioEngineNext {
     var onSpectrum: (([Float]) -> Void)?
     var onFinished: (() -> Void)?
     var onError: ((String) -> Void)?   // fires with human-readable error string; always set, debugMode gate is inside the closure
+    // Fires on main when the output device that was playing disappeared (headphones / USB
+    // interface unplugged). The engine stays paused at the same frame; the owner flips its UI.
+    var onOutputLost: (() -> Void)?
+    // Fires on main when load() could not open the file (zero-length, corrupt header, DRM,
+    // vanished). play() then no-ops, so the owner must stop showing "playing".
+    var onLoadFailed: (() -> Void)?
+    private var lastOutputDeviceID: AudioDeviceID = kAudioObjectUnknown   // Main-thread only
+    // Fires on main after every handled configuration change (device switch, rate change).
+    // SplitModeManager uses it on the primary engine to re-point the secondary's pinned output.
+    var onConfigurationChange: (() -> Void)?
 
     private var baseVolume: Double = 72
     var crossfadeGain: Float = 1.0 {
@@ -184,6 +194,20 @@ final class AudioEngineNext {
     func load(_ url: URL, autoplay: Bool = false) {
         stop(resetProgress: true)
 
+        // iCloud placeholder ("Optimize Mac Storage", Desktop & Documents in iCloud): opening it
+        // with AVAudioFile blocks — here, on the MAIN thread — until the whole file has been
+        // downloaded. Start the download in the background and report instead of freezing the UI.
+        if Self.isNotDownloaded(url) {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            audioFile = nil
+            currentURL = nil
+            let msg = "not downloaded from iCloud yet — download started: \(url.lastPathComponent)"
+            audioEngineLog.error("\(msg, privacy: .public)")
+            onError?(msg)
+            DispatchQueue.main.async { [weak self] in self?.onLoadFailed?() }
+            return
+        }
+
         do {
             let file = try AVAudioFile(forReading: url)
             audioFile = file
@@ -211,7 +235,16 @@ final class AudioEngineNext {
             let msg = "load failed: \(error)"
             audioEngineLog.error("\(msg, privacy: .public)")
             onError?(msg)
+            // Async: callers set isPlaying = true right after load() returns (playTrack).
+            DispatchQueue.main.async { [weak self] in self?.onLoadFailed?() }
         }
+    }
+
+    private static func isNotDownloaded(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey,
+                                                             .ubiquitousItemDownloadingStatusKey]),
+              values.isUbiquitousItem == true else { return false }
+        return values.ubiquitousItemDownloadingStatus == .notDownloaded
     }
 
     func reloadCurrent(autoplay: Bool) {
@@ -378,6 +411,19 @@ final class AudioEngineNext {
             audioEngineLog.error("\(msg, privacy: .public)")
             onError?(msg)
         }
+    }
+
+    private func isDeviceAlive(_ id: AudioDeviceID) -> Bool {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var alive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        // A removed device answers kAudioHardwareBadObjectError → treated as gone.
+        let status = AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &alive)
+        return status == noErr && alive != 0
     }
 
     private func systemDefaultOutputDeviceID() -> AudioDeviceID {
@@ -628,8 +674,9 @@ final class AudioEngineNext {
 
     private func handleEngineConfigurationChange() {
         guard !suppressConfigChange else { return }
-        let wasPlaying = isUserPlaying   // use intent flag — playerNode.isPlaying may already be false
+        var wasPlaying = isUserPlaying   // use intent flag — playerNode.isPlaying may already be false
         let frame = currentPlaybackFrame()
+        let previousDevice = lastOutputDeviceID
 
         progressTimer?.invalidate()
         progressTimer = nil
@@ -640,6 +687,20 @@ final class AudioEngineNext {
         playerNode.stop()                // flush queued buffers
 
         ensureEngineRunning()
+
+        // The device we were playing on is gone (headphones or interface unplugged) and the
+        // engine has fallen back to another output — typically the laptop speakers. Resuming
+        // there blasts the track into the room; stay paused at the same frame instead.
+        let currentDevice = currentOutputDeviceID()
+        lastOutputDeviceID = currentDevice
+        if wasPlaying, previousDevice != kAudioObjectUnknown,
+           currentDevice != previousDevice, !isDeviceAlive(previousDevice) {
+            wasPlaying = false
+            isUserPlaying = false
+            endAudioActivity()
+            onOutputLost?()
+        }
+        onConfigurationChange?()
 
         guard audioFile != nil else { return }
         if frame < (audioFile?.length ?? 0) {
@@ -685,6 +746,7 @@ final class AudioEngineNext {
 
         do {
             try engine.start()
+            lastOutputDeviceID = currentOutputDeviceID()
         } catch {
             let msg = "engine start failed: \(error)"
             audioEngineLog.error("\(msg, privacy: .public)")
@@ -774,8 +836,11 @@ final class AudioEngineNext {
             // Reset the prefetch cursor for this scheduling generation.
             self.highestScheduledFrame = startFrame
             self.prefetchEOF = false
+            // Mid-track start (seek, hot cue, loop jump, re-prime): fade the first few ms in so
+            // the cut into a non-zero sample does not click. A start at frame 0 is untouched.
             let didSchedule = self.scheduleNextChunk(url: url, format: fmt,
-                                                     chunkFrames: chunkFrames, totalFrames: totalFrames, token: token)
+                                                     chunkFrames: chunkFrames, totalFrames: totalFrames, token: token,
+                                                     fadeIn: startFrame > 0)
             DispatchQueue.main.async { [weak self] in
                 guard let self, token == self.playbackToken else { return }
                 self.isPreparingFirstBuffer = false
@@ -820,7 +885,8 @@ final class AudioEngineNext {
     private func scheduleNextChunk(url: URL, format: AVAudioFormat,
                                    chunkFrames: AVAudioFrameCount,
                                    totalFrames: AVAudioFramePosition,
-                                   token: UInt64) -> Bool {
+                                   token: UInt64,
+                                   fadeIn: Bool = false) -> Bool {
         guard token == playbackToken else { return false }
 
         let startFrame = highestScheduledFrame
@@ -835,11 +901,19 @@ final class AudioEngineNext {
             chunkFile.framePosition = startFrame
             try chunkFile.read(into: buffer, frameCount: framesToRead)
         } catch {
-            return false
+            // Unreadable chunk: truncated download, corrupt frame, file gone from a network share.
+            // Returning false left highestScheduledFrame on the bad frame, so the underrun watchdog
+            // re-primed it 24×/s forever — silent, UI "playing", never advancing to the next track.
+            // Treat it as the end of the track instead: queue a 1-frame silent terminator whose
+            // completion runs the normal end-of-track path once the audio before it has played.
+            return scheduleTerminator(after: startFrame, error: error, format: format,
+                                      totalFrames: totalFrames, token: token)
         }
 
         // Second check after disk I/O: token may have changed while reading.
         guard token == playbackToken else { return false }
+
+        if fadeIn { applyFadeIn(to: buffer) }
 
         let nextStart = startFrame + AVAudioFramePosition(framesToRead)
         let isLastChunk = nextStart >= totalFrames
@@ -851,12 +925,7 @@ final class AudioEngineNext {
 
             if isLastChunk {
                 DispatchQueue.main.async {
-                    guard token == self.playbackToken else { return }
-                    self.progressTimer?.invalidate()
-                    self.isScheduled = false
-                    self.pausedFrameOffset = totalFrames
-                    self.emitProgress(currentFrame: totalFrames)
-                    self.onFinished?()
+                    self.finishPlayback(token: token, totalFrames: totalFrames)
                 }
             } else {
                 // As each chunk plays out, refill the headroom from the shared cursor.
@@ -865,6 +934,55 @@ final class AudioEngineNext {
                     self.topUpPrefetch(url: url, format: format, chunkFrames: chunkFrames,
                                        totalFrames: totalFrames, token: token)
                 }
+            }
+        }
+        return true
+    }
+
+    // ~3 ms linear ramp at the head of a buffer (132 frames at 44.1 kHz, scales with the rate).
+    // Runs on bufferQueue on a buffer nobody else references yet.
+    private func applyFadeIn(to buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData else { return }
+        let rampFrames = min(Int(buffer.frameLength), max(32, Int(buffer.format.sampleRate * 0.003)))
+        guard rampFrames > 1 else { return }
+        var ramp = [Float](repeating: 0, count: rampFrames)
+        var start: Float = 0
+        var step: Float = 1 / Float(rampFrames)
+        vDSP_vramp(&start, &step, &ramp, 1, vDSP_Length(rampFrames))
+        for c in 0..<Int(buffer.format.channelCount) {
+            vDSP_vmul(channels[c], 1, ramp, 1, channels[c], 1, vDSP_Length(rampFrames))
+        }
+    }
+
+    // End-of-track path shared by the last real chunk and the error terminator. Main thread.
+    private func finishPlayback(token: UInt64, totalFrames: AVAudioFramePosition) {
+        guard token == playbackToken else { return }
+        progressTimer?.invalidate()
+        isScheduled = false
+        pausedFrameOffset = totalFrames
+        emitProgress(currentFrame: totalFrames)
+        onFinished?()
+    }
+
+    // bufferQueue only. Marks the generation as fully scheduled (stops the watchdog) and queues
+    // one silent frame; its .dataPlayedBack completion fires after everything queued before it.
+    private func scheduleTerminator(after frame: AVAudioFramePosition, error: Error,
+                                    format: AVAudioFormat, totalFrames: AVAudioFramePosition,
+                                    token: UInt64) -> Bool {
+        guard token == playbackToken,
+              let terminator = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1) else { return false }
+        terminator.frameLength = 1
+        if let channels = terminator.floatChannelData {
+            for c in 0..<Int(format.channelCount) { channels[c][0] = 0 }
+        }
+        highestScheduledFrame = totalFrames
+        prefetchEOF = true
+        let msg = "read failed at frame \(frame): \(error) — ending track"
+        audioEngineLog.error("\(msg, privacy: .public)")
+        DispatchQueue.main.async { [weak self] in self?.onError?(msg) }
+        playerNode.scheduleBuffer(terminator, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.finishPlayback(token: token, totalFrames: totalFrames)
             }
         }
         return true
@@ -1064,8 +1182,11 @@ final class AudioEngineNext {
         for barIndex in 0..<spectrumBars {
             let lowerFrequency = pow(10, logMin + (logMax - logMin) * Float(barIndex) / Float(spectrumBars))
             let upperFrequency = pow(10, logMin + (logMax - logMin) * Float(barIndex + 1) / Float(spectrumBars))
-            let lowerIndex = max(0, Int(lowerFrequency / binWidth))
-             let upperIndex = min(fftMagnitudes.count - 1, Int(upperFrequency / binWidth))
+            // Bin 0 of the packed zrip output holds DC + Nyquist, not 0-binWidth Hz. At 96/192 kHz
+            // output (binWidth 94/188 Hz) the lowest 3/6 bars all read it: identical blocks that
+            // also react to DC offset. Start at bin 1 and let narrow bars share their bin.
+            let lowerIndex = max(1, Int(lowerFrequency / binWidth))
+            let upperIndex = max(lowerIndex, min(fftMagnitudes.count - 1, Int(upperFrequency / binWidth)))
             guard lowerIndex <= upperIndex else { continue }
             var peak: Float = 0
             fftMagnitudes.withUnsafeBufferPointer { magnitudesBuffer in

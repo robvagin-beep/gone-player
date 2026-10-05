@@ -566,6 +566,14 @@ nonisolated final class LibraryScanner {
         var allSamples: [Float] = []
         allSamples.reserveCapacity(min(expectedSamples, Int(decodedSR * 1200)))
         var lastReportedPct = 0.0
+        // Hard cap at 30 min of STORED audio: a 2h file would hold ~316MB resident
+        // (× batchConcurrency). 30 min is far more than BPM needs. The waveform is built while
+        // decoding instead (below), so it still covers the whole file — with the old
+        // break-at-cap a 1-hour mix showed a flat second half and the playhead ran over nothing.
+        let sampleCap = Int(decodedSR * 1800)
+        var waveformAcc: WaveformAccumulator? = totalSec > 0
+            ? WaveformAccumulator(totalSec: totalSec, bars: waveformBars) : nil
+        var decodedCount = 0
 
         var scale: Float = 1.0 / 32768.0
         while let buf = output.copyNextSampleBuffer(),
@@ -586,12 +594,13 @@ nonisolated final class LibraryScanner {
                     vDSP_vsmul(dp, 1, &scale, dp, 1, vDSP_Length(count))
                 }
             }
-            allSamples.append(contentsOf: converted)
-            // Hard cap at 30 min of decoded audio: a 2h file would hold ~316MB resident
-            // (× batchConcurrency). 30 min is far more than BPM/waveform need.
-            if allSamples.count > Int(decodedSR * 1800) { break }
+            waveformAcc?.feed(converted)
+            decodedCount += count
+            if allSamples.count <= sampleCap { allSamples.append(contentsOf: converted) }
+            // Past the cap keep decoding only while the streamed waveform still needs samples.
+            if allSamples.count > sampleCap, waveformAcc?.isFull ?? true { break }
             if let onProgress {
-                let pct = min(0.88, Double(allSamples.count) / Double(max(1, expectedSamples)))
+                let pct = min(0.88, Double(decodedCount) / Double(max(1, expectedSamples)))
                 if pct - lastReportedPct >= 0.08 { lastReportedPct = pct; onProgress(pct) }
             }
         }
@@ -599,7 +608,8 @@ nonisolated final class LibraryScanner {
         guard allSamples.count > 11025 else { return (0, [], 0, 0) }
 
         let effectiveSec = totalSec > 0 ? totalSec : Double(allSamples.count) / decodedSR
-        let waveform = computeWaveformFromSamples(allSamples, totalSec: effectiveSec, bars: waveformBars)
+        let waveform = waveformAcc.map(finishWaveform)
+            ?? computeWaveformFromSamples(allSamples, totalSec: effectiveSec, bars: waveformBars)
 
         // Multi-window vote. The old single window (15–45s) sat in the intro of nearly
         // every club track — sparse/ambient beats produced wildly wrong initial BPM
@@ -676,14 +686,20 @@ nonisolated final class LibraryScanner {
     // relates to the narrow one as 2:3 or 3:4, the wide pass locked onto the syncopa —
     // trust the narrow. Applies only when the user range fully covers 110-180.
     private func windowVote(_ slice: [Float], floor: Double, ceiling: Double) -> Double {
-        let wide = computeBPMFromSamples(slice, floor: floor, ceiling: ceiling)
+        let (wide, wideStrength) = computeBPMFromSamples(slice, floor: floor, ceiling: ceiling)
         guard floor <= 110, ceiling >= 180, wide > 0 else { return wide }
         // Only rescue when the wide result landed OUTSIDE the club band: a wide result
         // already inside 110-180 is presumed honest — cross-checking it produced false
         // swaps (bench: honest 129.2 replaced by its 4:3 neighbour 172.3).
         guard wide < 110 || wide > 180 else { return wide }
-        let narrow = computeBPMFromSamples(slice, floor: 110, ceiling: 180)
+        let (narrow, narrowStrength) = computeBPMFromSamples(slice, floor: 110, ceiling: 180)
         guard narrow > 0 else { return wide }
+        // The narrow pass ALWAYS returns something inside 110-180, even when the material has
+        // no periodicity there. For straight 4/4 at 95-110 BPM with 16th hats its best lag is
+        // the dotted-eighth (3/4 beat), which is exactly the 4:3 ratio below — 99 BPM came back
+        // as 132.5 (synthetic bench: 9 of 40 tracks). Only trust the narrow lag when its raw
+        // correlation is a real competitor of the wide one.
+        guard narrowStrength >= wideStrength * 0.5 else { return wide }
         let ratio = narrow / wide
         for target in [1.5, 4.0 / 3.0] where abs(ratio - target) < 0.04 {
             return narrow
@@ -691,9 +707,14 @@ nonisolated final class LibraryScanner {
         return wide
     }
 
-    private func computeBPMFromSamples(_ samples: [Float], floor: Double, ceiling: Double) -> Double {
+    // Returns the tempo and the raw autocorrelation at the chosen lag (windowVote compares
+    // the strength of the wide and the narrow pass).
+    private func computeBPMFromSamples(_ samples: [Float], floor: Double, ceiling: Double) -> (bpm: Double, strength: Float) {
         let hopSize = 128
         let frameCount = samples.count / hopSize
+        // `1..<frameCount` below traps when frameCount == 0 (window shorter than one hop —
+        // possible when the asset duration overstates the decoded length, e.g. VBR MP3).
+        guard frameCount > 1 else { return (0, 0) }
         var energy = [Float](repeating: 0, count: frameCount)
         for i in 0..<frameCount {
             let start = i * hopSize
@@ -711,7 +732,7 @@ nonisolated final class LibraryScanner {
         let fps    = 11025.0 / Double(hopSize)
         let minLag = max(1, Int(fps * 60.0 / max(ceiling, floor + 1)))
         let maxLag = Int(fps * 60.0 / max(floor, 1))
-        guard minLag < maxLag, maxLag < frameCount else { return 0 }
+        guard minLag < maxLag, maxLag < frameCount else { return (0, 0) }
 
         let analysisLen   = min(frameCount - maxLag, 4096)
         let referenceOnset = onset[0..<analysisLen]
@@ -735,7 +756,7 @@ nonisolated final class LibraryScanner {
             let score = c + h2 + h3
             if score > bestScore { bestScore = score; bestLag = lag }
         }
-        guard bestScore > 0 else { return 0 }
+        guard bestScore > 0 else { return (0, 0) }
 
         let halfLag = bestLag / 2
         if halfLag >= minLag, halfLag <= maxLag, corrValues[halfLag] >= bestScore * 0.82 {
@@ -752,12 +773,49 @@ nonisolated final class LibraryScanner {
             }
         }
 
-        var bpm = 60.0 * fps / Double(bestLag)
+        // Sub-frame period instead of the integer lag: at fps≈86 the integer grid can only
+        // express …, 126.0, 129.2, … (a 128 BPM track read as 129.2, 127 as 126.0).
+        var bpm = 60.0 * fps / refinedPeriod(onset: onset, lag: bestLag)
         let lo = max(floor, 1); let hi = max(ceiling, lo + 1)
         while bpm > 0 && bpm < lo { bpm *= 2 }
         while bpm > hi { bpm /= 2 }
         bpm = foldIntoPreferredRange(bpm, lo: lo, hi: hi)
-        return (bpm * 10).rounded() / 10
+        return ((bpm * 10).rounded() / 10, corrValues[bestLag])
+    }
+
+    // Sub-frame beat period from the autocorrelation peak near k·lag (k up to 8 beats), refined
+    // with a parabola through the peak and divided by k. One frame of lag error at k beats is k
+    // times smaller relative to the period than at one beat, so 8 beats turn the ±1.5 BPM grid
+    // at 128 into ±0.1 (synthetic click/house/techno bench, 86-174 BPM: mean error 0.56 → 0.03).
+    private func refinedPeriod(onset: [Float], lag: Int, maxBeats: Int = 8) -> Double {
+        let n = onset.count
+        var k = 1
+        for candidate in stride(from: maxBeats, through: 1, by: -1) where candidate * lag + candidate + 2 < n / 2 {
+            k = candidate
+            break
+        }
+        // The integer lag is off by < 1 frame per beat, so the k-th peak sits within ±k frames.
+        let lo = max(1, k * lag - k - 1)
+        let hi = k * lag + k + 1
+        let analysisLen = n - hi - 1
+        guard analysisLen >= 64 else { return Double(lag) }
+        var values = [Float](repeating: 0, count: hi - lo + 1)
+        onset.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            for l in lo...hi {
+                var c: Float = 0
+                vDSP_dotpr(base, 1, base.advanced(by: l), 1, &c, vDSP_Length(analysisLen))
+                values[l - lo] = c / Float(analysisLen)
+            }
+        }
+        var peak = lo + 1
+        for l in (lo + 1)..<hi where values[l - lo] > values[peak - lo] { peak = l }
+        let y0 = Double(values[peak - 1 - lo])
+        let y1 = Double(values[peak - lo])
+        let y2 = Double(values[peak + 1 - lo])
+        let curvature = y0 - 2 * y1 + y2
+        let delta = curvature < -1e-12 ? max(-0.5, min(0.5, 0.5 * (y0 - y2) / curvature)) : 0
+        return (Double(peak) + delta) / Double(k)
     }
 
     // THE single normalization rule for any BPM that reaches the UI — quick pass,
@@ -793,41 +851,61 @@ nonisolated final class LibraryScanner {
     }
 
     private func computeWaveformFromSamples(_ samples: [Float], totalSec: Double, bars: Int) -> [Float] {
-        // One-pole HPF — de-emphasizes sustained bass so kick/sub doesn't wall the waveform.
-        // alpha = 0.85 → cutoff ≈ 600 Hz at 11 025 Hz. y[n] = α·(y[n−1] + x[n] − x[n−1])
-        var src = samples
-        var hpfY: Float = 0; var prevX: Float = 0
-        for i in 0..<src.count {
-            let x = src[i]
-            hpfY   = 0.85 * (hpfY + x - prevX)
-            src[i] = hpfY
-            prevX  = x
+        var acc = WaveformAccumulator(totalSec: totalSec, bars: bars)
+        acc.feed(samples)
+        return finishWaveform(acc)
+    }
+
+    // Waveform envelope in streaming form: fed buffer by buffer during decode (same math as the
+    // former one-shot computeWaveformFromSamples — HPF, then peak/RMS buckets).
+    // nonisolated: the project defaults to MainActor isolation; this is used from the
+    // nonisolated decode path (see the class header).
+    nonisolated private struct WaveformAccumulator {
+        let bars: Int
+        let bucketSize: Int
+        var envelope: [Float]
+        var bucketIndex = 0
+        var bucketCount = 0
+        var bucketPeak: Float = 0
+        var bucketSumSquares: Float = 0
+        var hpfY: Float = 0
+        var prevX: Float = 0
+
+        init(totalSec: Double, bars: Int) {
+            self.bars = max(0, bars)
+            let expectedFrames = max(1, Int(totalSec * 11025))
+            bucketSize = max(1, expectedFrames / max(1, bars))
+            envelope = [Float](repeating: 0, count: max(0, bars))
         }
 
-        let expectedFrames = max(1, Int(totalSec * 11025))
-        let bucketSize     = max(1, expectedFrames / max(1, bars))
-        var envelope       = [Float](repeating: 0, count: bars)
-        var bucketIndex = 0, bucketCount = 0
-        var bucketPeak: Float = 0, bucketSumSquares: Float = 0
+        var isFull: Bool { bucketIndex >= bars }
 
-        for sample in src {
-            let value = abs(sample)
-            bucketPeak = max(bucketPeak, value)
-            bucketSumSquares += value * value
-            bucketCount += 1
-            if bucketCount >= bucketSize {
-                if bucketIndex < bars {
+        mutating func feed(_ samples: [Float]) {
+            for x in samples {
+                guard bucketIndex < bars else { return }
+                // One-pole HPF — de-emphasizes sustained bass so kick/sub doesn't wall the waveform.
+                // alpha = 0.85 → cutoff ≈ 600 Hz at 11 025 Hz. y[n] = α·(y[n−1] + x[n] − x[n−1])
+                hpfY = 0.85 * (hpfY + x - prevX)
+                prevX = x
+                let value = abs(hpfY)
+                bucketPeak = max(bucketPeak, value)
+                bucketSumSquares += value * value
+                bucketCount += 1
+                if bucketCount >= bucketSize {
                     let rms = sqrt(bucketSumSquares / Float(bucketCount))
                     envelope[bucketIndex] = bucketPeak * 0.62 + rms * 0.38
+                    bucketIndex += 1
+                    bucketCount = 0; bucketPeak = 0; bucketSumSquares = 0
                 }
-                bucketIndex += 1
-                if bucketIndex >= bars { break }
-                bucketCount = 0; bucketPeak = 0; bucketSumSquares = 0
             }
         }
-        if bucketIndex < bars, bucketCount > 0 {
-            let rms = sqrt(bucketSumSquares / Float(bucketCount))
-            envelope[bucketIndex] = bucketPeak * 0.62 + rms * 0.38
+    }
+
+    private func finishWaveform(_ acc: WaveformAccumulator) -> [Float] {
+        var envelope = acc.envelope
+        if acc.bucketIndex < acc.bars, acc.bucketCount > 0 {
+            let rms = sqrt(acc.bucketSumSquares / Float(acc.bucketCount))
+            envelope[acc.bucketIndex] = acc.bucketPeak * 0.62 + rms * 0.38
         }
         guard envelope.contains(where: { $0 > 0 }) else { return [] }
 
@@ -975,6 +1053,7 @@ nonisolated final class LibraryScanner {
     // Extracted here so BPM analysis and phase detection share one computation.
     private func computeOnset(from samples: [Float], hopSize: Int) -> [Float] {
         let frameCount = samples.count / hopSize
+        guard frameCount > 1 else { return [] }   // `1..<frameCount` traps at 0
         var energy = [Float](repeating: 0, count: frameCount)
         for i in 0..<frameCount {
             let start = i * hopSize
@@ -1151,6 +1230,7 @@ nonisolated final class LibraryScanner {
     private func bpmFromSamples(_ samples: [Float], floor: Double, ceiling: Double) -> Double {
         let hopSize    = 64
         let frameCount = samples.count / hopSize
+        guard frameCount > 1 else { return 0 }   // `1..<frameCount` traps at 0
         var energy = [Float](repeating: 0, count: frameCount)
         for i in 0..<frameCount {
             let start = i * hopSize
@@ -1203,19 +1283,9 @@ nonisolated final class LibraryScanner {
             if corrValues[candidate] >= rawBest * 0.30 { bestLag = candidate; break }
         }
 
-        // Parabolic interpolation: fit parabola through neighbours to get sub-frame peak.
-        // δ = (y₀ − y₂) / (2·(y₀ − 2·y₁ + y₂)); valid only when curvature is negative (peak).
-        var refinedLag = Double(bestLag)
-        if bestLag > wideMin && bestLag < wideMax {
-            let y0 = Double(corrValues[bestLag - 1])
-            let y1 = Double(corrValues[bestLag])
-            let y2 = Double(corrValues[bestLag + 1])
-            let denom = 2.0 * (y0 - 2.0 * y1 + y2)
-            if denom < -1e-10 {
-                let delta = (y0 - y2) / denom
-                if delta > -0.5 && delta < 0.5 { refinedLag = Double(bestLag) + delta }
-            }
-        }
+        // Sub-frame period from the k-beat peak (see refinedPeriod) — the one-beat parabola
+        // left ±1.4 BPM at 168 and outvoted the more precise quick pass.
+        let refinedLag = refinedPeriod(onset: onset, lag: bestLag)
 
         var bpm = 60.0 * fps / refinedLag
         let lo = max(floor, 1); let hi = max(ceiling, lo + 1)

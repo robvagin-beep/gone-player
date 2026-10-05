@@ -307,7 +307,10 @@ extension PlayerState {
                 // The deep pass returns the raw period, often the lower octave (bench:
                 // 127 came back as 63.4, 135 as 67.6) — normalize before comparing.
                 let d = LibraryScanner.normalizeDanceBPM(deep, floor: floor, ceiling: ceiling)
-                if abs(d - bpm) > 0.5 {
+                // Override only on a different tempo (octave / ratio error), not on a precision
+                // disagreement: within 2% both passes found the same beat and the quick pass is
+                // the finer one.
+                if abs(d - bpm) > max(0.5, bpm * 0.02) {
                     bpm = d
                     // The beat-grid phase was estimated for the discarded tempo — invalidate.
                     beatGridOffset = 0

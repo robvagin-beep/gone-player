@@ -14,6 +14,9 @@ extension PlayerState {
         let idx = ranges.firstIndex(of: pitchRange) ?? 0
         pitchRange = ranges[(idx + 1) % ranges.count]
         pitch = max(-Double(pitchRange), min(Double(pitchRange), pitch))
+        // The clamp must reach the engine too: ±100 at +40% → ±8 showed +8% while the
+        // track kept playing at +40% until the fader was touched.
+        audioEngine.setPitch(pitchBypassed ? 0 : pitch, masterTempo: masterTempo)
     }
 
     // MARK: — BPM Filter

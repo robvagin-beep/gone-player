@@ -1,0 +1,39 @@
+diff --git a/GONE/AnalysisCache.swift b/GONE/AnalysisCache.swift
+index 819d707..bf46bb5 100644
+--- a/GONE/AnalysisCache.swift
++++ b/GONE/AnalysisCache.swift
+@@ -61,6 +61,10 @@ actor AnalysisCache {
+         guard let f = fileKey(for: url), let entry = map[f.key],
+               entry.size == f.size, abs(entry.mtime - f.mtime) < 1.0
+         else { return nil }
++        // lastAccessed only feeds the LRU cap. Refreshing it on every hit turned every cache READ
++        // into a full JSON rewrite 1.5 s later (~2 KB per entry → MBs for a large library, encoded
++        // inside the actor while analysis lanes wait on it). Day resolution is plenty for LRU.
++        if let last = entry.lastAccessed, Date().timeIntervalSince(last) < 86_400 { return entry }
+         var touched = entry
+         touched.lastAccessed = Date()
+         map[f.key] = touched
+@@ -148,10 +152,22 @@ actor AnalysisCache {
+ 
+     private func purgeMissingFiles() {
+         let before = map.count
+-        map = map.filter { FileManager.default.fileExists(atPath: $0.key) }
++        map = map.filter { key, _ in
++            if FileManager.default.fileExists(atPath: key) { return true }
++            // Keep entries on a volume that is simply not mounted right now (external SSD,
++            // network share): purging them meant launching once without the drive cost a full
++            // re-analysis of that library the next time it was plugged in.
++            return Self.isOnUnmountedVolume(key)
++        }
+         if map.count != before { dirty = true }
+     }
+ 
++    private static func isOnUnmountedVolume(_ path: String) -> Bool {
++        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
++        guard parts.count >= 2, parts[0] == "Volumes" else { return false }
++        return !FileManager.default.fileExists(atPath: "/Volumes/\(parts[1])")
++    }
++
+     private func enforceLRUCap() {
+         guard map.count > Self.maxEntries else { return }
+         let overflow = map.count - Self.maxEntries
