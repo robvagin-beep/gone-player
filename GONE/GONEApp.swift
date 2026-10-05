@@ -107,6 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(systemDidWake),
             name: NSWorkspace.didWakeNotification, object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemWillSleep),
+            name: NSWorkspace.willSleepNotification, object: nil
+        )
         // Variant D bootstrap: build the panel directly, no WindowGroup placeholder,
         // no onAppear dependency, no alpha tricks (a 0-alpha "fade in later" once kept
         // the panel invisible forever — see commit 852d603).
@@ -268,6 +272,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {
         if let window = resolvedMainWindow() { applyPresencePolicy(to: window) }
+        // Resolution change / display plugged or unplugged while docked: re-anchor the tab to
+        // the (possibly new) edge. No-op unless docked or peeking.
+        WindowSnapManager.shared.constrainCurrentWindow()
+    }
+
+    // Lid closed mid-track: pause both players. handleSystemWake resumes whatever was still
+    // "playing", so without this the track restarted out loud wherever the laptop was opened
+    // next (booth, train, meeting).
+    @objc private func systemWillSleep() {
+        if let state = playerState, state.isPlaying { state.togglePlayback() }
+        if let sec = SplitModeManager.shared.secondaryState, sec.isPlaying { sec.togglePlayback() }
     }
 
     @objc private func systemDidWake() {
@@ -322,6 +337,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
                 s.lastError = "[\(timestamp)] \(msg)"
             }
+        }
+        engine.onOutputLost = { [weak self] in
+            // Output device unplugged mid-track: the engine stays paused (see
+            // handleEngineConfigurationChange) — make the transport say so.
+            guard let state = self?.playerState else { return }
+            state.isPlaying = false
+            state.stopAllMomentaryAudioModifiers()
+        }
+        engine.onLoadFailed = { [weak self] in
+            // Unreadable file: the transport used to show "playing" over silence, and with no
+            // completion nothing ever advanced. Show the truth; the user picks the next track.
+            self?.playerState?.isPlaying = false
         }
         engine.onSpectrum = { [weak self] data in
             DispatchQueue.main.async { [weak self] in
@@ -580,8 +607,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         playerState?.persistSettings()
         // Flush any pending cache writes before process exits.
         // flushSoon debounces to 1.5s — synchronous flush here captures the last analysis session.
+        // Task.detached, not Task {}: AppDelegate is main-actor isolated (project default), so a
+        // plain Task inherits the main actor and cannot start while main is blocked in wait() —
+        // the flush never ran and every quit sat out the full 2 s timeout.
         let sema = DispatchSemaphore(value: 0)
-        Task { await AnalysisCache.shared.flushNow(); sema.signal() }
+        Task.detached { await AnalysisCache.shared.flushNow(); sema.signal() }
         _ = sema.wait(timeout: .now() + 2.0)
     }
 

@@ -21,7 +21,7 @@ struct AnalysisCacheEntry: Codable {
 
 actor AnalysisCache {
     static let shared = AnalysisCache()
-    private static let version = 6  // v6: half-tempo threshold 0.60→0.82 (reduces double-BPM on slow electronic)
+    private static let version = 7  // v7: sub-frame BPM period + narrow-rescue strength guard (cached BPMs were grid-quantised)
     private static let maxEntries = 20_000
 
     private var map: [String: AnalysisCacheEntry] = [:]
@@ -61,6 +61,10 @@ actor AnalysisCache {
         guard let f = fileKey(for: url), let entry = map[f.key],
               entry.size == f.size, abs(entry.mtime - f.mtime) < 1.0
         else { return nil }
+        // lastAccessed only feeds the LRU cap. Refreshing it on every hit turned every cache READ
+        // into a full JSON rewrite 1.5 s later (~2 KB per entry → MBs for a large library, encoded
+        // inside the actor while analysis lanes wait on it). Day resolution is plenty for LRU.
+        if let last = entry.lastAccessed, Date().timeIntervalSince(last) < 86_400 { return entry }
         var touched = entry
         touched.lastAccessed = Date()
         map[f.key] = touched
@@ -148,8 +152,20 @@ actor AnalysisCache {
 
     private func purgeMissingFiles() {
         let before = map.count
-        map = map.filter { FileManager.default.fileExists(atPath: $0.key) }
+        map = map.filter { key, _ in
+            if FileManager.default.fileExists(atPath: key) { return true }
+            // Keep entries on a volume that is simply not mounted right now (external SSD,
+            // network share): purging them meant launching once without the drive cost a full
+            // re-analysis of that library the next time it was plugged in.
+            return Self.isOnUnmountedVolume(key)
+        }
         if map.count != before { dirty = true }
+    }
+
+    private static func isOnUnmountedVolume(_ path: String) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count >= 2, parts[0] == "Volumes" else { return false }
+        return !FileManager.default.fileExists(atPath: "/Volumes/\(parts[1])")
     }
 
     private func enforceLRUCap() {

@@ -64,6 +64,11 @@ final class WindowSnapManager {
     private var savedFrame:       NSRect?
     private var savedDockedY:     CGFloat?
     private var dockToken:        UInt64 = 0  // incremented per dock attempt; guards completion against rapid toggle
+    // Display the window was docked on (NSScreenNumber). Once docked, most of the full-width
+    // body hangs past the edge — onto the neighbouring display when there is one — and
+    // window.screen then reports THAT display: proximity, peek and re-anchoring all measured
+    // against the wrong edge and the tab jumped to the far side of the external monitor.
+    private var dockScreenNumber: NSNumber?
 
     // Captured at enable(), used for the full lifecycle.
     private weak var snapWindow: NSWindow?
@@ -323,7 +328,10 @@ final class WindowSnapManager {
         dockToken &+= 1
         let capturedToken = dockToken
         DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, let screen = self.screen(for: window) else { return }
+            guard let self, let window else { return }
+            // Pin while the window is still fully on its own display (see dockScreenNumber).
+            self.dockScreenNumber = (window.screen ?? NSScreen.main).flatMap(Self.screenNumber)
+            guard let screen = self.screen(for: window) else { return }
             // Capture savedFrame here (after isSnapping=true is about to be set) so that
             // any pending updateWindowSize that ran during the prior 1-tick gap is included.
             // This keeps savedFrame consistent with savedDockedY and prevents Y drift.
@@ -470,7 +478,10 @@ final class WindowSnapManager {
         // Using savedDockedY for Y caused upward drift: if updateWindowSize ran in the
         // 1-tick gap before isSnapping=true, savedDockedY got a higher Y than savedFrame.
         let targetFrame: NSRect
-        if let saved = savedFrame {
+        // The pre-dock frame is only a valid target while some display still shows it (the
+        // monitor it lived on may have been unplugged while docked) — else fall back to centre.
+        if let saved = savedFrame,
+           NSScreen.screens.contains(where: { $0.visibleFrame.intersects(saved) }) {
             targetFrame = saved
         } else {
             let origin = centeredOrigin(for: window)
@@ -644,7 +655,18 @@ final class WindowSnapManager {
         }
     }
 
-    private func screen(for window: NSWindow) -> NSScreen? { window.screen ?? NSScreen.main }
+    private func screen(for window: NSWindow) -> NSScreen? {
+        if snapState == .docked || snapState == .peeking || playerState?.isSnapping == true,
+           let pinned = dockScreenNumber,
+           let screen = NSScreen.screens.first(where: { Self.screenNumber($0) == pinned }) {
+            return screen
+        }
+        return window.screen ?? NSScreen.main
+    }
+
+    private static func screenNumber(_ screen: NSScreen) -> NSNumber? {
+        screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+    }
 
     private func clampY(_ y: CGFloat, height: CGFloat, screen: NSScreen) -> CGFloat {
         max(screen.frame.minY, min(screen.frame.maxY - height, y))

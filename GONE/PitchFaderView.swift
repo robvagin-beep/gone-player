@@ -133,7 +133,9 @@ struct PitchFaderView: View {
                     action: {
                         guard !state.tracks.isEmpty else { return }
                         state.masterTempo.toggle()
-                        state.audioEngine.setPitch(state.pitch, masterTempo: state.masterTempo)
+                        // Respect the pitch bypass — toggling MT used to re-apply the fader value
+                        // to a bypassed player.
+                        state.audioEngine.setPitch(state.pitchBypassed ? 0 : state.pitch, masterTempo: state.masterTempo)
                     }
                 )
                 .goneTooltip("Master Tempo — pitch stays locked to original key when you change speed")
